@@ -50,6 +50,9 @@ public class ModConfiguration
     public readonly ConfigEntry<float> MaximumZoom;
     public readonly ConfigEntry<bool> InstantZoomOut;
 
+    public readonly ConfigEntry<float> CockpitHeadForwardOffset;
+    
+    
     public ModConfiguration(ConfigFile config)
     {
         Instance = this;
@@ -328,5 +331,11 @@ public class ModConfiguration
             "Instant Zoom Out",
             false,
             "When enabled, any Zoom View out input immediately returns the headset view to 1x magnification.");
+        CockpitHeadForwardOffset = config.Bind(
+            "Experimental",
+            "Cockpit Head Forward Offset",
+            0.05f,
+            "Offset in meters applied to the cockpit head forward vector. Helps keep the ejection seat bars out of your face.");
+        
     }
 }
