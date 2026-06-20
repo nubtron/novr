@@ -93,6 +93,12 @@ public class NativeVrUiRoot : NOVRBehaviour
             SetUtilityWidgetMode(ShouldShowStockNativeUiToggle()
                 ? UtilityWidgetMode.EnableNativeUi
                 : UtilityWidgetMode.Hidden);
+            // Recentering is not a menu feature, so it has to survive the early
+            // return that turns the native menu UI off. Upstream guards the
+            // equivalent block on GameManager.gameState; on this line the guard
+            // is the config toggle, so the shortcut is wired in here instead.
+            HandleRecenterShortcut(false);
+            UpdateLivePendingRecenter();
             return;
         }
 
