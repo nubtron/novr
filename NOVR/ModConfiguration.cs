@@ -42,6 +42,9 @@ public class ModConfiguration
     public readonly ConfigEntry<string> AutoStartMissionName;
     public readonly ConfigEntry<int> AutoDumpCount;
     public readonly ConfigEntry<float> AutoDumpDelay;
+    public readonly ConfigEntry<float> ZoomSpeed;
+    public readonly ConfigEntry<float> MaximumZoom;
+    public readonly ConfigEntry<bool> InstantZoomOut;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -266,5 +269,26 @@ public class ModConfiguration
                 "Seconds to wait after the mission starts before the first automatic dump, and between dumps.",
                 new AcceptableValueRange<float>(1f, 60f)));
         EscalationOverrides.Bind(config);
+        ZoomSpeed = config.Bind(
+            "VR Zoom",
+            "Zoom Speed",
+            2.0f,
+            new ConfigDescription(
+                "How quickly headset magnification changes while Zoom View is held, in magnification units per second.",
+                new AcceptableValueRange<float>(0.1f, 20.0f)));
+
+        MaximumZoom = config.Bind(
+            "VR Zoom",
+            "Maximum Zoom",
+            4.0f,
+            new ConfigDescription(
+                "Maximum binocular-style headset magnification.",
+                new AcceptableValueRange<float>(1.0f, 10.0f)));
+
+        InstantZoomOut = config.Bind(
+            "VR Zoom",
+            "Instant Zoom Out",
+            false,
+            "When enabled, any Zoom View out input immediately returns the headset view to 1x magnification.");
     }
 }
