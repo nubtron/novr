@@ -42,6 +42,9 @@ public class ModConfiguration
     public readonly ConfigEntry<float> AutoDumpDelay;
     public readonly ConfigEntry<string> AutoDumpYaws;
     public readonly ConfigEntry<bool> HarnessMute;
+    public readonly ConfigEntry<float> ZoomSpeed;
+    public readonly ConfigEntry<float> MaximumZoom;
+    public readonly ConfigEntry<bool> InstantZoomOut;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -269,5 +272,26 @@ public class ModConfiguration
             "Harness Mute",
             false,
             "Silence the game for the duration of a harness run (AudioListener.volume forced to 0 every frame, so nothing the game does can unmute it). The harness turns this on for its own launches and the config guard forces it back off afterwards; a normal play session never hears the difference.");
+        ZoomSpeed = config.Bind(
+            "VR Zoom",
+            "Zoom Speed",
+            2.0f,
+            new ConfigDescription(
+                "How quickly headset magnification changes while Zoom View is held, in magnification units per second.",
+                new AcceptableValueRange<float>(0.1f, 20.0f)));
+
+        MaximumZoom = config.Bind(
+            "VR Zoom",
+            "Maximum Zoom",
+            4.0f,
+            new ConfigDescription(
+                "Maximum binocular-style headset magnification.",
+                new AcceptableValueRange<float>(1.0f, 10.0f)));
+
+        InstantZoomOut = config.Bind(
+            "VR Zoom",
+            "Instant Zoom Out",
+            false,
+            "When enabled, any Zoom View out input immediately returns the headset view to 1x magnification.");
     }
 }
