@@ -46,6 +46,9 @@ public class ModConfiguration
     public readonly ConfigEntry<int> AutoDumpCount;
     public readonly ConfigEntry<float> AutoDumpDelay;
     public readonly ConfigEntry<string> AutoDumpYaws;
+    public readonly ConfigEntry<float> ZoomSpeed;
+    public readonly ConfigEntry<float> MaximumZoom;
+    public readonly ConfigEntry<bool> InstantZoomOut;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -297,5 +300,26 @@ public class ModConfiguration
             "",
             "Comma-separated head yaw angles in degrees to dump at, e.g. '-75,0,75' (negative looks left). One dump per angle, and the count replaces Auto Dump Count. Empty dumps straight ahead. Only works under the harness's OpenXR mock runtime, which is the only runtime whose head pose we are allowed to move; with a real headset the angles are ignored and the run dumps wherever the pilot is looking.");
         EscalationOverrides.Bind(config);
+        ZoomSpeed = config.Bind(
+            "VR Zoom",
+            "Zoom Speed",
+            2.0f,
+            new ConfigDescription(
+                "How quickly headset magnification changes while Zoom View is held, in magnification units per second.",
+                new AcceptableValueRange<float>(0.1f, 20.0f)));
+
+        MaximumZoom = config.Bind(
+            "VR Zoom",
+            "Maximum Zoom",
+            4.0f,
+            new ConfigDescription(
+                "Maximum binocular-style headset magnification.",
+                new AcceptableValueRange<float>(1.0f, 10.0f)));
+
+        InstantZoomOut = config.Bind(
+            "VR Zoom",
+            "Instant Zoom Out",
+            false,
+            "When enabled, any Zoom View out input immediately returns the headset view to 1x magnification.");
     }
 }

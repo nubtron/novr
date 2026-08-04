@@ -107,6 +107,7 @@ public class VrCameraManager: MonoBehaviour
         ReparentTrackedChildren(rootCamera.transform, trackedCameraObject.transform);
 
         trackedCameraObject.AddComponent<VrCamera>();
+        trackedCameraObject.AddComponent<VrZoomController>();
 
         IgnoredCameras.Add(rootCamera);
         IgnoredCameras.Add(trackedCamera);
@@ -139,6 +140,11 @@ public class VrCameraManager: MonoBehaviour
         if (trackedCamera.GetComponent<VrCamera>() == null)
         {
             trackedCamera.gameObject.AddComponent<VrCamera>();
+        }
+
+        if (trackedCamera.GetComponent<VrZoomController>() == null)
+        {
+            trackedCamera.gameObject.AddComponent<VrZoomController>();
         }
 
         IgnoredCameras.Add(rootCamera);
