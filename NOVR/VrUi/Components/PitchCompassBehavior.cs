@@ -94,7 +94,15 @@ public class PitchCompassBehavior : MonoBehaviour
         }
 
         _lineThickness = Mathf.Clamp(ModConfiguration.Instance.HudLineThickness.Value, 0.5f, 3f);
-        _ladderWidth = Mathf.Clamp(ModConfiguration.Instance.PitchLadderWidth.Value, 0.25f, 1f);
+        _ladderWidth = Mathf.Clamp(ModConfiguration.Instance.PitchLadderWidth.Value, 0.15f, 1f);
+
+        // Only build the pitch bands inside the configured range around the
+        // horizon (slice index i covers pitch 90 - i*5). Bands outside the
+        // range are skipped, so the ladder is a window near the view center
+        // instead of spanning it top to bottom.
+        var range = Mathf.Clamp(ModConfiguration.Instance.PitchLadderRange.Value, 5f, 90f);
+        var minSliceIndex = Mathf.CeilToInt((90f - range) / PitchStepDegrees);
+        var maxSliceIndex = Mathf.FloorToInt((90f + range) / PitchStepDegrees);
 
         var sourceRectTransform = _sourcePitchCompass.rectTransform;
         _fullTextureDisplayHeight = sourceRectTransform.rect.height / _sourcePitchCompass.uvRect.height;
@@ -102,6 +110,11 @@ public class PitchCompassBehavior : MonoBehaviour
 
         for (var sliceIndex = 0; sliceIndex < FullPitchStepCount; sliceIndex++)
         {
+            if (sliceIndex < minSliceIndex || sliceIndex > maxSliceIndex)
+            {
+                continue;
+            }
+
             var slice = CreateSliceImage(sourceTexture, sliceIndex);
             
             var pitchDegrees = 90f - sliceIndex * PitchStepDegrees;
