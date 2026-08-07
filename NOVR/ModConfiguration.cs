@@ -15,6 +15,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> VrHudScale;
     public readonly ConfigEntry<float> HudLineThickness;
     public readonly ConfigEntry<float> PitchLadderWidth;
+    public readonly ConfigEntry<float> PitchLadderRange;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -58,10 +59,18 @@ public class ModConfiguration
         PitchLadderWidth = config.Bind(
             "General",
             "Pitch Ladder Width",
-            0.35f,
+            0.9f,
             new ConfigDescription(
-                "Fraction of the pitch ladder's original width kept, centered on the view. Lower values crop the ladder lines toward the center into short bars; 1.0 keeps the full original width. The pitch numbers and tick marks are cropped out below about 0.5.",
+                "Fraction of the pitch ladder's original width kept, centered on the view. Values below about 0.5 crop the ladder lines toward the center into short bars and remove the pitch numbers; 1.0 keeps the full original width with numbers.",
                 new AcceptableValueRange<float>(0.15f, 1.0f)));
+
+        PitchLadderRange = config.Bind(
+            "General",
+            "Pitch Ladder Range",
+            30f,
+            new ConfigDescription(
+                "Degrees of pitch around the horizon that the pitch ladder covers. Lower values crop the ladder to a window near the center of the view instead of spanning it top to bottom; 90 shows the full ladder.",
+                new AcceptableValueRange<float>(5f, 90f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
