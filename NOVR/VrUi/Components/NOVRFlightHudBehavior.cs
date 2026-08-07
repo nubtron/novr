@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -5,6 +6,10 @@ namespace NOVR.VrUi.SpecialBehavior;
 
 public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
 {
+    private readonly Dictionary<Image, Vector2> _originalLineSizes = new Dictionary<Image, Vector2>();
+    private float _appliedLineThickness = -1f;
+    private int _frameCount;
+
     public override void Awake()
     {
         base.Awake();
@@ -43,6 +48,85 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         // built-in HUD width/height/side/top settings can then fine tune.
         var hudScale = Mathf.Clamp(ModConfiguration.Instance.VrHudScale.Value, 0.25f, 1.5f);
         transform.localScale = Vector3.one * hudScale;
+
+        _frameCount++;
+        if (_frameCount > 30)
+        {
+            ApplyHudLineThickness();
+        }
+    }
+
+    /// <summary>
+    /// Thickens thin line-like UI elements of the main HUD (borders, brackets,
+    /// tapes, the waterline, tick marks) by the HUD Line Thickness factor.
+    /// Original sizes are captured once the game has finished laying out the
+    /// HUD; changes to the config are re-applied live.
+    /// </summary>
+    private void ApplyHudLineThickness()
+    {
+        var thickness = Mathf.Clamp(ModConfiguration.Instance.HudLineThickness.Value, 0.5f, 3f);
+        if (Mathf.Approximately(thickness, _appliedLineThickness))
+        {
+            return;
+        }
+
+        if (_originalLineSizes.Count == 0)
+        {
+            CaptureLineElements();
+        }
+
+        foreach (var pair in _originalLineSizes)
+        {
+            var image = pair.Key;
+            if (image == null)
+            {
+                continue;
+            }
+
+            var originalSize = pair.Value;
+            var thinDimension = Mathf.Min(Mathf.Abs(originalSize.x), Mathf.Abs(originalSize.y));
+            var thickenedSize = originalSize;
+            if (Mathf.Abs(originalSize.x) < Mathf.Abs(originalSize.y))
+            {
+                thickenedSize.x = thinDimension * thickness;
+            }
+            else
+            {
+                thickenedSize.y = thinDimension * thickness;
+            }
+
+            image.rectTransform.sizeDelta = thickenedSize;
+        }
+
+        _appliedLineThickness = thickness;
+        Debug.Log($"{nameof(NOVRFlightHudBehavior)}: Applied HUD line thickness {thickness:F2} to {_originalLineSizes.Count} line elements");
+    }
+
+    private void CaptureLineElements()
+    {
+        // Only anchor-pinned elements are resized (stretched elements use
+        // sizeDelta as an offset, so touching them would break layout).
+        foreach (var image in GetComponentsInChildren<Image>(true))
+        {
+            var rectTransform = image.rectTransform;
+            if (rectTransform.anchorMin != rectTransform.anchorMax)
+            {
+                continue;
+            }
+
+            var size = rectTransform.sizeDelta;
+            var width = Mathf.Abs(size.x);
+            var height = Mathf.Abs(size.y);
+            var thin = Mathf.Min(width, height);
+            var thick = Mathf.Max(width, height);
+
+            if (thin < 0.5f || thick / thin < 3f || thin > 12f)
+            {
+                continue;
+            }
+
+            _originalLineSizes[image] = size;
+        }
     }
     
     private void MoveHmdPanelToHud(string panelName, Transform noVrHudParent, Vector3 localPosition, Vector3 localScale)
