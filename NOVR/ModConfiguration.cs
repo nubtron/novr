@@ -13,6 +13,8 @@ public class ModConfiguration
     public readonly ConfigEntry<float> TargetDesignatorOvershoot;
     public readonly ConfigEntry<float> CursorSizeMultiplier;
     public readonly ConfigEntry<float> VrHudScale;
+    public readonly ConfigEntry<float> HudLineThickness;
+    public readonly ConfigEntry<float> PitchLadderWidth;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -44,6 +46,22 @@ public class ModConfiguration
             new ConfigDescription(
                 "Scale of the VR flight HUD, including the head-locked HMD and cockpit HUD centers. Values from 0.25 to 1.5 are supported.",
                 new AcceptableValueRange<float>(0.25f, 1.5f)));
+
+        HudLineThickness = config.Bind(
+            "General",
+            "HUD Line Thickness",
+            1.5f,
+            new ConfigDescription(
+                "Thickness multiplier for the VR pitch ladder lines, tick marks, and labels. 1.0 is the game's original line width.",
+                new AcceptableValueRange<float>(0.5f, 3.0f)));
+
+        PitchLadderWidth = config.Bind(
+            "General",
+            "Pitch Ladder Width",
+            0.6f,
+            new ConfigDescription(
+                "Fraction of the pitch ladder's original width kept, centered on the view. Lower values crop the ladder lines toward the center; 1.0 keeps the full original width.",
+                new AcceptableValueRange<float>(0.25f, 1.0f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
