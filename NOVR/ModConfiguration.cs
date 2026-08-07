@@ -61,16 +61,16 @@ public class ModConfiguration
             "HUD Line Thickness",
             1.5f,
             new ConfigDescription(
-                "Thickness multiplier for the VR pitch ladder lines, tick marks, and labels. 1.0 is the game's original line width.",
+                "Thickness multiplier for VR HUD lines: the pitch ladder (dashes, tick marks, labels) and thin line elements of the main HUD such as borders, brackets, tapes, and the waterline. 1.0 is the game's original line width.",
                 new AcceptableValueRange<float>(0.5f, 3.0f)));
 
         PitchLadderWidth = config.Bind(
             "General",
             "Pitch Ladder Width",
-            0.6f,
+            0.35f,
             new ConfigDescription(
-                "Fraction of the pitch ladder's original width kept, centered on the view. Lower values crop the ladder lines toward the center; 1.0 keeps the full original width.",
-                new AcceptableValueRange<float>(0.25f, 1.0f)));
+                "Fraction of the pitch ladder's original width kept, centered on the view. Lower values crop the ladder lines toward the center into short bars; 1.0 keeps the full original width. The pitch numbers and tick marks are cropped out below about 0.5.",
+                new AcceptableValueRange<float>(0.15f, 1.0f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
