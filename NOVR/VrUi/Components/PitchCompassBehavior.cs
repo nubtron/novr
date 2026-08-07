@@ -20,6 +20,8 @@ public class PitchCompassBehavior : MonoBehaviour
     private RectTransform _sliceRoot;
     private float _fullTextureDisplayHeight;
     private bool _hasBuiltSlices;
+    private float _lineThickness = 1f;
+    private float _ladderWidth = 1f;
     
     
     private FlightHud _flightHud;
@@ -91,6 +93,9 @@ public class PitchCompassBehavior : MonoBehaviour
             return;
         }
 
+        _lineThickness = Mathf.Clamp(ModConfiguration.Instance.HudLineThickness.Value, 0.5f, 3f);
+        _ladderWidth = Mathf.Clamp(ModConfiguration.Instance.PitchLadderWidth.Value, 0.25f, 1f);
+
         var sourceRectTransform = _sourcePitchCompass.rectTransform;
         _fullTextureDisplayHeight = sourceRectTransform.rect.height / _sourcePitchCompass.uvRect.height;
         _sliceRoot = CreateSliceRoot(sourceRectTransform);
@@ -114,8 +119,11 @@ public class PitchCompassBehavior : MonoBehaviour
             slice.transform.SetParent(_sliceRoot, true);
             opposite.transform.SetParent(_sliceRoot, true);
 
-            slice.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
-            opposite.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
+            // Thicken the ladder lines (and tick marks/labels) by scaling the
+            // band content vertically within each slice. Pitch spacing is
+            // defined by the slice rotation, so the ladder angles stay exact.
+            slice.transform.localScale = new Vector3(0.8f, 0.8f * _lineThickness, 0.8f);
+            opposite.transform.localScale = new Vector3(0.8f, 0.8f * _lineThickness, 0.8f);
         }
         
         LayerHelper.SetLayerRecursive(_sliceRoot, LayerHelper.GetVrUiLayer());
@@ -184,14 +192,19 @@ public class PitchCompassBehavior : MonoBehaviour
         sliceTransform.anchorMax = new Vector2(0.5f, 0f);
         sliceTransform.pivot = new Vector2(0.5f, 0.5f);
         sliceTransform.anchoredPosition = new Vector2(0f, normalizedSliceBottom * _fullTextureDisplayHeight);
-        sliceTransform.sizeDelta = new Vector2(_sourcePitchCompass.rectTransform.rect.width, normalizedSliceHeight * _fullTextureDisplayHeight);
+
+        // Crop the ladder toward the view center: keep the middle `_ladderWidth`
+        // fraction of the texture at 1:1 scale (uvRect centered, sizeDelta
+        // reduced by the same factor). 1.0 keeps the full original width.
+        var uvLeft = (1f - _ladderWidth) * 0.5f;
+        sliceTransform.sizeDelta = new Vector2(_sourcePitchCompass.rectTransform.rect.width * _ladderWidth, normalizedSliceHeight * _fullTextureDisplayHeight);
 
         var sliceImage = sliceObject.GetComponent<RawImage>();
         sliceImage.texture = sourceTexture;
         sliceImage.color = _sourcePitchCompass.color;
         sliceImage.material = _sourcePitchCompass.material;
         sliceImage.raycastTarget = false;
-        sliceImage.uvRect = new Rect(0f, normalizedSliceBottom, 1f, normalizedSliceHeight);
+        sliceImage.uvRect = new Rect(uvLeft, normalizedSliceBottom, _ladderWidth, normalizedSliceHeight);
         return sliceObject;
  
     } 
@@ -229,8 +242,11 @@ public class PitchCompassBehavior : MonoBehaviour
         var halfObject = new GameObject($"PitchCompassSlice_Wrapped_{nameSuffix}", typeof(RectTransform), typeof(RawImage));
         var halfTransform = halfObject.GetComponent<RectTransform>();
         halfTransform.SetParent(parent, false);
-        halfTransform.anchorMin = new Vector2(0f, 0f);
-        halfTransform.anchorMax = new Vector2(1f, 0f);
+
+        // Center-crop the wrapped endcap halves to match the regular slices.
+        var uvLeft = (1f - _ladderWidth) * 0.5f;
+        halfTransform.anchorMin = new Vector2(uvLeft, 0f);
+        halfTransform.anchorMax = new Vector2(1f - uvLeft, 0f);
         halfTransform.pivot = new Vector2(0.5f, 0f);
         halfTransform.anchoredPosition = new Vector2(0f, normalizedLocalBottom * _fullTextureDisplayHeight);
         halfTransform.sizeDelta = new Vector2(0f, normalizedHalfHeight * _fullTextureDisplayHeight);
@@ -240,6 +256,6 @@ public class PitchCompassBehavior : MonoBehaviour
         halfImage.color = _sourcePitchCompass.color;
         halfImage.material = _sourcePitchCompass.material;
         halfImage.raycastTarget = false;
-        halfImage.uvRect = new Rect(0f, normalizedUvBottom, 1f, normalizedHalfHeight);
+        halfImage.uvRect = new Rect(uvLeft, normalizedUvBottom, _ladderWidth, normalizedHalfHeight);
     }
 }
