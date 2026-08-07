@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -22,6 +23,7 @@ public class PitchCompassBehavior : MonoBehaviour
     private bool _hasBuiltSlices;
     private float _lineThickness = 1f;
     private float _ladderWidth = 1f;
+    private readonly List<Transform> _slices = new();
     
     
     private FlightHud _flightHud;
@@ -56,6 +58,41 @@ public class PitchCompassBehavior : MonoBehaviour
         _sliceRoot.transform.rotation = Quaternion.LookRotation(targetForward, targetUp);
         
         _sourcePitchCompass.enabled = false;
+
+        UpdateSliceVisibility();
+    }
+
+    /// <summary>
+    /// Shows only the pitch bands within Pitch Ladder Range degrees of the
+    /// current view direction, so the ladder window follows the camera while
+    /// the bands themselves stay world/horizon-referenced (the horizon line
+    /// always points at the true horizon).
+    /// </summary>
+    private void UpdateSliceVisibility()
+    {
+        var referenceTransform = APIBus.CockpitHudReference?.transform;
+        if (referenceTransform == null)
+        {
+            return;
+        }
+
+        var viewForward = referenceTransform.forward;
+        var range = Mathf.Clamp(ModConfiguration.Instance.PitchLadderRange.Value, 5f, 90f);
+        var threshold = Mathf.Cos(range * Mathf.Deg2Rad);
+
+        foreach (var slice in _slices)
+        {
+            if (slice == null)
+            {
+                continue;
+            }
+
+            var visible = Vector3.Dot(slice.forward, viewForward) >= threshold;
+            if (slice.gameObject.activeSelf != visible)
+            {
+                slice.gameObject.SetActive(visible);
+            }
+        }
     }
     
 
@@ -96,25 +133,15 @@ public class PitchCompassBehavior : MonoBehaviour
         _lineThickness = Mathf.Clamp(ModConfiguration.Instance.HudLineThickness.Value, 0.5f, 3f);
         _ladderWidth = Mathf.Clamp(ModConfiguration.Instance.PitchLadderWidth.Value, 0.15f, 1f);
 
-        // Only build the pitch bands inside the configured range around the
-        // horizon (slice index i covers pitch 90 - i*5). Bands outside the
-        // range are skipped, so the ladder is a window near the view center
-        // instead of spanning it top to bottom.
-        var range = Mathf.Clamp(ModConfiguration.Instance.PitchLadderRange.Value, 5f, 90f);
-        var minSliceIndex = Mathf.CeilToInt((90f - range) / PitchStepDegrees);
-        var maxSliceIndex = Mathf.FloorToInt((90f + range) / PitchStepDegrees);
-
         var sourceRectTransform = _sourcePitchCompass.rectTransform;
         _fullTextureDisplayHeight = sourceRectTransform.rect.height / _sourcePitchCompass.uvRect.height;
         _sliceRoot = CreateSliceRoot(sourceRectTransform);
 
+        // All pitch bands are built; which ones are visible is decided per
+        // frame by UpdateSliceVisibility, so the ladder window follows the
+        // camera while the bands themselves stay horizon-referenced.
         for (var sliceIndex = 0; sliceIndex < FullPitchStepCount; sliceIndex++)
         {
-            if (sliceIndex < minSliceIndex || sliceIndex > maxSliceIndex)
-            {
-                continue;
-            }
-
             var slice = CreateSliceImage(sourceTexture, sliceIndex);
             
             var pitchDegrees = 90f - sliceIndex * PitchStepDegrees;
@@ -137,6 +164,9 @@ public class PitchCompassBehavior : MonoBehaviour
             // defined by the slice rotation, so the ladder angles stay exact.
             slice.transform.localScale = new Vector3(0.8f, 0.8f * _lineThickness, 0.8f);
             opposite.transform.localScale = new Vector3(0.8f, 0.8f * _lineThickness, 0.8f);
+
+            _slices.Add(slice.transform);
+            _slices.Add(opposite.transform);
         }
         
         LayerHelper.SetLayerRecursive(_sliceRoot, LayerHelper.GetVrUiLayer());
