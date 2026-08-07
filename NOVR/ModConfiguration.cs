@@ -12,6 +12,7 @@ public class ModConfiguration
     public readonly ConfigFile Config;
     public readonly ConfigEntry<float> TargetDesignatorOvershoot;
     public readonly ConfigEntry<float> CursorSizeMultiplier;
+    public readonly ConfigEntry<float> VrHudScale;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -44,6 +45,14 @@ public class ModConfiguration
             new ConfigDescription(
                 "Visual size of the VR cursor. Values from 1.0 to 3.0 are supported.",
                 new AcceptableValueRange<float>(1.0f, 3.0f)));
+
+        VrHudScale = config.Bind(
+            "General",
+            "VR HUD Scale",
+            0.5f,
+            new ConfigDescription(
+                "Scale of the VR flight HUD, including the head-locked HMD and cockpit HUD centers. Values from 0.25 to 1.5 are supported.",
+                new AcceptableValueRange<float>(0.25f, 1.5f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
