@@ -76,9 +76,9 @@ public class ModConfiguration
         PitchLadderRange = config.Bind(
             "General",
             "Pitch Ladder Range",
-            30f,
+            15f,
             new ConfigDescription(
-                "Degrees of pitch around the horizon that the pitch ladder covers. Lower values crop the ladder to a window near the center of the view instead of spanning it top to bottom; 90 shows the full ladder.",
+                "Half-angle in degrees of the pitch ladder window around the current view direction: the ladder follows where you look (up/down and sideways) while each line stays horizon-referenced, so the horizon line always points at the true horizon. 90 shows the full ladder.",
                 new AcceptableValueRange<float>(5f, 90f)));
 
         EnableNativeMenuUi = config.Bind(
