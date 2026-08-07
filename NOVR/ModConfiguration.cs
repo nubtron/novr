@@ -43,7 +43,7 @@ public class ModConfiguration
         VrHudScale = config.Bind(
             "General",
             "VR HUD Scale",
-            0.5f,
+            0.6f,
             new ConfigDescription(
                 "Scale of the VR flight HUD, including the head-locked HMD and cockpit HUD centers. Values from 0.25 to 1.5 are supported.",
                 new AcceptableValueRange<float>(0.25f, 1.5f)));
