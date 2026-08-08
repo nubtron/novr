@@ -78,7 +78,7 @@ public class ModConfiguration
             "Pitch Ladder Range",
             15f,
             new ConfigDescription(
-                "Half-angle in degrees of the pitch ladder window around the current view direction: the ladder follows where you look (up/down and sideways) while each line stays horizon-referenced, so the horizon line always points at the true horizon. 90 shows the full ladder.",
+                "Minimum half-angle in degrees of pitch lines always visible around dead ahead (the HUD center, i.e. the aircraft nose — not the view direction). Tilting your head up or down reveals additional pitch lines in that direction, up to 90 degrees; looking sideways adds none. Lines stay horizon-referenced, so the horizon line always points at the true horizon.",
                 new AcceptableValueRange<float>(5f, 90f)));
 
         EnableNativeMenuUi = config.Bind(
