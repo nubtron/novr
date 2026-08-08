@@ -4,6 +4,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
 using UnityEngine.UI;
+using UnityEngine.XR;
 
 namespace NOVR.VrUi;
 
@@ -67,6 +68,14 @@ public class VrUiCursor: NOVRBehaviour
     private bool _hasInitializedEventSystem = false;
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
+
+    private InputDevice _controllerDevice;
+    private bool _controllerDeviceValid;
+    private bool _controllerModeActive;
+    private Vector3 _controllerAimDirection = Vector3.forward;
+    private bool _controllerTriggerPressed;
+    private bool _controllerTriggerClicked;
+    private float _controllerSmoothing = 0.3f;
     
     
     private int ScreenWidth => Screen.width;
@@ -146,17 +155,20 @@ public class VrUiCursor: NOVRBehaviour
             }
         }
         if (_texture == null) return;
+        UpdateControllerInput();
         UpdateCursorAngles();
         
         var realMouse = _realMouse;
         if (realMouse == null || _virtualMouse == null) return;
 
-        UpdateCursorAnimation(realMouse);
+        var leftPressed = realMouse.leftButton.isPressed || _controllerTriggerPressed;
+        var leftClicked = realMouse.leftButton.wasPressedThisFrame || _controllerTriggerClicked;
+        UpdateCursorAnimation(leftPressed, leftClicked);
 
         var screenPoint = GetScreenPoint();
 
         ushort buttons = 0;
-        if (realMouse.leftButton.isPressed) buttons |= 1;
+        if (leftPressed) buttons |= 1;
         if (realMouse.rightButton.isPressed) buttons |= 2;
         if (realMouse.middleButton.isPressed) buttons |= 4;
 
@@ -191,23 +203,114 @@ public class VrUiCursor: NOVRBehaviour
         {
             _cursor.SetActive(true);
         }
-        
-        var mouse = _realMouse;
-        if (mouse == null) return;
 
-        var mousePos = mouse.position.ReadValue();
-        float cursorPitch = ProjectPitchAngle(mousePos.y);
-        float cursorYaw = ProjectYawAngle(mousePos.x);        
-        
-        Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
-        Quaternion referenceRotation = GetProjectionReferenceRotation();
-        Vector3 worldDirection = referenceRotation * localDirection;
+        Vector3 worldDirection;
+        if (_controllerModeActive)
+        {
+            worldDirection = _controllerAimDirection;
+        }
+        else
+        {
+            var mouse = _realMouse;
+            if (mouse == null) return;
+
+            var mousePos = mouse.position.ReadValue();
+            float cursorPitch = ProjectPitchAngle(mousePos.y);
+            float cursorYaw = ProjectYawAngle(mousePos.x);
+
+            Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
+            Quaternion referenceRotation = GetProjectionReferenceRotation();
+            worldDirection = referenceRotation * localDirection;
+        }
+
         Vector3 viewportSpace = camera.WorldToViewportPoint(camera.transform.position + worldDirection * DefaultProjectionDistance, Camera.MonoOrStereoscopicEye.Mono);
         Vector2 inScreenSpace = new Vector2(viewportSpace.x * Screen.width, viewportSpace.y * Screen.height);
         float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
         _cursor.transform.rotation = Quaternion.LookRotation(worldDirection, camera.transform.up);
+    }
+
+    /// <summary>
+    /// Drives the cursor from an XR motion controller ray when the configured
+    /// input source is a hand: the aim direction is the controller's forward,
+    /// intersected with the plane facing the camera at the default projection
+    /// distance so the cursor lands where the controller points. Falls back to
+    /// the mouse when the controller is not tracked.
+    /// </summary>
+    private void UpdateControllerInput()
+    {
+        var source = ModConfiguration.Instance.CursorInputSource.Value;
+        _controllerModeActive = false;
+
+        XRNode node;
+        switch (source)
+        {
+            case "Right Hand":
+                node = XRNode.RightHand;
+                break;
+            case "Left Hand":
+                node = XRNode.LeftHand;
+                break;
+            default:
+                return;
+        }
+
+        _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
+
+        if (_controllerDeviceValid && _controllerDevice.node != node)
+        {
+            _controllerDeviceValid = false;
+        }
+
+        if (!_controllerDeviceValid)
+        {
+            _controllerDevice = InputDevices.GetDeviceAtXRNode(node);
+            _controllerDeviceValid = _controllerDevice.isValid;
+            if (!_controllerDeviceValid)
+            {
+                return;
+            }
+        }
+
+        if (!_controllerDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out var controllerRotation))
+        {
+            return;
+        }
+
+        var camera = UiCamera;
+        var rayOrigin = camera != null ? camera.transform.position : Vector3.zero;
+        if (_controllerDevice.TryGetFeatureValue(CommonUsages.devicePosition, out var controllerPosition) &&
+            controllerPosition.sqrMagnitude > 0.0001f)
+        {
+            rayOrigin = controllerPosition;
+        }
+
+        var rawDirection = controllerRotation * Vector3.forward;
+        var aimDirection = rawDirection;
+
+        if (camera != null)
+        {
+            var planePoint = camera.transform.position + camera.transform.forward * DefaultProjectionDistance;
+            var planeNormal = camera.transform.forward;
+            var denominator = Vector3.Dot(rawDirection, planeNormal);
+            if (Mathf.Abs(denominator) > 0.05f)
+            {
+                var t = Vector3.Dot(planePoint - rayOrigin, planeNormal) / denominator;
+                if (t > 0f)
+                {
+                    var hitPoint = rayOrigin + rawDirection * t;
+                    aimDirection = (hitPoint - camera.transform.position).normalized;
+                }
+            }
+        }
+
+        _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
+        _controllerModeActive = true;
+
+        var triggerPressed = _controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out var trigger) && trigger > 0.5f;
+        _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
+        _controllerTriggerPressed = triggerPressed;
     }
 
     private Quaternion GetProjectionReferenceRotation()
@@ -322,16 +425,14 @@ public class VrUiCursor: NOVRBehaviour
                ExecuteEvents.GetEventHandler<IDragHandler>(gameObject) != null;
     }
 
-    private void UpdateCursorAnimation(Mouse realMouse)
+    private void UpdateCursorAnimation(bool isPressed, bool wasClicked)
     {
         if (_cursor == null || _cursorImage == null) return;
 
-        if (realMouse.leftButton.wasPressedThisFrame)
+        if (wasClicked)
         {
             _lastCursorClickTime = Time.unscaledTime;
         }
-
-        var isPressed = realMouse.leftButton.isPressed;
         var idlePulse = Mathf.Sin(Time.unscaledTime * CursorIdlePulseSpeed) * CursorIdlePulseScale;
         var clickProgress = Mathf.Clamp01((Time.unscaledTime - _lastCursorClickTime) / CursorClickPulseDuration);
         var clickPulse = clickProgress < 1f
