@@ -9,6 +9,7 @@ public class KeyboardKey
 {
     public enum KeyCode
     {
+        F1 = 0x70,
         F2 = 0x71,
         F3 = 0x72,
         F4 = 0x73,
