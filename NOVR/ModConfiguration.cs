@@ -17,6 +17,8 @@ public class ModConfiguration
     public readonly ConfigEntry<float> HudLineThickness;
     public readonly ConfigEntry<float> PitchLadderWidth;
     public readonly ConfigEntry<float> PitchLadderRange;
+    public readonly ConfigEntry<string> CursorInputSource;
+    public readonly ConfigEntry<float> CursorControllerSmoothing;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -89,6 +91,20 @@ public class ModConfiguration
             new ConfigDescription(
                 "Minimum half-angle in degrees of pitch lines always visible around dead ahead (the HUD center, i.e. the aircraft nose — not the view direction). Tilting your head up or down reveals additional pitch lines in that direction, up to 90 degrees; looking sideways adds none. Lines stay horizon-referenced, so the horizon line always points at the true horizon.",
                 new AcceptableValueRange<float>(5f, 90f)));
+
+        CursorInputSource = config.Bind(
+            "General",
+            "Cursor Input Source",
+            "Mouse",
+            "Controls the VR cursor: 'Mouse' uses the desktop mouse, 'Right Hand' or 'Left Hand' points it with an XR motion controller (trigger = click).");
+
+        CursorControllerSmoothing = config.Bind(
+            "General",
+            "Cursor Controller Smoothing",
+            0.3f,
+            new ConfigDescription(
+                "How quickly the cursor tracks the controller ray. Higher = snappier, lower = smoother.",
+                new AcceptableValueRange<float>(0.05f, 0.95f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
