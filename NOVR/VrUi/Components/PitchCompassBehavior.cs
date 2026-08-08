@@ -63,22 +63,32 @@ public class PitchCompassBehavior : MonoBehaviour
     }
 
     /// <summary>
-    /// Shows only the pitch bands within Pitch Ladder Range degrees of the
-    /// current view direction, so the ladder window follows the camera while
-    /// the bands themselves stay world/horizon-referenced (the horizon line
+    /// Shows the pitch bands in a window centered on dead ahead — the
+    /// aircraft nose / HUD center (hud, not hmd), not the current view
+    /// direction. The window is always at least Pitch Ladder Range degrees
+    /// each way, so pitch lines around center view are always visible, and
+    /// tilting the head up or down expands it vertically in that direction,
+    /// revealing additional pitch lines. Only the vertical component of the
+    /// head offset matters: looking sideways never shifts the window. The
+    /// bands themselves stay world/horizon-referenced (the horizon line
     /// always points at the true horizon).
     /// </summary>
     private void UpdateSliceVisibility()
     {
         var referenceTransform = APIBus.CockpitHudReference?.transform;
-        if (referenceTransform == null)
+        if (referenceTransform == null || _cockpitTransform == null)
         {
             return;
         }
 
-        var viewForward = referenceTransform.forward;
-        var range = Mathf.Clamp(ModConfiguration.Instance.PitchLadderRange.Value, 5f, 90f);
-        var threshold = Mathf.Cos(range * Mathf.Deg2Rad);
+        // Vertical angle of the aircraft nose: the pitch band shown at the
+        // HUD center. Bands are measured against this, so the window is
+        // always centered on dead ahead.
+        var deadAheadPitch = VerticalPitch(_cockpitTransform.forward);
+        var minRange = Mathf.Clamp(ModConfiguration.Instance.PitchLadderRange.Value, 5f, 90f);
+        var headTilt = VerticalPitch(referenceTransform.forward) - deadAheadPitch;
+        var upRange = Mathf.Clamp(Mathf.Max(minRange, headTilt), 0f, 90f);
+        var downRange = Mathf.Clamp(Mathf.Max(minRange, -headTilt), 0f, 90f);
 
         foreach (var slice in _slices)
         {
@@ -87,12 +97,24 @@ public class PitchCompassBehavior : MonoBehaviour
                 continue;
             }
 
-            var visible = Vector3.Dot(slice.forward, viewForward) >= threshold;
+            var slicePitch = VerticalPitch(slice.forward) - deadAheadPitch;
+            var visible = slicePitch >= -downRange && slicePitch <= upRange;
             if (slice.gameObject.activeSelf != visible)
             {
                 slice.gameObject.SetActive(visible);
             }
         }
+    }
+
+    /// <summary>
+    /// Signed vertical angle of a direction above the horizontal (world up)
+    /// plane, in degrees. This is yaw-independent: only the vertical
+    /// component of the direction counts, so looking sideways never changes
+    /// the pitch ladder window.
+    /// </summary>
+    private static float VerticalPitch(Vector3 direction)
+    {
+        return Mathf.Asin(Mathf.Clamp(direction.y, -1f, 1f)) * Mathf.Rad2Deg;
     }
     
 
