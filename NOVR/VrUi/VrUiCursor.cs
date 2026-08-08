@@ -5,6 +5,8 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
 using UnityEngine.UI;
 using UnityEngine.XR;
+using XRInputDevice = UnityEngine.XR.InputDevice;
+using XRCommonUsages = UnityEngine.XR.CommonUsages;
 
 namespace NOVR.VrUi;
 
@@ -69,7 +71,8 @@ public class VrUiCursor: NOVRBehaviour
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
 
-    private InputDevice _controllerDevice;
+    private XRInputDevice _controllerDevice;
+    private XRNode _controllerNode = XRNode.RightHand;
     private bool _controllerDeviceValid;
     private bool _controllerModeActive;
     private Vector3 _controllerAimDirection = Vector3.forward;
@@ -258,10 +261,12 @@ public class VrUiCursor: NOVRBehaviour
 
         _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
 
-        if (_controllerDeviceValid && _controllerDevice.node != node)
+        // Re-acquire the device whenever the configured hand changes.
+        if (_controllerDeviceValid && _controllerNode != node)
         {
             _controllerDeviceValid = false;
         }
+        _controllerNode = node;
 
         if (!_controllerDeviceValid)
         {
@@ -273,14 +278,14 @@ public class VrUiCursor: NOVRBehaviour
             }
         }
 
-        if (!_controllerDevice.TryGetFeatureValue(CommonUsages.deviceRotation, out var controllerRotation))
+        if (!_controllerDevice.TryGetFeatureValue(XRCommonUsages.deviceRotation, out var controllerRotation))
         {
             return;
         }
 
         var camera = UiCamera;
         var rayOrigin = camera != null ? camera.transform.position : Vector3.zero;
-        if (_controllerDevice.TryGetFeatureValue(CommonUsages.devicePosition, out var controllerPosition) &&
+        if (_controllerDevice.TryGetFeatureValue(XRCommonUsages.devicePosition, out var controllerPosition) &&
             controllerPosition.sqrMagnitude > 0.0001f)
         {
             rayOrigin = controllerPosition;
@@ -308,7 +313,7 @@ public class VrUiCursor: NOVRBehaviour
         _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
         _controllerModeActive = true;
 
-        var triggerPressed = _controllerDevice.TryGetFeatureValue(CommonUsages.trigger, out var trigger) && trigger > 0.5f;
+        var triggerPressed = _controllerDevice.TryGetFeatureValue(XRCommonUsages.trigger, out var trigger) && trigger > 0.5f;
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
     }
