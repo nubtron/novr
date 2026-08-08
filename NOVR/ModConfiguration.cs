@@ -22,6 +22,8 @@ public class ModConfiguration
     public readonly ConfigEntry<float> ColorGamma;
     public readonly ConfigEntry<KeyCode> ColorGammaDecreaseShortcut;
     public readonly ConfigEntry<KeyCode> ColorGammaIncreaseShortcut;
+    public readonly ConfigEntry<string> CursorInputSource;
+    public readonly ConfigEntry<float> CursorControllerSmoothing;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -124,6 +126,19 @@ public class ModConfiguration
             "Color Gamma Increase Shortcut",
             KeyCode.RightBracket,
             "Keyboard shortcut to lift the midtones by one step (0.05). Rebind if your keyboard layout has no bracket keys.");
+        CursorInputSource = config.Bind(
+            "General",
+            "Cursor Input Source",
+            "Mouse",
+            "Controls the VR cursor: 'Mouse' uses the desktop mouse, 'Right Hand' or 'Left Hand' points it with an XR motion controller (trigger = click).");
+
+        CursorControllerSmoothing = config.Bind(
+            "General",
+            "Cursor Controller Smoothing",
+            0.3f,
+            new ConfigDescription(
+                "How quickly the cursor tracks the controller ray. Higher = snappier, lower = smoother.",
+                new AcceptableValueRange<float>(0.05f, 0.95f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
