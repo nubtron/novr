@@ -24,6 +24,8 @@ public class ModConfiguration
     public readonly ConfigEntry<KeyCode> ColorGammaIncreaseShortcut;
     public readonly ConfigEntry<string> CursorInputSource;
     public readonly ConfigEntry<float> CursorControllerSmoothing;
+    public readonly ConfigEntry<bool> ShowMotionControllers;
+    public readonly ConfigEntry<bool> ShowControllerLaser;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -139,6 +141,18 @@ public class ModConfiguration
             new ConfigDescription(
                 "How quickly the cursor tracks the controller ray. Higher = snappier, lower = smoother.",
                 new AcceptableValueRange<float>(0.05f, 0.95f)));
+
+        ShowMotionControllers = config.Bind(
+            "General",
+            "Show Motion Controllers",
+            true,
+            "Show a simple controller model at each tracked hand in VR.");
+
+        ShowControllerLaser = config.Bind(
+            "General",
+            "Show Controller Laser",
+            true,
+            "Show a laser pointer from the controller to the cursor.");
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
