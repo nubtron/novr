@@ -22,6 +22,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> CursorControllerSmoothing;
     public readonly ConfigEntry<bool> ShowMotionControllers;
     public readonly ConfigEntry<bool> ShowControllerLaser;
+    public readonly ConfigEntry<float> ControllerIdleTimeout;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -119,6 +120,14 @@ public class ModConfiguration
             "Show Controller Laser",
             true,
             "Show a laser pointer from the controller to the cursor.");
+
+        ControllerIdleTimeout = config.Bind(
+            "General",
+            "Controller Idle Timeout",
+            4f,
+            new ConfigDescription(
+                "Hide the controller model after this many seconds without movement (e.g. when put down). 0 disables.",
+                new AcceptableValueRange<float>(0f, 60f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
