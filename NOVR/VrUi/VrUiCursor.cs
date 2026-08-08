@@ -79,6 +79,7 @@ public class VrUiCursor: NOVRBehaviour
     private bool _controllerTriggerPressed;
     private bool _controllerTriggerClicked;
     private float _controllerSmoothing = 0.3f;
+    private bool _controllerModeLogged;
     
     
     private int ScreenWidth => Screen.width;
@@ -314,39 +315,35 @@ public class VrUiCursor: NOVRBehaviour
 
         _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
 
-        if (!TryReadControllerPose(node, out var controllerPosition, out var controllerRotation, out var triggerValue))
+        if (!TryReadControllerPose(node, out var controllerPosition, out var controllerRotation, out var headRotation, out var triggerValue))
         {
+            if (_controllerModeLogged)
+            {
+                Debug.Log("[VrUiCursor] Controller not tracked this frame; falling back to mouse.");
+                _controllerModeLogged = false;
+            }
             return;
         }
 
-        var camera = UiCamera;
-        var rayOrigin = camera != null ? camera.transform.position : Vector3.zero;
-        if (controllerPosition.sqrMagnitude > 0.0001f)
-        {
-            rayOrigin = controllerPosition;
-        }
+        // Aim from the controller's direction RELATIVE TO THE HEADSET. This is
+        // independent of the tracking origin (device/stage) and keeps the
+        // cursor inside the same clamped pitch/yaw range the mouse uses, so it
+        // can never end up somewhere invisible.
+        var localForward = Quaternion.Inverse(headRotation) * (controllerRotation * Vector3.forward);
+        var pitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg, -MaxPitchDegrees, MaxPitchDegrees);
+        var yaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg, -MaxYawDegrees, MaxYawDegrees);
 
-        var rawDirection = controllerRotation * Vector3.forward;
-        var aimDirection = rawDirection;
-
-        if (camera != null)
-        {
-            var planePoint = camera.transform.position + camera.transform.forward * DefaultProjectionDistance;
-            var planeNormal = camera.transform.forward;
-            var denominator = Vector3.Dot(rawDirection, planeNormal);
-            if (Mathf.Abs(denominator) > 0.05f)
-            {
-                var t = Vector3.Dot(planePoint - rayOrigin, planeNormal) / denominator;
-                if (t > 0f)
-                {
-                    var hitPoint = rayOrigin + rawDirection * t;
-                    aimDirection = (hitPoint - camera.transform.position).normalized;
-                }
-            }
-        }
+        var localDirection = Quaternion.Euler(-pitch, yaw, 0f) * Vector3.forward;
+        var aimDirection = GetProjectionReferenceRotation() * localDirection;
 
         _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
         _controllerModeActive = true;
+
+        if (!_controllerModeLogged)
+        {
+            Debug.Log($"[VrUiCursor] Controller cursor active: head={headRotation.eulerAngles} controller={controllerRotation.eulerAngles} relPitch={pitch:F1} relYaw={yaw:F1} trigger={triggerValue:F2}");
+            _controllerModeLogged = true;
+        }
 
         var triggerPressed = triggerValue > 0.5f;
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
@@ -356,12 +353,15 @@ public class VrUiCursor: NOVRBehaviour
     /// <summary>
     /// Reads the controller pose, preferring the Input System XR controller
     /// (how Unity OpenXR exposes interaction-profile devices) and falling back
-    /// to the legacy UnityEngine.XR device API.
+    /// to the legacy UnityEngine.XR device API. Also returns the headset
+    /// rotation from the same API so the aim can be expressed relative to the
+    /// head.
     /// </summary>
-    private static bool TryReadControllerPose(XRNode node, out Vector3 position, out Quaternion rotation, out float trigger)
+    private static bool TryReadControllerPose(XRNode node, out Vector3 position, out Quaternion rotation, out Quaternion headRotation, out float trigger)
     {
         position = Vector3.zero;
         rotation = Quaternion.identity;
+        headRotation = Quaternion.identity;
         trigger = 0f;
 
         var inputSystemController = node == XRNode.RightHand ? XRController.rightHand : XRController.leftHand;
@@ -381,20 +381,36 @@ public class VrUiCursor: NOVRBehaviour
                     trigger = triggerControl.ReadValue();
                 }
 
-                return true;
+                return TryReadHeadRotation(out headRotation);
             }
         }
 
         var legacy = InputDevices.GetDeviceAtXRNode(node);
-        if (legacy.isValid && legacy.TryGetFeatureValue(XRCommonUsages.deviceRotation, out var legacyRotation))
+        if (legacy.isValid)
         {
-            legacy.TryGetFeatureValue(XRCommonUsages.devicePosition, out var legacyPosition);
-            legacy.TryGetFeatureValue(XRCommonUsages.trigger, out trigger);
-            position = legacyPosition;
-            rotation = legacyRotation;
+            var isTracked = !legacy.TryGetFeatureValue(XRCommonUsages.isTracked, out var trackedFlag) || trackedFlag;
+            if (isTracked && legacy.TryGetFeatureValue(XRCommonUsages.deviceRotation, out var legacyRotation))
+            {
+                legacy.TryGetFeatureValue(XRCommonUsages.devicePosition, out var legacyPosition);
+                legacy.TryGetFeatureValue(XRCommonUsages.trigger, out trigger);
+                position = legacyPosition;
+                rotation = legacyRotation;
+                return TryReadHeadRotation(out headRotation);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryReadHeadRotation(out Quaternion headRotation)
+    {
+        var headDevice = InputDevices.GetDeviceAtXRNode(XRNode.CenterEye);
+        if (headDevice.isValid && headDevice.TryGetFeatureValue(XRCommonUsages.deviceRotation, out headRotation))
+        {
             return true;
         }
 
+        headRotation = Quaternion.identity;
         return false;
     }
 
