@@ -46,6 +46,7 @@ public class VrUiCursor: NOVRBehaviour
     private const float MaxYawDegrees = 65f;
     private const float MaxPitchDegrees = 45f;
     private const float DefaultProjectionDistance = 5;
+    private const float CursorMinDistanceMeters = 1.0f;
     private const float CursorCanvasScale = 0.001f;
     private const int CursorTextureSize = 64;
     private const float CursorIdlePulseScale = 0.035f;
@@ -258,13 +259,21 @@ public class VrUiCursor: NOVRBehaviour
     private float GetDistanceUnderCursor(Vector2 screenPos)
     {
         _cursorOverInteractive = false;
+        float distance;
         if (TryGetUiDistanceUnderCursor(screenPos, out var uiDistance, out var overInteractive))
         {
             _cursorOverInteractive = overInteractive;
-            return uiDistance;
+            distance = uiDistance;
+        }
+        else
+        {
+            distance = DefaultProjectionDistance;
         }
 
-        return DefaultProjectionDistance;
+        // Keep the cursor at least CursorMinDistanceMeters away from the
+        // camera: a UI element that nearly touches the lens would otherwise
+        // make the cursor gigantic on screen.
+        return Mathf.Max(distance, CursorMinDistanceMeters);
     }
 
     private bool TryGetUiDistanceUnderCursor(Vector2 screenPos, out float distance, out bool overInteractive)
