@@ -11,6 +11,7 @@ public class ModConfiguration
 
     public readonly ConfigFile Config;
     public readonly ConfigEntry<float> TargetDesignatorOvershoot;
+    public readonly ConfigEntry<float> CursorSizeMultiplier;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -29,6 +30,14 @@ public class ModConfiguration
             "Target Designator Overshoot",
             1.2f,
             "How much the target designator should multiply rotation to make for easier high off boresight target designation. Set to 1.0 to disable");
+
+        CursorSizeMultiplier = config.Bind(
+            "General",
+            "Cursor Size Multiplier",
+            2.0f,
+            new ConfigDescription(
+                "Visual size of the VR cursor. Values from 1.0 to 3.0 are supported.",
+                new AcceptableValueRange<float>(1.0f, 3.0f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",

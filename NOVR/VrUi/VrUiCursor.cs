@@ -48,8 +48,6 @@ public class VrUiCursor: NOVRBehaviour
     private const float DefaultProjectionDistance = 5;
     private const float CursorCanvasScale = 0.001f;
     private const int CursorTextureSize = 64;
-    private const float CursorRingRadius = 12f;
-    private const float CursorRingThickness = 4f;
     private const float CursorIdlePulseScale = 0.035f;
     private const float CursorIdlePulseSpeed = 5.5f;
     private const float CursorHoverScale = 1.18f;
@@ -57,9 +55,6 @@ public class VrUiCursor: NOVRBehaviour
     private const float CursorClickPulseScale = 0.22f;
     private const float CursorClickPulseDuration = 0.18f;
     private const float CursorAnimationLerpSpeed = 24f;
-    private static readonly Color CursorNormalColor = new Color32(100, 200, 100, 255);
-    private static readonly Color CursorHoverColor = new Color32(155, 255, 175, 255);
-    private static readonly Color CursorPressedColor = new Color32(255, 224, 92, 255);
     private GameObject? _cursor;
     private RectTransform? _cursorRectTransform;
     private Canvas? _cursorCanvas;
@@ -246,11 +241,12 @@ public class VrUiCursor: NOVRBehaviour
         _cursorCanvas.pixelPerfect = true;
 
         _cursorRectTransform = _cursor.GetComponent<RectTransform>();
-        _cursorRectTransform.sizeDelta = new Vector2(CursorTextureSize, CursorTextureSize);
+        var sizeMultiplier = Mathf.Clamp(ModConfiguration.Instance.CursorSizeMultiplier.Value, 1.0f, 3.0f);
+        _cursorRectTransform.sizeDelta = Vector2.one * (CursorTextureSize * sizeMultiplier);
         _cursorImage = _cursor.AddComponent<RawImage>();
         _cursorImage.raycastTarget = false;
         _cursorImage.texture = _texture;
-        _cursorImage.color = CursorNormalColor;
+        _cursorImage.color = Color.white;
         LayerHelper.SetLayerRecursive(_cursor.transform, LayerHelper.GetVrUiLayer());
         
         
@@ -355,17 +351,7 @@ public class VrUiCursor: NOVRBehaviour
         var targetScale = Vector3.one * (CursorCanvasScale * targetVisualScale);
         _cursor.transform.localScale = Vector3.Lerp(_cursor.transform.localScale, targetScale, Time.unscaledDeltaTime * CursorAnimationLerpSpeed);
 
-        var targetColor = CursorNormalColor;
-        if (_cursorOverInteractive)
-        {
-            targetColor = CursorHoverColor;
-        }
-        if (isPressed)
-        {
-            targetColor = CursorPressedColor;
-        }
-
-        _cursorImage.color = Color.Lerp(_cursorImage.color, targetColor, Time.unscaledDeltaTime * CursorAnimationLerpSpeed);
+        _cursorImage.color = Color.white;
     }
 
 
@@ -393,17 +379,35 @@ public class VrUiCursor: NOVRBehaviour
 
         var colors = new Color32[CursorTextureSize * CursorTextureSize];
         var center = new Vector2((CursorTextureSize - 1) * 0.5f, (CursorTextureSize - 1) * 0.5f);
-        var innerRadius = CursorRingRadius - CursorRingThickness * 0.5f;
-        var outerRadius = CursorRingRadius + CursorRingThickness * 0.5f;
         var transparent = new Color32(0, 0, 0, 0);
+        var outline = new Color32(0, 0, 0, 255);
+        var highlight = new Color32(0, 255, 255, 255);
 
         for (var y = 0; y < CursorTextureSize; y++)
         {
             for (var x = 0; x < CursorTextureSize; x++)
             {
-                var distanceFromCenter = Vector2.Distance(new Vector2(x, y), center);
-                var isRing = distanceFromCenter >= innerRadius && distanceFromCenter <= outerRadius;
-                colors[y * CursorTextureSize + x] = isRing ? Color.white : transparent;
+                var distance = Vector2.Distance(new Vector2(x, y), center);
+                var color = transparent;
+
+                if (distance >= 10.5f && distance <= 19.5f)
+                {
+                    color = outline;
+                }
+                if (distance >= 13.0f && distance <= 17.0f)
+                {
+                    color = highlight;
+                }
+                if (distance <= 4.0f)
+                {
+                    color = outline;
+                }
+                if (distance <= 2.0f)
+                {
+                    color = highlight;
+                }
+
+                colors[y * CursorTextureSize + x] = color;
             }
         }
 
