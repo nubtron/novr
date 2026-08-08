@@ -16,6 +16,8 @@ public class ModConfiguration
     public readonly ConfigEntry<float> HudLineThickness;
     public readonly ConfigEntry<float> PitchLadderWidth;
     public readonly ConfigEntry<float> PitchLadderRange;
+    public readonly ConfigEntry<float> ColorContrast;
+    public readonly ConfigEntry<float> ColorSaturation;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -71,6 +73,22 @@ public class ModConfiguration
             new ConfigDescription(
                 "Half-angle in degrees of the pitch ladder window around the current view direction: the ladder follows where you look (up/down and sideways) while each line stays horizon-referenced, so the horizon line always points at the true horizon. 90 shows the full ladder.",
                 new AcceptableValueRange<float>(5f, 90f)));
+
+        ColorContrast = config.Bind(
+            "Display",
+            "Color Contrast",
+            15f,
+            new ConfigDescription(
+                "Contrast boost applied to the final image to counteract washed-out colors (e.g. a headset streamer's gamma/color mapping). 0 disables.",
+                new AcceptableValueRange<float>(-100f, 100f)));
+
+        ColorSaturation = config.Bind(
+            "Display",
+            "Color Saturation",
+            10f,
+            new ConfigDescription(
+                "Saturation boost applied to the final image. 0 disables.",
+                new AcceptableValueRange<float>(-100f, 100f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
