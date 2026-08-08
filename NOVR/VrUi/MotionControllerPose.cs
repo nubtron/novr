@@ -15,6 +15,17 @@ namespace NOVR.VrUi;
 /// </summary>
 public static class MotionControllerPose
 {
+    /// <summary>
+    /// Unity XR exposes the controller's GRIP pose as deviceRotation; the
+    /// grip's +Z is not the pointing direction. This constant maps the grip
+    /// frame to the AIM frame (whose +Z points where the controller points),
+    /// derived empirically from a Quest Touch held in a natural aiming pose
+    /// (grip +Z read ~63 deg up of the aim).
+    /// </summary>
+    private static readonly Quaternion GripToAim = Quaternion.FromToRotation(
+        Vector3.forward,
+        new Vector3(0.225f, -0.864f, 0.45f).normalized);
+
     public static bool TryRead(XRNode node, out Vector3 position, out Quaternion rotation, out Quaternion headRotation, out Vector3 headPosition, out float trigger)
     {
         position = Vector3.zero;
@@ -33,7 +44,7 @@ public static class MotionControllerPose
             if (tracked && positionControl != null && rotationControl != null)
             {
                 position = positionControl.ReadValue();
-                rotation = rotationControl.ReadValue();
+                rotation = rotationControl.ReadValue() * GripToAim;
                 var triggerControl = inputSystemController.TryGetChildControl<AxisControl>("trigger");
                 if (triggerControl != null)
                 {
@@ -53,7 +64,7 @@ public static class MotionControllerPose
                 legacy.TryGetFeatureValue(XRCommonUsages.devicePosition, out var legacyPosition);
                 legacy.TryGetFeatureValue(XRCommonUsages.trigger, out trigger);
                 position = legacyPosition;
-                rotation = legacyRotation;
+                rotation = legacyRotation * GripToAim;
                 return TryReadHeadPose(out headRotation, out headPosition);
             }
         }
