@@ -353,6 +353,7 @@ public class NativeVrUiRoot : NOVRBehaviour
         NOVRHeadsetData.CalibrateRotation();
         _recenterPending = false;
         UpdateRecenterButtonText();
+        UpdateRecenterWidgetPlacement();
         Debug.Log("[NOVR] Native VR UI recentered.");
     }
 
@@ -438,10 +439,24 @@ public class NativeVrUiRoot : NOVRBehaviour
     {
         if (_recenterWidgetRoot == null) return;
 
+        // Anchor the widget in world space instead of parenting it to the
+        // head: once placed it stays put, so the head-gaze cursor (always at
+        // the center of the view) can be aimed at it. Re-placed on recenter.
+        if (_recenterWidgetRoot.transform.parent != null)
+        {
+            _recenterWidgetRoot.transform.SetParent(null, true);
+        }
+
         var reference = APIBus.CockpitHudReference.transform;
-        _recenterWidgetRoot.transform.SetParent(reference, false);
-        _recenterWidgetRoot.transform.localPosition = new Vector3(0f, RecenterWidgetVerticalOffsetMeters, RecenterWidgetDistanceMeters);
-        _recenterWidgetRoot.transform.localRotation = Quaternion.identity;
+        var forward = Vector3.ProjectOnPlane(reference.forward, Vector3.up);
+        if (forward.sqrMagnitude < 0.0001f)
+        {
+            forward = Vector3.forward;
+        }
+
+        _recenterWidgetRoot.transform.position = reference.position +
+            reference.rotation * new Vector3(0f, RecenterWidgetVerticalOffsetMeters, RecenterWidgetDistanceMeters);
+        _recenterWidgetRoot.transform.rotation = Quaternion.LookRotation(forward.normalized, Vector3.up);
         _recenterWidgetRoot.transform.localScale = Vector3.one * RecenterWidgetCanvasScale;
 
         if (_recenterWidgetCanvas != null)
@@ -465,16 +480,21 @@ public class NativeVrUiRoot : NOVRBehaviour
 
         if (!visible) return;
 
-        UpdateRecenterWidgetPlacement();
         UpdateRecenterButtonText();
 
-        if (modeChanged && _recenterWidgetButton != null)
-        {
-            var color = mode == UtilityWidgetMode.EnableNativeUi
-                ? new Color(0.12f, 0.34f, 0.20f, 0.96f)
-                : new Color(0.18f, 0.23f, 0.26f, 0.96f);
-            NativeButtonFeedback.SetNormalColor(_recenterWidgetButton, color);
-        }
+        if (!modeChanged) return;
+
+        // Place the widget once, in world space, when it first becomes visible
+        // (or its mode changes). A head-locked widget can never be hit by the
+        // head-gaze cursor, which sits at the center of the view — the user
+        // would have to chase it with their head. Fixed in space, the user can
+        // simply look at it to aim the gaze cursor at it.
+        UpdateRecenterWidgetPlacement();
+
+        var color = mode == UtilityWidgetMode.EnableNativeUi
+            ? new Color(0.12f, 0.34f, 0.20f, 0.96f)
+            : new Color(0.18f, 0.23f, 0.26f, 0.96f);
+        NativeButtonFeedback.SetNormalColor(_recenterWidgetButton, color);
     }
 
     private void OnUtilityWidgetClicked()
