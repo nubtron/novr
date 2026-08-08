@@ -12,6 +12,13 @@ namespace NOVR.VrUi;
 /// </summary>
 public class MotionControllerVisual : MonoBehaviour
 {
+    private struct HandState
+    {
+        public float IdleTime;
+        public Vector3 LastPosition;
+        public Quaternion LastRotation;
+    }
+
     private GameObject _rightModel;
     private GameObject _leftModel;
     private Transform _rightTip;
@@ -20,6 +27,8 @@ public class MotionControllerVisual : MonoBehaviour
     private LineRenderer _leftLaser;
     private Transform _rightReticle;
     private Transform _leftReticle;
+    private HandState _rightState;
+    private HandState _leftState;
 
     private void Start()
     {
@@ -40,8 +49,8 @@ public class MotionControllerVisual : MonoBehaviour
 
         // The laser follows only the hand that drives the cursor; the other
         // hand just shows the model.
-        UpdateHand(XRNode.RightHand, _rightModel, _rightTip, _rightLaser, _rightReticle, showModels, showLaser && cursorHand == XRNode.RightHand);
-        UpdateHand(XRNode.LeftHand, _leftModel, _leftTip, _leftLaser, _leftReticle, showModels, showLaser && cursorHand == XRNode.LeftHand);
+        UpdateHand(XRNode.RightHand, _rightModel, _rightTip, _rightLaser, _rightReticle, showModels, showLaser && cursorHand == XRNode.RightHand, ref _rightState);
+        UpdateHand(XRNode.LeftHand, _leftModel, _leftTip, _leftLaser, _leftReticle, showModels, showLaser && cursorHand == XRNode.LeftHand, ref _leftState);
     }
 
     private static void UpdateHand(
@@ -51,7 +60,8 @@ public class MotionControllerVisual : MonoBehaviour
         LineRenderer laser,
         Transform reticle,
         bool showModels,
-        bool showLaser)
+        bool showLaser,
+        ref HandState state)
     {
         if (model == null)
         {
@@ -70,6 +80,24 @@ public class MotionControllerVisual : MonoBehaviour
         {
             model.SetActive(false);
             return;
+        }
+
+        // Hide the model after a configurable idle period (controller put
+        // down), reappearing as soon as it moves again.
+        var idleTimeout = ModConfiguration.Instance.ControllerIdleTimeout.Value;
+        if (idleTimeout > 0f)
+        {
+            var moved = Vector3.Distance(position, state.LastPosition) > 0.02f ||
+                        Quaternion.Angle(state.LastRotation, rotation) > 3f;
+            state.IdleTime = moved ? 0f : state.IdleTime + Time.unscaledDeltaTime;
+            state.LastPosition = position;
+            state.LastRotation = rotation;
+
+            if (state.IdleTime > idleTimeout)
+            {
+                model.SetActive(false);
+                return;
+            }
         }
 
         model.SetActive(showModels);
@@ -95,6 +123,21 @@ public class MotionControllerVisual : MonoBehaviour
             Vector3 end = VrUiCursor.Instance != null && VrUiCursor.Instance.IsActive
                 ? VrUiCursor.Instance.CursorPosition
                 : tip.position + model.transform.forward * 5f;
+
+            // Clamp the laser to the tactical map surface so it doesn't pass
+            // through the map to whatever is behind it.
+            var dynamicMap = SceneSingleton<global::DynamicMap>.i;
+            if (dynamicMap != null && dynamicMap.mapImage != null)
+            {
+                var mapTransform = dynamicMap.mapImage.transform;
+                var plane = new Plane(mapTransform.forward, mapTransform.position);
+                var ray = new Ray(start, (end - start).normalized);
+                var maxDistance = (end - start).magnitude;
+                if (plane.Raycast(ray, out var hitDistance) && hitDistance > 0f && hitDistance < maxDistance)
+                {
+                    end = ray.GetPoint(hitDistance);
+                }
+            }
 
             laser.SetPosition(0, start);
             laser.SetPosition(1, end);
