@@ -23,17 +23,25 @@ public class MotionControllerVisual : MonoBehaviour
 
     private void Start()
     {
-        BuildModel(XRNode.RightHand, out _rightModel, out _rightTip, out _rightLaser, out _rightReticle);
-        BuildModel(XRNode.LeftHand, out _leftModel, out _leftTip, out _leftLaser, out _leftReticle);
+        _rightModel = BuildModel(XRNode.RightHand, out _rightTip, out _rightLaser, out _rightReticle);
+        _leftModel = BuildModel(XRNode.LeftHand, out _leftTip, out _leftLaser, out _leftReticle);
     }
 
     private void Update()
     {
         var showModels = ModConfiguration.Instance.ShowMotionControllers.Value;
         var showLaser = ModConfiguration.Instance.ShowControllerLaser.Value;
+        var cursorHand = ModConfiguration.Instance.CursorInputSource.Value switch
+        {
+            "Right Hand" => XRNode.RightHand,
+            "Left Hand" => XRNode.LeftHand,
+            _ => (XRNode?)null
+        };
 
-        UpdateHand(XRNode.RightHand, _rightModel, _rightTip, _rightLaser, _rightReticle, showModels, showLaser);
-        UpdateHand(XRNode.LeftHand, _leftModel, _leftTip, _leftLaser, _leftReticle, showModels, showLaser);
+        // The laser follows only the hand that drives the cursor; the other
+        // hand just shows the model.
+        UpdateHand(XRNode.RightHand, _rightModel, _rightTip, _rightLaser, _rightReticle, showModels, showLaser && cursorHand == XRNode.RightHand);
+        UpdateHand(XRNode.LeftHand, _leftModel, _leftTip, _leftLaser, _leftReticle, showModels, showLaser && cursorHand == XRNode.LeftHand);
     }
 
     private static void UpdateHand(
@@ -103,20 +111,18 @@ public class MotionControllerVisual : MonoBehaviour
         }
     }
 
-    private static void BuildModel(XRNode node, out GameObject root, out Transform tip, out LineRenderer laser, out Transform reticle)
+    private GameObject BuildModel(XRNode node, out Transform tip, out LineRenderer laser, out Transform reticle)
     {
         var handName = node == XRNode.RightHand ? "Right" : "Left";
-        root = new GameObject($"{handName}ControllerVisual");
+        var root = new GameObject($"{handName}ControllerVisual");
+        // Parent to the persistent NOVR root so the model survives scene loads.
+        root.transform.SetParent(transform, false);
         root.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
 
-        // The grip primitive's own default material is always valid; derive
-        // our colored material from it (Shader.Find can return null here
-        // because the game strips unused shaders).
-        var grip = CreatePart(root.transform, "Grip", PrimitiveType.Capsule, null);
-        var material = CreateMaterial(grip.GetComponent<Renderer>());
-        grip.GetComponent<Renderer>().sharedMaterial = material;
+        var material = CreateMaterial();
 
         // Grip: a capsule along the pointing direction.
+        var grip = CreatePart(root.transform, "Grip", PrimitiveType.Capsule, material);
         grip.localScale = new Vector3(0.04f, 0.055f, 0.07f);
         grip.localPosition = new Vector3(0f, -0.025f, -0.015f);
         grip.localRotation = Quaternion.Euler(90f, 0f, 0f);
@@ -149,31 +155,37 @@ public class MotionControllerVisual : MonoBehaviour
 
         LayerHelper.SetLayerRecursive(root.transform, LayerHelper.GetVrUiLayer());
         root.SetActive(false);
+        return root;
     }
 
-    private static Material CreateMaterial(Renderer templateRenderer)
+    private static Material CreateMaterial()
     {
+        // The game strips unused built-in shaders (Unlit/Color and Standard
+        // are gone), so prefer shaders that exist in the build.
         Material material = null;
-        if (templateRenderer != null && templateRenderer.sharedMaterial != null)
+        foreach (var shaderName in new[]
         {
-            material = new Material(templateRenderer.sharedMaterial);
-        }
-
-        if (material == null)
+            "Unlit/AdditiveTextShader",
+            "Universal Render Pipeline/Simple Lit",
+            "Universal Render Pipeline/Lit",
+            "Sprites/Default"
+        })
         {
-            var shader = Shader.Find("Unlit/Color") ?? Shader.Find("Standard") ?? Shader.Find("Sprites/Default");
+            var shader = Shader.Find(shaderName);
             if (shader != null)
             {
                 material = new Material(shader);
+                break;
             }
         }
 
         if (material == null)
         {
-            // Last resort: the built-in default material (always present).
+            // Last resort: the primitive default material (may render
+            // magenta if its built-in shader is stripped).
             var dummy = GameObject.CreatePrimitive(PrimitiveType.Cube);
             material = new Material(dummy.GetComponent<Renderer>().sharedMaterial);
-            Object.Destroy(dummy);
+            Destroy(dummy);
         }
 
         material.color = new Color(0.2f, 0.85f, 0.95f, 1f);
