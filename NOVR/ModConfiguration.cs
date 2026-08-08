@@ -1,6 +1,7 @@
 ﻿using System.ComponentModel;
 using BepInEx.Configuration;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace NOVR;
 
@@ -24,6 +25,8 @@ public class ModConfiguration
     public readonly ConfigEntry<KeyCode> ColorGammaIncreaseShortcut;
     public readonly ConfigEntry<string> CursorInputSource;
     public readonly ConfigEntry<bool> HeadGazeCursor;
+    public readonly ConfigEntry<float> HeadGazeMultiplier;
+    public readonly ConfigEntry<Key> HeadGazeClickKey;
     public readonly ConfigEntry<float> CursorControllerSmoothing;
     public readonly ConfigEntry<bool> ShowMotionControllers;
     public readonly ConfigEntry<bool> ShowControllerLaser;
@@ -141,6 +144,20 @@ public class ModConfiguration
             "Head Gaze Cursor",
             true,
             "Keep the VR cursor centered in your view, following where your head looks; the controller trigger clicks. While enabled, the mouse and motion controller cursor modes are disabled.");
+
+        HeadGazeMultiplier = config.Bind(
+            "General",
+            "Head Gaze Multiplier",
+            1.5f,
+            new ConfigDescription(
+                "How much the head-gaze cursor moves relative to your head turn. 1.0 keeps the cursor at the exact center of your view; higher values amplify head movement so you reach the edges of menus with less neck craning.",
+                new AcceptableValueRange<float>(0.5f, 3.0f)));
+
+        HeadGazeClickKey = config.Bind(
+            "General",
+            "Head Gaze Click Key",
+            Key.LeftAlt,
+            "Keyboard key that clicks while held in head-gaze mode (the controller trigger and the game's Fire action also click). Useful when the headset's controllers are not tracked.");
 
         CursorControllerSmoothing = config.Bind(
             "General",
