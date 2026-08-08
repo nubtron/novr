@@ -18,6 +18,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> PitchLadderWidth;
     public readonly ConfigEntry<float> PitchLadderRange;
     public readonly ConfigEntry<string> CursorInputSource;
+    public readonly ConfigEntry<bool> HeadGazeCursor;
     public readonly ConfigEntry<float> CursorControllerSmoothing;
     public readonly ConfigEntry<bool> ShowMotionControllers;
     public readonly ConfigEntry<bool> ShowControllerLaser;
@@ -99,7 +100,13 @@ public class ModConfiguration
             "General",
             "Cursor Input Source",
             "Mouse",
-            "Controls the VR cursor: 'Mouse' uses the desktop mouse, 'Right Hand' or 'Left Hand' points it with an XR motion controller (trigger = click).");
+            "Controls the VR cursor: 'Mouse' uses the desktop mouse, 'Right Hand' or 'Left Hand' points it with an XR motion controller (trigger = click). Ignored while Head Gaze Cursor is enabled.");
+
+        HeadGazeCursor = config.Bind(
+            "General",
+            "Head Gaze Cursor",
+            true,
+            "Keep the VR cursor centered in your view, following where your head looks; the controller trigger clicks. While enabled, the mouse and motion controller cursor modes are disabled.");
 
         CursorControllerSmoothing = config.Bind(
             "General",
