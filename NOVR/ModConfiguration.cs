@@ -17,6 +17,8 @@ public class ModConfiguration
     public readonly ConfigEntry<float> HudLineThickness;
     public readonly ConfigEntry<float> PitchLadderWidth;
     public readonly ConfigEntry<float> PitchLadderRange;
+    public readonly ConfigEntry<float> ColorContrast;
+    public readonly ConfigEntry<float> ColorSaturation;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -80,6 +82,22 @@ public class ModConfiguration
             new ConfigDescription(
                 "Minimum half-angle in degrees of pitch lines always visible around dead ahead (the HUD center, i.e. the aircraft nose — not the view direction). Tilting your head up or down reveals additional pitch lines in that direction, up to 90 degrees; looking sideways adds none. Lines stay horizon-referenced, so the horizon line always points at the true horizon.",
                 new AcceptableValueRange<float>(5f, 90f)));
+
+        ColorContrast = config.Bind(
+            "Display",
+            "Color Contrast",
+            15f,
+            new ConfigDescription(
+                "Contrast boost applied to the final image to counteract washed-out colors (e.g. a headset streamer's gamma/color mapping). 0 disables.",
+                new AcceptableValueRange<float>(-100f, 100f)));
+
+        ColorSaturation = config.Bind(
+            "Display",
+            "Color Saturation",
+            10f,
+            new ConfigDescription(
+                "Saturation boost applied to the final image. 0 disables.",
+                new AcceptableValueRange<float>(-100f, 100f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
