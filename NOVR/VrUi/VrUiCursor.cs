@@ -312,7 +312,7 @@ public class VrUiCursor: NOVRBehaviour
 
         _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
 
-        if (!MotionControllerPose.TryRead(node, out var controllerPosition, out var controllerRotation, out var headRotation, out _, out var triggerValue))
+        if (!MotionControllerPose.TryRead(node, out var controllerPosition, out var controllerRotation, out _, out _, out var triggerValue))
         {
             if (_controllerModeLogged)
             {
@@ -322,23 +322,25 @@ public class VrUiCursor: NOVRBehaviour
             return;
         }
 
-        // Aim from the controller's direction RELATIVE TO THE HEADSET. This is
-        // independent of the tracking origin (device/stage) and keeps the
-        // cursor inside the same clamped pitch/yaw range the mouse uses, so it
-        // can never end up somewhere invisible.
-        var localForward = Quaternion.Inverse(headRotation) * (controllerRotation * Vector3.forward);
+        // Aim from the controller's direction relative to the SAME projection
+        // reference the mouse uses (the native menu anchor, or world when no
+        // override is set). The reference is fixed, so head movement does not
+        // move the cursor — it tracks the controller only. Clamping to the
+        // mouse's pitch/yaw bounds keeps the cursor inside the HUD.
+        var referenceRotation = GetProjectionReferenceRotation();
+        var localForward = Quaternion.Inverse(referenceRotation) * (controllerRotation * Vector3.forward);
         var pitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg, -MaxPitchDegrees, MaxPitchDegrees);
         var yaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg, -MaxYawDegrees, MaxYawDegrees);
 
         var localDirection = Quaternion.Euler(-pitch, yaw, 0f) * Vector3.forward;
-        var aimDirection = GetProjectionReferenceRotation() * localDirection;
+        var aimDirection = referenceRotation * localDirection;
 
         _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
         _controllerModeActive = true;
 
         if (!_controllerModeLogged)
         {
-            Debug.Log($"[VrUiCursor] Controller cursor active: head={headRotation.eulerAngles} controller={controllerRotation.eulerAngles} relPitch={pitch:F1} relYaw={yaw:F1} trigger={triggerValue:F2}");
+            Debug.Log($"[VrUiCursor] Controller cursor active: controller={controllerRotation.eulerAngles} relPitch={pitch:F1} relYaw={yaw:F1} trigger={triggerValue:F2}");
             _controllerModeLogged = true;
         }
 
