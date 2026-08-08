@@ -348,6 +348,25 @@ public class VrUiCursor: NOVRBehaviour
             return uiDistance;
         }
 
+        // No interactive UI under the cursor: snap to the tactical map
+        // surface when hovering it, so the cursor sits on the map instead of
+        // floating at the default distance behind it.
+        var dynamicMap = SceneSingleton<global::DynamicMap>.i;
+        var camera = UiCamera;
+        if (dynamicMap != null && dynamicMap.mapImage != null && camera != null)
+        {
+            var mapRect = dynamicMap.mapImage.GetComponent<RectTransform>();
+            if (mapRect != null && RectTransformUtility.RectangleContainsScreenPoint(mapRect, screenPos, camera))
+            {
+                var ray = camera.ScreenPointToRay(screenPos);
+                var plane = new Plane(dynamicMap.mapImage.transform.forward, dynamicMap.mapImage.transform.position);
+                if (plane.Raycast(ray, out var mapDistance) && mapDistance > 0f)
+                {
+                    return mapDistance;
+                }
+            }
+        }
+
         return DefaultProjectionDistance;
     }
 
