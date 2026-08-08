@@ -12,6 +12,11 @@ public class ModConfiguration
     public readonly ConfigFile Config;
     public readonly ConfigEntry<float> TargetDesignatorOvershoot;
     public readonly ConfigEntry<float> CursorSizeMultiplier;
+    public readonly ConfigEntry<float> VrHudScale;
+    public readonly ConfigEntry<float> HudOpacity;
+    public readonly ConfigEntry<float> HudLineThickness;
+    public readonly ConfigEntry<float> PitchLadderWidth;
+    public readonly ConfigEntry<float> PitchLadderRange;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -38,6 +43,46 @@ public class ModConfiguration
             new ConfigDescription(
                 "Visual size of the VR cursor. Values from 1.0 to 3.0 are supported.",
                 new AcceptableValueRange<float>(1.0f, 3.0f)));
+
+        VrHudScale = config.Bind(
+            "General",
+            "VR HUD Scale",
+            0.6f,
+            new ConfigDescription(
+                "Scale of the VR flight HUD, including the head-locked HMD and cockpit HUD centers. Values from 0.25 to 1.5 are supported.",
+                new AcceptableValueRange<float>(0.25f, 1.5f)));
+
+        HudOpacity = config.Bind(
+            "General",
+            "HUD Opacity",
+            1.0f,
+            new ConfigDescription(
+                "How opaque the VR HUD is. 1.0 renders HUD elements as solid, alpha-blended lines instead of the game's additive glow, so they keep their own color and stay readable over bright sky/terrain (additive blending makes white lines saturate to white over bright backgrounds). Lower values make the HUD progressively more translucent. Values from 0.25 to 1.0 are supported.",
+                new AcceptableValueRange<float>(0.25f, 1.0f)));
+
+        HudLineThickness = config.Bind(
+            "General",
+            "HUD Line Thickness",
+            1.5f,
+            new ConfigDescription(
+                "Thickness multiplier for VR HUD lines: the pitch ladder (dashes, tick marks, labels) and thin line elements of the main HUD such as borders, brackets, tapes, and the waterline. 1.0 is the game's original line width.",
+                new AcceptableValueRange<float>(0.5f, 3.0f)));
+
+        PitchLadderWidth = config.Bind(
+            "General",
+            "Pitch Ladder Width",
+            0.9f,
+            new ConfigDescription(
+                "Fraction of the pitch ladder's original width kept, centered on the view. Values below about 0.5 crop the ladder lines toward the center into short bars and remove the pitch numbers; 1.0 keeps the full original width with numbers.",
+                new AcceptableValueRange<float>(0.15f, 1.0f)));
+
+        PitchLadderRange = config.Bind(
+            "General",
+            "Pitch Ladder Range",
+            15f,
+            new ConfigDescription(
+                "Minimum half-angle in degrees of pitch lines always visible around dead ahead (the HUD center, i.e. the aircraft nose — not the view direction). Tilting your head up or down reveals additional pitch lines in that direction, up to 90 degrees; looking sideways adds none. Lines stay horizon-referenced, so the horizon line always points at the true horizon.",
+                new AcceptableValueRange<float>(5f, 90f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",

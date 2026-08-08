@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -5,6 +7,19 @@ namespace NOVR.VrUi.SpecialBehavior;
 
 public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
 {
+    private readonly Dictionary<Image, Vector2> _originalLineSizes = new Dictionary<Image, Vector2>();
+    private float _appliedLineThickness = -1f;
+    private int _frameCount;
+
+    // HUD opacity state: the game renders the HUD with additive materials
+    // (white lines saturate to white over bright sky/terrain), so we swap
+    // every graphic to an alpha-blended material and raise its alpha.
+    private readonly List<Graphic> _hudGraphics = new List<Graphic>();
+    private readonly Dictionary<Graphic, Material> _opaqueMaterials = new Dictionary<Graphic, Material>();
+    private float _appliedOpacity = -1f;
+    private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
+    private static Shader _alphaBlendedUiShader;
+
     public override void Awake()
     {
         base.Awake();
@@ -36,6 +51,252 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     {
         transform.position = new Vector3(0f, 0f, 1000f);
         transform.rotation = Quaternion.identity;
+
+        // Scale the whole flight HUD (both the HMD center and the cockpit HUD
+        // center) instead of only the HMD subtree. Scaling the root also
+        // brings the HUD elements closer to the view center, which the game's
+        // built-in HUD width/height/side/top settings can then fine tune.
+        var hudScale = Mathf.Clamp(ModConfiguration.Instance.VrHudScale.Value, 0.25f, 1.5f);
+        transform.localScale = Vector3.one * hudScale;
+
+        _frameCount++;
+        if (_frameCount > 30 && _frameCount % 60 == 0)
+        {
+            ApplyHudLineThickness();
+            ApplyHudOpacity();
+        }
+    }
+
+    /// <summary>
+    /// Thickens thin line-like UI elements of the main HUD (borders, brackets,
+    /// tapes, the waterline, tick marks) by the HUD Line Thickness factor.
+    /// Original sizes are captured once the game has finished laying out the
+    /// HUD; changes to the config are re-applied live.
+    /// </summary>
+    private void ApplyHudLineThickness()
+    {
+        var thickness = Mathf.Clamp(ModConfiguration.Instance.HudLineThickness.Value, 0.5f, 3f);
+        if (Mathf.Approximately(thickness, _appliedLineThickness))
+        {
+            return;
+        }
+
+        if (_originalLineSizes.Count == 0)
+        {
+            CaptureLineElements();
+        }
+
+        foreach (var pair in _originalLineSizes)
+        {
+            var image = pair.Key;
+            if (image == null)
+            {
+                continue;
+            }
+
+            var originalSize = pair.Value;
+            var thinDimension = Mathf.Min(Mathf.Abs(originalSize.x), Mathf.Abs(originalSize.y));
+            var thickenedSize = originalSize;
+            if (Mathf.Abs(originalSize.x) < Mathf.Abs(originalSize.y))
+            {
+                thickenedSize.x = thinDimension * thickness;
+            }
+            else
+            {
+                thickenedSize.y = thinDimension * thickness;
+            }
+
+            image.rectTransform.sizeDelta = thickenedSize;
+        }
+
+        _appliedLineThickness = thickness;
+        Debug.Log($"{nameof(NOVRFlightHudBehavior)}: Applied HUD line thickness {thickness:F2} to {_originalLineSizes.Count} line elements");
+    }
+
+    /// <summary>
+    /// Makes the VR HUD more opaque. Two complementary changes, both driven
+    /// by the HUD Opacity config (0.25-1.0, default 1.0):
+    ///  - the game's additive HUD materials are replaced with alpha-blended
+    ///    ones, so lines keep their own color instead of adding to (and
+    ///    saturating against) whatever sky/terrain is behind them;
+    ///  - each element's alpha is raised to at least the configured opacity,
+    ///    so the HUD reads as a solid overlay rather than a faint glow.
+    /// Captures graphics again every second so HUD app panels the game builds
+    /// after takeoff get the treatment too; config changes re-apply live.
+    /// </summary>
+    private void ApplyHudOpacity()
+    {
+        var opacity = Mathf.Clamp(ModConfiguration.Instance.HudOpacity.Value, 0.25f, 1f);
+        var configChanged = !Mathf.Approximately(opacity, _appliedOpacity);
+
+        var newGraphics = false;
+        foreach (var graphic in GetComponentsInChildren<Graphic>(true))
+        {
+            if (!_hudGraphics.Contains(graphic))
+            {
+                _hudGraphics.Add(graphic);
+                newGraphics = true;
+            }
+        }
+
+        if (!configChanged && !newGraphics)
+        {
+            return;
+        }
+
+        foreach (var graphic in _hudGraphics)
+        {
+            if (graphic == null)
+            {
+                continue;
+            }
+
+            if (configChanged || !_opaqueMaterials.ContainsKey(graphic))
+            {
+                ApplyOpacityToGraphic(graphic, opacity);
+            }
+        }
+
+        _appliedOpacity = opacity;
+        Debug.Log($"{nameof(NOVRFlightHudBehavior)}: Applied HUD opacity {opacity:F2} to {_hudGraphics.Count} graphics");
+    }
+
+    private void ApplyOpacityToGraphic(Graphic graphic, float opacity)
+    {
+        var color = graphic.color;
+        color.a = Mathf.Max(color.a, opacity);
+        graphic.color = color;
+
+        var material = GetOpaqueMaterial(graphic);
+        if (material == null)
+        {
+            return;
+        }
+
+        if (graphic is TextMeshProUGUI tmp)
+        {
+            tmp.fontSharedMaterial = material;
+        }
+        else
+        {
+            graphic.material = material;
+        }
+    }
+
+    private Material GetOpaqueMaterial(Graphic graphic)
+    {
+        if (_opaqueMaterials.TryGetValue(graphic, out var existing))
+        {
+            return existing;
+        }
+
+        Material material = null;
+        if (graphic is TextMeshProUGUI tmp)
+        {
+            // The font asset's base material uses the regular (alpha-blended)
+            // Distance Field shader; the game's HUD text uses the additive
+            // variant of the same font material instead.
+            var font = tmp.font;
+            if (font != null)
+            {
+                material = new Material(font.material);
+            }
+        }
+        else
+        {
+            var shader = GetAlphaBlendedUiShader();
+            if (shader != null)
+            {
+                material = new Material(shader);
+                var texture = GetGraphicTexture(graphic);
+                if (texture != null)
+                {
+                    material.SetTexture(MainTexId, texture);
+                }
+            }
+        }
+
+        if (material != null)
+        {
+            _opaqueMaterials[graphic] = material;
+        }
+
+        return material;
+    }
+
+    private static Texture GetGraphicTexture(Graphic graphic)
+    {
+        switch (graphic)
+        {
+            case RawImage rawImage:
+                return rawImage.texture;
+            case Image image:
+                return image.sprite != null ? image.sprite.texture : null;
+            case Text text:
+                return text.font != null ? text.font.material.mainTexture : null;
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>
+    /// The build strips UI/Default, so there is no stock alpha-blended UI
+    /// shader to grab. Mobile/Particles/Alpha Blended (and TMP's Sprite
+    /// shader as a fallback) are unlit alpha-blended shaders that ship with
+    /// the game; at least one is normally loaded in the cockpit scene.
+    /// </summary>
+    private static Shader GetAlphaBlendedUiShader()
+    {
+        if (_alphaBlendedUiShader != null)
+        {
+            return _alphaBlendedUiShader;
+        }
+
+        _alphaBlendedUiShader = Shader.Find("Mobile/Particles/Alpha Blended");
+        if (_alphaBlendedUiShader == null)
+        {
+            _alphaBlendedUiShader = Shader.Find("TextMeshPro/Sprite");
+        }
+        if (_alphaBlendedUiShader == null)
+        {
+            foreach (var shader in Resources.FindObjectsOfTypeAll<Shader>())
+            {
+                if (shader.name == "Mobile/Particles/Alpha Blended" || shader.name == "TextMeshPro/Sprite")
+                {
+                    _alphaBlendedUiShader = shader;
+                    break;
+                }
+            }
+        }
+
+        return _alphaBlendedUiShader;
+    }
+
+    private void CaptureLineElements()
+    {
+        // Only anchor-pinned elements are resized (stretched elements use
+        // sizeDelta as an offset, so touching them would break layout).
+        foreach (var image in GetComponentsInChildren<Image>(true))
+        {
+            var rectTransform = image.rectTransform;
+            if (rectTransform.anchorMin != rectTransform.anchorMax)
+            {
+                continue;
+            }
+
+            var size = rectTransform.sizeDelta;
+            var width = Mathf.Abs(size.x);
+            var height = Mathf.Abs(size.y);
+            var thin = Mathf.Min(width, height);
+            var thick = Mathf.Max(width, height);
+
+            if (thin < 0.5f || thick / thin < 3f || thin > 12f)
+            {
+                continue;
+            }
+
+            _originalLineSizes[image] = size;
+        }
     }
     
     private void MoveHmdPanelToHud(string panelName, Transform noVrHudParent, Vector3 localPosition, Vector3 localScale)
