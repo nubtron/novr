@@ -71,11 +71,13 @@ public class VrUiCursor: NOVRBehaviour
     private Mouse? _realMouse;
 
     private bool _controllerModeActive;
+    private bool _hmdGazeActive;
     private Vector3 _controllerAimDirection = Vector3.forward;
     private bool _controllerTriggerPressed;
     private bool _controllerTriggerClicked;
     private float _controllerSmoothing = 0.3f;
     private bool _controllerModeLogged;
+    private bool _hmdGazeLogged;
     
     
     private int ScreenWidth => Screen.width;
@@ -155,7 +157,7 @@ public class VrUiCursor: NOVRBehaviour
             }
         }
         if (_texture == null) return;
-        UpdateControllerInput();
+        UpdateCursorInput();
         UpdateCursorAngles();
         
         var realMouse = _realMouse;
@@ -205,7 +207,14 @@ public class VrUiCursor: NOVRBehaviour
         }
 
         Vector3 worldDirection;
-        if (_controllerModeActive)
+        if (_hmdGazeActive)
+        {
+            // Head-gaze: the cursor sits at the center of the HMD view. The
+            // UiCamera is pose-driven by the calibrated headset rotation, so
+            // its forward is exactly where the user is looking.
+            worldDirection = camera.transform.forward;
+        }
+        else if (_controllerModeActive)
         {
             worldDirection = _controllerAimDirection;
         }
@@ -232,16 +241,30 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Drives the cursor from an XR motion controller ray when the configured
-    /// input source is a hand: the aim direction is the controller's forward,
-    /// intersected with the plane facing the camera at the default projection
-    /// distance so the cursor lands where the controller points. Falls back to
-    /// the mouse when the controller is not tracked.
+    /// Selects and updates the active cursor input mode: head-gaze (the
+    /// cursor follows the center of the HMD and the trigger clicks), an XR
+    /// motion controller ray, or the desktop mouse. Head-gaze is enabled by
+    /// default and while it is on, the mouse and motion controller cursor
+    /// modes are disabled.
     /// </summary>
-    private void UpdateControllerInput()
+    private void UpdateCursorInput()
     {
-        var source = ModConfiguration.Instance.CursorInputSource.Value;
+        _hmdGazeActive = false;
         _controllerModeActive = false;
+
+        if (ModConfiguration.Instance.HeadGazeCursor.Value)
+        {
+            _hmdGazeActive = true;
+            UpdateTriggerClickFromEitherHand();
+            if (!_hmdGazeLogged)
+            {
+                Debug.Log("[VrUiCursor] Head-gaze cursor active: cursor follows HMD center, trigger clicks.");
+                _hmdGazeLogged = true;
+            }
+            return;
+        }
+
+        var source = ModConfiguration.Instance.CursorInputSource.Value;
 
         XRNode node;
         switch (source)
@@ -291,6 +314,20 @@ public class VrUiCursor: NOVRBehaviour
         }
 
         var triggerPressed = triggerValue > 0.5f;
+        _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
+        _controllerTriggerPressed = triggerPressed;
+    }
+
+    /// <summary>
+    /// In head-gaze mode no controller drives the cursor, but the trigger
+    /// still clicks: a press on either hand's trigger is a click.
+    /// </summary>
+    private void UpdateTriggerClickFromEitherHand()
+    {
+        var triggerPressed =
+            MotionControllerPose.TryRead(XRNode.RightHand, out _, out _, out _, out _, out var rightTrigger) && rightTrigger > 0.5f ||
+            MotionControllerPose.TryRead(XRNode.LeftHand, out _, out _, out _, out _, out var leftTrigger) && leftTrigger > 0.5f;
+
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
     }
