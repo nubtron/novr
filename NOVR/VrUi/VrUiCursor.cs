@@ -78,6 +78,10 @@ public class VrUiCursor: NOVRBehaviour
     private float _controllerSmoothing = 0.3f;
     private bool _controllerModeLogged;
     private bool _hmdGazeLogged;
+    private float _headGazeMultiplier = 1.5f;
+    private bool _gazeKeyClickHeld;
+    private bool _gazeAnchorCaptured;
+    private Quaternion _gazeAnchorRotation = Quaternion.identity;
     
     
     private int ScreenWidth => Screen.width;
@@ -108,11 +112,13 @@ public class VrUiCursor: NOVRBehaviour
     {
         _projectionReferenceRotation = referenceRotation;
         _hasProjectionReferenceOverride = true;
+        _gazeAnchorCaptured = false;
     }
 
     public void ClearProjectionReferenceRotation()
     {
         _hasProjectionReferenceOverride = false;
+        _gazeAnchorCaptured = false;
     }
     
     
@@ -129,6 +135,7 @@ public class VrUiCursor: NOVRBehaviour
             {
                 _cursor.SetActive(false);
             }
+            _gazeAnchorCaptured = false;
             return;
         }
 
@@ -138,6 +145,7 @@ public class VrUiCursor: NOVRBehaviour
             {
                 _cursor.SetActive(false);
             }
+            _gazeAnchorCaptured = false;
             return;
         }
         
@@ -209,10 +217,28 @@ public class VrUiCursor: NOVRBehaviour
         Vector3 worldDirection;
         if (_hmdGazeActive)
         {
-            // Head-gaze: the cursor sits at the center of the HMD view. The
-            // UiCamera is pose-driven by the calibrated headset rotation, so
-            // its forward is exactly where the user is looking.
-            worldDirection = camera.transform.forward;
+            // Head-gaze: the cursor follows where the user looks, optionally
+            // amplified by Head Gaze Multiplier so small head turns cover
+            // more of the menu (less neck craning). Amplification is relative
+            // to a fixed reference: the native menu anchor when one is up,
+            // otherwise the direction the user was looking when the cursor
+            // appeared. At 1.0x the cursor sits exactly at the view center.
+            var referenceRotation = GetProjectionReferenceRotation();
+            if (!_hasProjectionReferenceOverride)
+            {
+                if (!_gazeAnchorCaptured)
+                {
+                    var headEuler = camera.transform.eulerAngles;
+                    _gazeAnchorRotation = Quaternion.Euler(headEuler.x, headEuler.y, 0f);
+                    _gazeAnchorCaptured = true;
+                }
+                referenceRotation = _gazeAnchorRotation;
+            }
+
+            var localForward = Quaternion.Inverse(referenceRotation) * camera.transform.forward;
+            var gazePitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg * _headGazeMultiplier, -MaxPitchDegrees, MaxPitchDegrees);
+            var gazeYaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg * _headGazeMultiplier, -MaxYawDegrees, MaxYawDegrees);
+            worldDirection = referenceRotation * Quaternion.Euler(-gazePitch, gazeYaw, 0f) * Vector3.forward;
         }
         else if (_controllerModeActive)
         {
@@ -255,10 +281,11 @@ public class VrUiCursor: NOVRBehaviour
         if (ModConfiguration.Instance.HeadGazeCursor.Value)
         {
             _hmdGazeActive = true;
-            UpdateTriggerClickFromEitherHand();
+            _headGazeMultiplier = Mathf.Clamp(ModConfiguration.Instance.HeadGazeMultiplier.Value, 0.5f, 3.0f);
+            UpdateGazeClickInput();
             if (!_hmdGazeLogged)
             {
-                Debug.Log("[VrUiCursor] Head-gaze cursor active: cursor follows HMD center, trigger clicks.");
+                Debug.Log("[VrUiCursor] Head-gaze cursor active: cursor follows HMD center; clicks from trigger, Fire action, or the Head Gaze Click Key.");
                 _hmdGazeLogged = true;
             }
             return;
@@ -319,14 +346,43 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// In head-gaze mode no controller drives the cursor, but the trigger
-    /// still clicks: a press on either hand's trigger is a click.
+    /// In head-gaze mode no controller drives the cursor, but a click can come
+    /// from several sources: a press on either hand's trigger, the game's
+    /// Fire action (Rewired keeps its maps enabled in menus, so Fire reads
+    /// there too — whatever the player bound Fire to works as a click), or a
+    /// configurable keyboard key. All are ORed into the virtual mouse's left
+    /// button, so any of them clicks whatever the gaze cursor is over.
     /// </summary>
-    private void UpdateTriggerClickFromEitherHand()
+    private void UpdateGazeClickInput()
     {
         var triggerPressed =
             MotionControllerPose.TryRead(XRNode.RightHand, out _, out _, out _, out _, out var rightTrigger) && rightTrigger > 0.5f ||
             MotionControllerPose.TryRead(XRNode.LeftHand, out _, out _, out _, out _, out var leftTrigger) && leftTrigger > 0.5f;
+
+        if (GameManager.playerInput != null && GameManager.playerInput.GetButton("Fire"))
+        {
+            triggerPressed = true;
+        }
+
+        // Edge-track the keyboard click key so even a quick tap registers as a
+        // full press-and-release instead of being missed between frames.
+        var clickKey = ModConfiguration.Instance.HeadGazeClickKey.Value;
+        var keyboard = Keyboard.current;
+        if (keyboard != null && clickKey != Key.None)
+        {
+            if (keyboard[clickKey].wasPressedThisFrame)
+            {
+                _gazeKeyClickHeld = true;
+            }
+            if (keyboard[clickKey].wasReleasedThisFrame)
+            {
+                _gazeKeyClickHeld = false;
+            }
+        }
+        if (_gazeKeyClickHeld)
+        {
+            triggerPressed = true;
+        }
 
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
