@@ -2,12 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
-using UnityEngine.InputSystem.Controls;
 using UnityEngine.InputSystem.LowLevel;
-using UnityEngine.InputSystem.XR;
 using UnityEngine.UI;
 using UnityEngine.XR;
-using XRCommonUsages = UnityEngine.XR.CommonUsages;
 
 namespace NOVR.VrUi;
 
@@ -260,7 +257,7 @@ public class VrUiCursor: NOVRBehaviour
 
         _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
 
-        if (!TryReadControllerPose(node, out var controllerPosition, out var controllerRotation, out var headRotation, out var triggerValue))
+        if (!MotionControllerPose.TryRead(node, out var controllerPosition, out var controllerRotation, out var headRotation, out _, out var triggerValue))
         {
             if (_controllerModeLogged)
             {
@@ -293,70 +290,6 @@ public class VrUiCursor: NOVRBehaviour
         var triggerPressed = triggerValue > 0.5f;
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
-    }
-
-    /// <summary>
-    /// Reads the controller pose, preferring the Input System XR controller
-    /// (how Unity OpenXR exposes interaction-profile devices) and falling back
-    /// to the legacy UnityEngine.XR device API. Also returns the headset
-    /// rotation from the same API so the aim can be expressed relative to the
-    /// head.
-    /// </summary>
-    private static bool TryReadControllerPose(XRNode node, out Vector3 position, out Quaternion rotation, out Quaternion headRotation, out float trigger)
-    {
-        position = Vector3.zero;
-        rotation = Quaternion.identity;
-        headRotation = Quaternion.identity;
-        trigger = 0f;
-
-        var inputSystemController = node == XRNode.RightHand ? XRController.rightHand : XRController.leftHand;
-        if (inputSystemController != null)
-        {
-            var isTrackedControl = inputSystemController.TryGetChildControl<ButtonControl>("isTracked");
-            var tracked = isTrackedControl == null || isTrackedControl.ReadValue() > 0.5f;
-            var positionControl = inputSystemController.TryGetChildControl<Vector3Control>("devicePosition");
-            var rotationControl = inputSystemController.TryGetChildControl<QuaternionControl>("deviceRotation");
-            if (tracked && positionControl != null && rotationControl != null)
-            {
-                position = positionControl.ReadValue();
-                rotation = rotationControl.ReadValue();
-                var triggerControl = inputSystemController.TryGetChildControl<AxisControl>("trigger");
-                if (triggerControl != null)
-                {
-                    trigger = triggerControl.ReadValue();
-                }
-
-                return TryReadHeadRotation(out headRotation);
-            }
-        }
-
-        var legacy = InputDevices.GetDeviceAtXRNode(node);
-        if (legacy.isValid)
-        {
-            var isTracked = !legacy.TryGetFeatureValue(XRCommonUsages.isTracked, out var trackedFlag) || trackedFlag;
-            if (isTracked && legacy.TryGetFeatureValue(XRCommonUsages.deviceRotation, out var legacyRotation))
-            {
-                legacy.TryGetFeatureValue(XRCommonUsages.devicePosition, out var legacyPosition);
-                legacy.TryGetFeatureValue(XRCommonUsages.trigger, out trigger);
-                position = legacyPosition;
-                rotation = legacyRotation;
-                return TryReadHeadRotation(out headRotation);
-            }
-        }
-
-        return false;
-    }
-
-    private static bool TryReadHeadRotation(out Quaternion headRotation)
-    {
-        var headDevice = InputDevices.GetDeviceAtXRNode(XRNode.CenterEye);
-        if (headDevice.isValid && headDevice.TryGetFeatureValue(XRCommonUsages.deviceRotation, out headRotation))
-        {
-            return true;
-        }
-
-        headRotation = Quaternion.identity;
-        return false;
     }
 
     private Quaternion GetProjectionReferenceRotation()
