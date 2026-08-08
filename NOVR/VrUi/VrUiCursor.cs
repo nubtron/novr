@@ -2,10 +2,11 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Controls;
 using UnityEngine.InputSystem.LowLevel;
+using UnityEngine.InputSystem.XR;
 using UnityEngine.UI;
 using UnityEngine.XR;
-using XRInputDevice = UnityEngine.XR.InputDevice;
 using XRCommonUsages = UnityEngine.XR.CommonUsages;
 
 namespace NOVR.VrUi;
@@ -73,9 +74,6 @@ public class VrUiCursor: NOVRBehaviour
     private Mouse? _realMouse;
     private bool _loggedMissingRealMouse;
 
-    private XRInputDevice _controllerDevice;
-    private XRNode _controllerNode = XRNode.RightHand;
-    private bool _controllerDeviceValid;
     private bool _controllerModeActive;
     private Vector3 _controllerAimDirection = Vector3.forward;
     private bool _controllerTriggerPressed;
@@ -316,32 +314,14 @@ public class VrUiCursor: NOVRBehaviour
 
         _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
 
-        // Re-acquire the device whenever the configured hand changes.
-        if (_controllerDeviceValid && _controllerNode != node)
-        {
-            _controllerDeviceValid = false;
-        }
-        _controllerNode = node;
-
-        if (!_controllerDeviceValid)
-        {
-            _controllerDevice = InputDevices.GetDeviceAtXRNode(node);
-            _controllerDeviceValid = _controllerDevice.isValid;
-            if (!_controllerDeviceValid)
-            {
-                return;
-            }
-        }
-
-        if (!_controllerDevice.TryGetFeatureValue(XRCommonUsages.deviceRotation, out var controllerRotation))
+        if (!TryReadControllerPose(node, out var controllerPosition, out var controllerRotation, out var triggerValue))
         {
             return;
         }
 
         var camera = UiCamera;
         var rayOrigin = camera != null ? camera.transform.position : Vector3.zero;
-        if (_controllerDevice.TryGetFeatureValue(XRCommonUsages.devicePosition, out var controllerPosition) &&
-            controllerPosition.sqrMagnitude > 0.0001f)
+        if (controllerPosition.sqrMagnitude > 0.0001f)
         {
             rayOrigin = controllerPosition;
         }
@@ -368,9 +348,54 @@ public class VrUiCursor: NOVRBehaviour
         _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
         _controllerModeActive = true;
 
-        var triggerPressed = _controllerDevice.TryGetFeatureValue(XRCommonUsages.trigger, out var trigger) && trigger > 0.5f;
+        var triggerPressed = triggerValue > 0.5f;
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
+    }
+
+    /// <summary>
+    /// Reads the controller pose, preferring the Input System XR controller
+    /// (how Unity OpenXR exposes interaction-profile devices) and falling back
+    /// to the legacy UnityEngine.XR device API.
+    /// </summary>
+    private static bool TryReadControllerPose(XRNode node, out Vector3 position, out Quaternion rotation, out float trigger)
+    {
+        position = Vector3.zero;
+        rotation = Quaternion.identity;
+        trigger = 0f;
+
+        var inputSystemController = node == XRNode.RightHand ? XRController.rightHand : XRController.leftHand;
+        if (inputSystemController != null)
+        {
+            var isTrackedControl = inputSystemController.TryGetChildControl<ButtonControl>("isTracked");
+            var tracked = isTrackedControl == null || isTrackedControl.ReadValue() > 0.5f;
+            var positionControl = inputSystemController.TryGetChildControl<Vector3Control>("devicePosition");
+            var rotationControl = inputSystemController.TryGetChildControl<QuaternionControl>("deviceRotation");
+            if (tracked && positionControl != null && rotationControl != null)
+            {
+                position = positionControl.ReadValue();
+                rotation = rotationControl.ReadValue();
+                var triggerControl = inputSystemController.TryGetChildControl<AxisControl>("trigger");
+                if (triggerControl != null)
+                {
+                    trigger = triggerControl.ReadValue();
+                }
+
+                return true;
+            }
+        }
+
+        var legacy = InputDevices.GetDeviceAtXRNode(node);
+        if (legacy.isValid && legacy.TryGetFeatureValue(XRCommonUsages.deviceRotation, out var legacyRotation))
+        {
+            legacy.TryGetFeatureValue(XRCommonUsages.devicePosition, out var legacyPosition);
+            legacy.TryGetFeatureValue(XRCommonUsages.trigger, out trigger);
+            position = legacyPosition;
+            rotation = legacyRotation;
+            return true;
+        }
+
+        return false;
     }
 
     private Quaternion GetProjectionReferenceRotation()
