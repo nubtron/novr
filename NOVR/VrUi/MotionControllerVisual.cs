@@ -109,10 +109,14 @@ public class MotionControllerVisual : MonoBehaviour
         root = new GameObject($"{handName}ControllerVisual");
         root.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
 
-        var material = CreateMaterial();
+        // The grip primitive's own default material is always valid; derive
+        // our colored material from it (Shader.Find can return null here
+        // because the game strips unused shaders).
+        var grip = CreatePart(root.transform, "Grip", PrimitiveType.Capsule, null);
+        var material = CreateMaterial(grip.GetComponent<Renderer>());
+        grip.GetComponent<Renderer>().sharedMaterial = material;
 
         // Grip: a capsule along the pointing direction.
-        var grip = CreatePart(root.transform, "Grip", PrimitiveType.Capsule, material);
         grip.localScale = new Vector3(0.04f, 0.055f, 0.07f);
         grip.localPosition = new Vector3(0f, -0.025f, -0.015f);
         grip.localRotation = Quaternion.Euler(90f, 0f, 0f);
@@ -147,10 +151,31 @@ public class MotionControllerVisual : MonoBehaviour
         root.SetActive(false);
     }
 
-    private static Material CreateMaterial()
+    private static Material CreateMaterial(Renderer templateRenderer)
     {
-        var shader = Shader.Find("Unlit/Color");
-        var material = shader != null ? new Material(shader) : new Material(Shader.Find("Standard"));
+        Material material = null;
+        if (templateRenderer != null && templateRenderer.sharedMaterial != null)
+        {
+            material = new Material(templateRenderer.sharedMaterial);
+        }
+
+        if (material == null)
+        {
+            var shader = Shader.Find("Unlit/Color") ?? Shader.Find("Standard") ?? Shader.Find("Sprites/Default");
+            if (shader != null)
+            {
+                material = new Material(shader);
+            }
+        }
+
+        if (material == null)
+        {
+            // Last resort: the built-in default material (always present).
+            var dummy = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            material = new Material(dummy.GetComponent<Renderer>().sharedMaterial);
+            Object.Destroy(dummy);
+        }
+
         material.color = new Color(0.2f, 0.85f, 0.95f, 1f);
         return material;
     }
@@ -160,7 +185,11 @@ public class MotionControllerVisual : MonoBehaviour
         var part = GameObject.CreatePrimitive(primitiveType);
         part.name = name;
         part.transform.SetParent(parent, false);
-        part.GetComponent<Renderer>().sharedMaterial = material;
+        if (material != null)
+        {
+            part.GetComponent<Renderer>().sharedMaterial = material;
+        }
+
         var collider = part.GetComponent<Collider>();
         if (collider != null)
         {
