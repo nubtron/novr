@@ -19,6 +19,11 @@ public class ModConfiguration
     public readonly ConfigEntry<float> PitchLadderRange;
     public readonly ConfigEntry<float> ColorContrast;
     public readonly ConfigEntry<float> ColorSaturation;
+    public readonly ConfigEntry<string> CursorInputSource;
+    public readonly ConfigEntry<float> CursorControllerSmoothing;
+    public readonly ConfigEntry<bool> ShowMotionControllers;
+    public readonly ConfigEntry<bool> ShowControllerLaser;
+    public readonly ConfigEntry<float> ControllerIdleTimeout;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -101,6 +106,40 @@ public class ModConfiguration
             new ConfigDescription(
                 "Saturation boost applied to the final image. 0 disables.",
                 new AcceptableValueRange<float>(-100f, 100f)));
+
+        CursorInputSource = config.Bind(
+            "General",
+            "Cursor Input Source",
+            "Mouse",
+            "Controls the VR cursor: 'Mouse' uses the desktop mouse, 'Right Hand' or 'Left Hand' points it with an XR motion controller (trigger = click).");
+
+        CursorControllerSmoothing = config.Bind(
+            "General",
+            "Cursor Controller Smoothing",
+            0.3f,
+            new ConfigDescription(
+                "How quickly the cursor tracks the controller ray. Higher = snappier, lower = smoother.",
+                new AcceptableValueRange<float>(0.05f, 0.95f)));
+
+        ShowMotionControllers = config.Bind(
+            "General",
+            "Show Motion Controllers",
+            true,
+            "Show a simple controller model at each tracked hand in VR.");
+
+        ShowControllerLaser = config.Bind(
+            "General",
+            "Show Controller Laser",
+            true,
+            "Show a laser pointer from the controller to the cursor.");
+
+        ControllerIdleTimeout = config.Bind(
+            "General",
+            "Controller Idle Timeout",
+            4f,
+            new ConfigDescription(
+                "Hide the controller model after this many seconds without movement (e.g. when put down). 0 disables.",
+                new AcceptableValueRange<float>(0f, 60f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
