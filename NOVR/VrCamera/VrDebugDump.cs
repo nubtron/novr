@@ -33,11 +33,16 @@ namespace NOVR.VrCamera;
 // without touching the game. See tools/dump-viewer in novr-research for the
 // HTML gallery that renders these dumps.
 //
-// Why not RenderDoc: RenderDoc answers "what did the GPU draw" per frame, but
-// cannot be fired unattended from a headset session and sees nothing of the
-// C#-side state this dump records (matrices, targetTexture identity, canvas
-// renderMode). RenderDoc stays the deep-dive tool for a reproducible GPU
-// question; this harness is the automated session recorder.
+// Relationship to RenderDoc: complementary, and both now fire from the same
+// trigger (see RenderDocCapture + DebugDumpController). This dump records
+// C#-side state a GPU capture cannot see — per-eye stereo matrices,
+// targetTexture identity, which canvases NOVR moved to world space. RenderDoc
+// records what the GPU was actually told to do — per-draw blend state, the real
+// bound textures with their alpha channels, pixel history. An earlier version
+// of this comment said RenderDoc "cannot be fired unattended from a headset
+// session"; that no longer holds. tools/capture.py runs the whole thing with no
+// headset and nobody at the keyboard: the OpenXR mock runtime supplies stereo,
+// AutoStartMission flies the mission, and RenderDoc is injected at launch.
 //
 // Engine notes (verified against the game's own UnityEngine dlls, 2022.3):
 //  - This URP build never reads CameraEvent command buffers, so
