@@ -120,13 +120,11 @@ public class VrUiCursor: NOVRBehaviour
     {
         _projectionReferenceRotation = referenceRotation;
         _hasProjectionReferenceOverride = true;
-        _gazeAnchorCaptured = false;
     }
 
     public void ClearProjectionReferenceRotation()
     {
         _hasProjectionReferenceOverride = false;
-        _gazeAnchorCaptured = false;
     }
     
     
