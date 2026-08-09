@@ -65,6 +65,34 @@ def wait_for_done(marker: Path, project, deadline_s: int) -> bool:
     return False
 
 
+def wait_for_captures_to_settle(captures_dir: Path, timeout_s: int = 90) -> None:
+    """Wait until RenderDoc has finished writing its .rdc files.
+
+    RenderDoc serialises the capture asynchronously, well after the frame that
+    triggered it. Killing the game the moment the mod says it is done truncates
+    that write, and the result is a file of plausible size that fails to open
+    with "File is corrupted: Unrecognised section type" — which looks like a
+    RenderDoc bug rather than our teardown. Wait for the sizes to stop changing.
+    """
+    stable_rounds = 0
+    previous: dict[Path, int] = {}
+    deadline = time.monotonic() + timeout_s
+
+    while time.monotonic() < deadline:
+        current = {p: p.stat().st_size for p in captures_dir.glob("*.rdc")}
+        if current and current == previous:
+            stable_rounds += 1
+            # Three quiet rounds: one can happen mid-write between buffers.
+            if stable_rounds >= 3:
+                return
+        else:
+            stable_rounds = 0
+        previous = current
+        time.sleep(1.5)
+
+    print("  warning: capture files still changing at timeout; may be truncated")
+
+
 def newest_dump_dir(plugin_dir: Path) -> Path | None:
     root = plugin_dir / DUMPS_DIR
     if not root.is_dir():
@@ -88,8 +116,12 @@ def extract_thumbnails(project, captures: list[Path]) -> list[Path]:
         )
         if png.exists():
             thumbs.append(png)
-        elif result.returncode != 0:
-            print(f"  warning: thumb failed for {rdc.name}: {result.stderr.strip()[:200]}")
+        else:
+            # renderdoccmd reports a corrupt capture on stdout and still exits
+            # 0, so the return code cannot be trusted here — the missing file is
+            # the real signal, and the message is the useful part.
+            detail = (result.stdout + result.stderr).strip().replace("\n", " ")
+            print(f"  warning: no thumbnail for {rdc.name}: {detail[:200]}")
     return thumbs
 
 
@@ -151,6 +183,10 @@ def main() -> int:
             if not finished:
                 print("  timed out waiting for harness.done", file=sys.stderr)
         finally:
+            # Must happen before the kill: RenderDoc writes the capture from
+            # inside the game process.
+            if not args.no_renderdoc:
+                wait_for_captures_to_settle(captures_dir)
             if not args.keep_running:
                 game.kill(project)
                 print("game closed")
