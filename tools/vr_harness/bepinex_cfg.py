@@ -76,16 +76,38 @@ def write(path: Path, updates: dict[tuple[str, str], str]) -> dict[tuple[str, st
     return previous
 
 
+#: Keys that must never survive a run, whatever the file said on the way in,
+#: mapped to the value a normal play session expects. Restoring these to the
+#: snapshot is not safe: a run that dies before its finally block leaves them
+#: on, and then the *next* run snapshots "on" and faithfully restores it. One
+#: crash silently arms auto-start for every launch after it, which is exactly
+#: how a headset session once found itself launching a mission by itself.
+UNSAFE_KEYS = {
+    ("Debug", "Auto Start Mission"): "false",
+    ("Debug", "Enable Frame Dumps"): "false",
+    ("Debug", "RenderDoc Capture On Dump"): "false",
+}
+
+
 @contextmanager
 def temporarily(path: Path, updates: dict[tuple[str, str], str]):
     """Apply config changes for the duration of a run, then restore them.
 
     A harness run turns on auto-start and dumping; leaving those on would mean
-    the user's next normal launch silently starts a mission by itself.
+    the user's next normal launch silently starts a mission by itself. Keys in
+    UNSAFE_KEYS are restored to their known-safe value rather than to whatever
+    was observed, so a previously-contaminated file gets cleaned instead of
+    preserved.
     """
     previous = write(path, updates)
     try:
         yield
     finally:
-        if previous:
-            write(path, previous)
+        restore = dict(previous)
+        for key, safe in UNSAFE_KEYS.items():
+            if key in restore and restore[key] != safe:
+                print(f"config: [{key[0]}] {key[1]} was {restore[key]} before this "
+                      f"run — restoring to {safe} (a normal launch must not have it on)")
+                restore[key] = safe
+        if restore:
+            write(path, restore)
