@@ -252,5 +252,6 @@ public class ModConfiguration
             new ConfigDescription(
                 "Seconds to wait after the mission starts before the first automatic dump, and between dumps.",
                 new AcceptableValueRange<float>(1f, 60f)));
+        EscalationOverrides.Bind(config);
     }
 }
