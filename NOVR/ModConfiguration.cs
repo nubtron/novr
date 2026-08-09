@@ -32,6 +32,11 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
+    public readonly ConfigEntry<bool> RenderDocCaptureOnDump;
+    public readonly ConfigEntry<bool> AutoStartMission;
+    public readonly ConfigEntry<string> AutoStartMissionName;
+    public readonly ConfigEntry<int> AutoDumpCount;
+    public readonly ConfigEntry<float> AutoDumpDelay;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -185,5 +190,43 @@ public class ModConfiguration
             "Native Menu Height Offset",
             0.0f,
             "Vertical offset in meters applied when NOVR's native VR menu UI is opened or recentered. Values from -0.25 to 1.0 are supported.");
+
+        // [Debug] drives the offline verification harness (tools/). Everything
+        // here is off by default and inert in a normal play session: the
+        // RenderDoc trigger no-ops without renderdoc.dll injected, and the auto
+        // dump only runs when Auto Start Mission put us in a mission.
+        RenderDocCaptureOnDump = config.Bind(
+            "Debug",
+            "RenderDoc Capture On Dump",
+            true,
+            "When RenderDoc is injected into the game, also trigger a GPU frame capture whenever a buffer dump fires (F1 or dump.trigger). Has no effect without RenderDoc — see tools/README.md.");
+
+        AutoStartMission = config.Bind(
+            "Debug",
+            "Auto Start Mission",
+            false,
+            "Test harness: automatically start a mission from the main menu and fire buffer dumps, so an unattended run produces per-eye dumps and GPU captures with nobody at the keyboard. Leave off for normal play.");
+
+        AutoStartMissionName = config.Bind(
+            "Debug",
+            "Auto Start Mission Name",
+            "",
+            "Which mission Auto Start Mission loads, matched case-insensitively against the mission name. Empty picks a Free Flight mission (fastest to load, aircraft already airborne with the HUD up), falling back to the first single-player mission.");
+
+        AutoDumpCount = config.Bind(
+            "Debug",
+            "Auto Dump Count",
+            3,
+            new ConfigDescription(
+                "How many dumps Auto Start Mission fires once the mission is running. More than one catches frames where the HUD has finished initialising.",
+                new AcceptableValueRange<int>(1, 10)));
+
+        AutoDumpDelay = config.Bind(
+            "Debug",
+            "Auto Dump Delay",
+            8f,
+            new ConfigDescription(
+                "Seconds to wait after the mission starts before the first automatic dump, and between dumps.",
+                new AcceptableValueRange<float>(1f, 60f)));
     }
 }
