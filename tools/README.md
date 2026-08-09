@@ -23,8 +23,8 @@ side. The OpenXR mock runtime needs no install — it is vendored in the repo at
 ## Running
 
 ```bash
-tools/capture.py                    # full run: 3 dumps from a Free Flight mission
-tools/capture.py --mission "Free"   # pick a mission by name
+tools/capture.py                    # full run: 3 dumps from a built-in mission
+tools/capture.py --mission "05. Furball"   # pick a mission by name
 tools/capture.py --dumps 5 --delay 12
 tools/capture.py --no-renderdoc     # buffer dumps only
 tools/capture.py --keep-running     # leave the game up to poke at
@@ -116,7 +116,7 @@ OpenXRSession: UNKNOWN -> IDLE -> READY -> SYNCHRONIZED -> VISIBLE -> FOCUSED
 |---|---|
 | `RenderDoc Capture On Dump` | Fire a GPU capture whenever a buffer dump fires. No-op without RenderDoc injected. |
 | `Auto Start Mission` | Start a mission and dump unattended. Off for normal play. |
-| `Auto Start Mission Name` | Mission to match by name; empty picks a Free Flight mission. |
+| `Auto Start Mission Name` | Mission to match by name; empty picks a built-in mission. |
 | `Auto Dump Count` / `Auto Dump Delay` | How many dumps and how far apart. |
 
 `capture.py` sets these for the duration of a run and restores them afterwards,
