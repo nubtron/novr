@@ -36,6 +36,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
     public readonly ConfigEntry<bool> EnableFrameDumps;
+    public readonly ConfigEntry<bool> DisableVrMod;
     public readonly ConfigEntry<bool> RenderDocCaptureOnDump;
     public readonly ConfigEntry<bool> AutoStartMission;
     public readonly ConfigEntry<string> AutoStartMissionName;
@@ -48,6 +49,13 @@ public class ModConfiguration
         Instance = this;
 
         Config = config;
+
+        DisableVrMod = config.Bind(
+            "General",
+            "Disable VR Mod",
+            false,
+            "Fully disable the VR mod: no patches are applied and XR is never started, so the game runs exactly as vanilla. Also enabled by launching the game with --no-vr (e.g. Steam Launch Options), or overridden back on with --vr. Takes effect on the next launch.");
+
         TargetDesignatorOvershoot = config.Bind(
             "General",
             "Target Designator Overshoot",
