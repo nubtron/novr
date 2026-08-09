@@ -28,7 +28,13 @@ tools/capture.py --mission "05. Furball"   # pick a mission by name
 tools/capture.py --dumps 5 --delay 12
 tools/capture.py --no-renderdoc     # buffer dumps only
 tools/capture.py --keep-running     # leave the game up to poke at
+tools/capture.py --set 'General:HUD Opacity=0'   # A/B any config key
 ```
+
+`--set SECTION:KEY=VALUE` overrides any entry in the mod config for the duration
+of the run and restores it afterwards. Running once with a feature on and once
+off, then diffing the output, is the point of the harness; needing to hand-edit
+the `.cfg` between runs would put the manual step straight back.
 
 Output:
 
@@ -36,9 +42,10 @@ Output:
   mirror, per-camera render textures, and `meta.json` with stereo matrices,
   canvas inventory and active config. Render them with
   `tools/dump-viewer/build.py` in the novr-research repo.
-- **GPU captures** — `<work_dir>/captures/*.rdc`, plus `.thumb.png` extracted
-  headlessly via `renderdoccmd thumb` as a quick "is this frame black" check.
-  Inspect with the `rdc` CLI or qrenderdoc.
+- **GPU captures** — `<work_dir>/captures/<time>/*.rdc`, plus `.thumb.png`
+  extracted headlessly via `renderdoccmd thumb` as a quick "is this frame black"
+  check. One directory per run, never overwritten: comparing a run against an
+  earlier one is the main use, so runs must not delete each other's evidence.
 
 A successful run takes about 35 seconds with one dump, ~50 s with the default
 three. `--max-runtime` (default 300 s) is a hard ceiling on the whole script,
@@ -108,6 +115,32 @@ OpenXRSession: UNKNOWN -> IDLE -> READY -> SYNCHRONIZED -> VISIBLE -> FOCUSED
 [NOVR] Native VR UI root created.
 ```
 
+## Replaying a capture from a script
+
+A thumbnail says the frame is not black. Answering "is this draw additive" or
+"does this texture really have usable alpha" needs replay:
+
+```bash
+tools/rd_run.py --list
+tools/rd_run.py hud_blend <work_dir>/captures/<time>/novr_frame1234.rdc
+```
+
+Analyses live in `tools/rd/` and are plain Python that `import renderdoc`. They
+run on the Windows side, which is not a preference:
+
+- **D3D11 replay is Windows-only.** A Linux `renderdoc` module cannot open
+  these captures at all, so `rdc` on the WSL side is limited to the metadata it
+  can read without replaying.
+- **The RenderDoc release ships no importable module.** Python is embedded
+  inside `qrenderdoc.exe`; there is no `renderdoc.pyd` in the install and
+  `renderdoccmd` has no `python` subcommand. Scripted replay needs a source
+  build of the same version as the installed one, with
+  `tools.renderdoc.replay_python` / `replay_pymodules` pointing at it.
+
+Replay cost is worth knowing before you start: roughly 30 draws/second, so a
+~16k-draw VR frame takes about nine minutes to walk exhaustively. Scope to the
+draws you need when you can.
+
 ## Config reference
 
 `[Debug]` entries in the mod config, all off or inert by default:
@@ -127,6 +160,9 @@ so you rarely need to touch them by hand.
 ```
 tools/
   capture.py                 the driver
+  rd_run.py                  run a replay analysis against a capture
+  rd/                        the analyses themselves (Windows-side python)
+    hud_blend.py             per-draw blend state + bound textures
   vr-harness.example.toml    copy to ~/.vr-harness.toml
   vr_harness/
     __init__.py              config loading, WSL check, path conversion
