@@ -11,6 +11,11 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
 {
     private readonly Dictionary<Image, Vector2> _originalLineSizes = new Dictionary<Image, Vector2>();
     private float _appliedLineThickness = -1f;
+    //: Each scaled element's own localScale before we touched it, so the config
+    //: can be re-applied live without compounding.
+    private readonly Dictionary<Transform, Vector3> _originalElementScales =
+        new Dictionary<Transform, Vector3>();
+    private float _appliedElementScale = -1f;
     private int _frameCount;
 
     // HUD opacity state.
@@ -87,8 +92,86 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         if (_frameCount > 30 && _frameCount % 60 == 0)
         {
             ApplyHudLineThickness();
+            ApplyHudElementScale();
             ApplyHudOpacity();
         }
+    }
+
+    /// <summary>
+    /// Scales the individual HUD symbols without moving them.
+    ///
+    /// VR HUD Scale cannot solve legibility on its own, because it scales the
+    /// root: element size and each element's distance from the view center move
+    /// together. Big enough to read pushes the outer elements past comfortable
+    /// head movement; tight enough to see leaves the symbols too small. The two
+    /// need to be separate knobs, so this one scales each element about its own
+    /// pivot and leaves the layout where VR HUD Scale put it.
+    ///
+    /// Only leaf graphics are scaled: scaling a container would compound into
+    /// its children and move them, which is the behaviour being avoided.
+    /// </summary>
+    private void ApplyHudElementScale()
+    {
+        var scale = Mathf.Clamp(ModConfiguration.Instance.HudElementScale.Value, 0.5f, 3f);
+        var configChanged = !Mathf.Approximately(scale, _appliedElementScale);
+
+        var newElements = false;
+        foreach (var graphic in GetComponentsInChildren<Graphic>(true))
+        {
+            if (graphic == null)
+            {
+                continue;
+            }
+
+            var element = graphic.transform;
+            if (_originalElementScales.ContainsKey(element))
+            {
+                continue;
+            }
+
+            // The tactical map lays itself out in its own space; scaling its
+            // icons in place detaches them from the positions it computes.
+            if (IsPartOfDynamicMap(graphic) || HasChildGraphic(element))
+            {
+                continue;
+            }
+
+            _originalElementScales[element] = element.localScale;
+            newElements = true;
+        }
+
+        if (!configChanged && !newElements)
+        {
+            return;
+        }
+
+        var applied = 0;
+        foreach (var pair in _originalElementScales)
+        {
+            if (pair.Key == null)
+            {
+                continue;
+            }
+
+            pair.Key.localScale = pair.Value * scale;
+            applied++;
+        }
+
+        _appliedElementScale = scale;
+        Debug.Log($"{nameof(NOVRFlightHudBehavior)}: Applied HUD element scale {scale:F2} to {applied} elements");
+    }
+
+    private static bool HasChildGraphic(Transform element)
+    {
+        for (var i = 0; i < element.childCount; i++)
+        {
+            if (element.GetChild(i).GetComponentInChildren<Graphic>(true) != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

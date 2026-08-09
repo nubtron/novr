@@ -13,6 +13,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> TargetDesignatorOvershoot;
     public readonly ConfigEntry<float> CursorSizeMultiplier;
     public readonly ConfigEntry<float> VrHudScale;
+    public readonly ConfigEntry<float> HudElementScale;
     public readonly ConfigEntry<float> HudOpacity;
     public readonly ConfigEntry<float> HudLineThickness;
     public readonly ConfigEntry<float> PitchLadderWidth;
@@ -44,10 +45,18 @@ public class ModConfiguration
         VrHudScale = config.Bind(
             "General",
             "VR HUD Scale",
-            0.6f,
+            0.8f,
             new ConfigDescription(
-                "Scale of the VR flight HUD, including the head-locked HMD and cockpit HUD centers. Values from 0.25 to 1.5 are supported.",
+                "Scale of the whole VR flight HUD, including the head-locked HMD and cockpit HUD centers. This sets how far the HUD elements sit from the view center, so raising it spreads them toward the edge of comfortable head movement. To make the symbols themselves bigger without spreading them out, use HUD Element Scale instead. Values from 0.25 to 1.5 are supported.",
                 new AcceptableValueRange<float>(0.25f, 1.5f)));
+
+        HudElementScale = config.Bind(
+            "General",
+            "HUD Element Scale",
+            1.0f,
+            new ConfigDescription(
+                "Size of the individual HUD symbols (numbers, icons, markers) without moving them. VR HUD Scale alone cannot solve legibility: it scales element size and their distance from the view center together, so a value large enough to read pushes the outer elements past comfortable head movement, and a value tight enough to see leaves the symbols too small. This scales each element in place instead, so the HUD envelope stays where VR HUD Scale puts it. Values from 0.5 to 3.0 are supported.",
+                new AcceptableValueRange<float>(0.5f, 3.0f)));
 
         HudOpacity = config.Bind(
             "General",
