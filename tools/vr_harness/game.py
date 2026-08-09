@@ -60,27 +60,57 @@ class LaunchResult:
 
 
 def kill(project: Project) -> None:
-    """Close any running instance.
+    """Close any running instance, and confirm it actually died.
 
     Called on the way in (a stale instance holds file locks that break a deploy)
     and unconditionally on the way out — an abandoned game process pinning a GPU
     and a headset is the rudest thing a harness can leave behind.
+
+    The confirmation is not paranoia: a run once printed "game closed" while a
+    game process kept running for another three minutes, because Stop-Process
+    was issued during the window where one instance had exited and its
+    replacement had not yet appeared. Reporting a clean teardown that did not
+    happen is worse than reporting a messy one.
     """
-    powershell(
-        f"Get-Process -Name '{project.process_name}' -ErrorAction SilentlyContinue "
-        f"| Stop-Process -Force -ErrorAction SilentlyContinue"
+    for _ in range(5):
+        powershell(
+            f"Get-Process -Name '{project.process_name}' -ErrorAction SilentlyContinue "
+            f"| Stop-Process -Force -ErrorAction SilentlyContinue"
+        )
+        # Give Windows a beat to release handles on the plugin DLLs, otherwise a
+        # deploy immediately after this fails with a sharing violation.
+        time.sleep(2)
+        if not running_pids(project):
+            return
+
+    raise HarnessError(
+        f"could not close every '{project.process_name}' process — "
+        f"still running: {running_pids(project)}. Close it by hand before the next run."
     )
-    # Give Windows a beat to release handles on the plugin DLLs, otherwise a
-    # deploy immediately after this fails with a sharing violation.
-    time.sleep(2)
 
 
-def is_running(project: Project) -> bool:
+def running_pids(project: Project) -> list[int]:
+    """PIDs of every process with the game's name, newest last."""
     result = powershell(
-        f"if (Get-Process -Name '{project.process_name}' -ErrorAction SilentlyContinue) "
-        f"{{ 'yes' }} else {{ 'no' }}"
+        f"Get-Process -Name '{project.process_name}' -ErrorAction SilentlyContinue "
+        f"| ForEach-Object {{ $_.Id }}"
     )
-    return result.stdout.strip().endswith("yes")
+    return [int(line) for line in result.stdout.split() if line.strip().isdigit()]
+
+
+def is_running(project: Project, pid: int | None = None) -> bool:
+    """Is the game running — and, when a pid is given, is it still *that* one?
+
+    Name-only liveness cannot tell "our instance is fine" from "our instance
+    died and something else with the same name is up". Those need different
+    responses: the second means the launch environment (mock runtime, Doorstop)
+    belongs to a process we no longer control, so the run is invalid even though
+    a game is plainly on screen.
+    """
+    pids = running_pids(project)
+    if pid is None:
+        return bool(pids)
+    return pid in pids
 
 
 def _write_launcher(project: Project, env: dict[str, str]) -> str:
