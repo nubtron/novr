@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Cysharp.Threading.Tasks;
 using NOVR.VrCamera;
 using NuclearOption.Networking;
 using NuclearOption.SavedMission;
@@ -30,15 +31,21 @@ public class AutoStartMission : MonoBehaviour
 {
     private const string DoneMarkerName = "harness.done";
 
-    // The menu needs a moment after the scene loads before MissionGroup/
-    // NetworkManager are usable; retry rather than guessing a single delay.
-    private const float FirstAttemptDelay = 5f;
+    // The main menu is still wiring itself up for a while after the scene
+    // loads: an earlier version fired at t+5s and the menu logged "All Task
+    // finished" *after* the mission had started, which looked like the launch
+    // was being overwritten. Start later and retry rather than guessing a
+    // single delay.
+    private const float FirstAttemptDelay = 12f;
     private const float RetryInterval = 3f;
+    private const float SpawnRetryInterval = 4f;
 
     private bool _launched;
+    private bool _spawned;
     private bool _missionRunning;
     private bool _finished;
     private float _nextAttempt = FirstAttemptDelay;
+    private float _nextSpawnAttempt;
     private float _nextDumpAt;
     private int _dumpsRemaining;
 
@@ -72,7 +79,18 @@ public class AutoStartMission : MonoBehaviour
             // "Mission running" means the player owns an aircraft — the HUD
             // canvases NOVR translates only exist from that point on, so
             // dumping earlier would capture an empty frame and look like a bug.
-            if (!GameManager.GetLocalAircraft(out var aircraft) || aircraft == null) return;
+            if (!GameManager.GetLocalAircraft(out var aircraft) || aircraft == null)
+            {
+                // Starting a mission does not put you in a cockpit; it drops
+                // you at the airbase/aircraft selection step. Nothing spawns
+                // until that is answered, so answer it.
+                if (!_spawned && Time.unscaledTime >= _nextSpawnAttempt)
+                {
+                    _nextSpawnAttempt = Time.unscaledTime + SpawnRetryInterval;
+                    _spawned = TryRequestSpawn();
+                }
+                return;
+            }
 
             _missionRunning = true;
             _nextDumpAt = Time.unscaledTime + ModConfiguration.Instance.AutoDumpDelay.Value;
@@ -127,6 +145,63 @@ public class AutoStartMission : MonoBehaviour
             // The menu can throw while it is still wiring itself up; that is a
             // retry, not a failure.
             Debug.Log($"[NOVR-HARNESS] Mission launch attempt failed (will retry): {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Spawn the local player into an aircraft, the way the aircraft selection
+    /// screen ultimately does.
+    ///
+    /// Driving <c>AircraftSelectionMenu</c> itself would mean faking UI state —
+    /// selection index, loadout dropdowns, preview models. Its
+    /// <c>FlyAircraft()</c> just resolves to
+    /// <c>Spawner.RequestSpawnAtAirbase</c>, which is public and takes plain
+    /// data, so the harness calls that directly and skips the UI entirely.
+    ///
+    /// The server-side check (<c>Spawner.AllowedToSpawn</c>) only requires that
+    /// the player has a faction HQ, that the airbase belongs to it, that the
+    /// aircraft is not restricted, and that the player owns the airframe — it
+    /// does not inspect the loadout, so a default one is fine. We mirror those
+    /// conditions here so a rejection shows up as a log line naming the reason
+    /// rather than a silent no-op.
+    /// </summary>
+    private bool TryRequestSpawn()
+    {
+        try
+        {
+            if (!GameManager.GetLocalPlayer<Player>(out var player) || player == null) return false;
+            if (player.HQ == null) return false;
+
+            var spawner = NetworkSceneSingleton<Spawner>.i;
+            if (spawner == null) return false;
+
+            foreach (var airbase in player.HQ.GetAirbases())
+            {
+                if (airbase == null || airbase.CurrentHQ != player.HQ) continue;
+
+                foreach (var definition in airbase.GetAvailableAircraft())
+                {
+                    if (definition == null) continue;
+                    if (!airbase.CanSpawnAircraft(definition)) continue;
+                    if (!player.OwnsAirframe(definition, includeReserved: true)) continue;
+
+                    spawner
+                        .RequestSpawnAtAirbase(airbase, definition, default, new Loadout(), 1f)
+                        .Forget();
+                    Debug.Log($"[NOVR-HARNESS] Requested spawn: {definition.unitName} at {airbase.name}.");
+                    return true;
+                }
+            }
+
+            Debug.Log("[NOVR-HARNESS] No spawnable aircraft at any friendly airbase yet; retrying.");
+            return false;
+        }
+        catch (Exception e)
+        {
+            // The mission scene is still assembling for a while after the host
+            // starts; treat anything thrown here as "not ready".
+            Debug.Log($"[NOVR-HARNESS] Spawn attempt failed (will retry): {e.Message}");
+            return false;
         }
     }
 
