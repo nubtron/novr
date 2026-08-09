@@ -22,6 +22,19 @@
 # GUI; the harness drives the `rdc` CLI and renderdoccmd instead.
 dir = 'C:\Program Files\RenderDoc'
 
+# Optional — only needed for tools/rd_run.py (replaying a capture from a script
+# to read per-draw blend state, bound textures, pixel history).
+#
+# The RenderDoc *release* build embeds Python inside qrenderdoc.exe and ships no
+# importable renderdoc.pyd, and renderdoccmd has no `python` subcommand, so a
+# capture cannot be replayed from a script against a stock install. A source
+# build produces one; build the tag matching your installed version so the
+# module and the capture agree. Note also that D3D11 replay is Windows-only —
+# a Linux-side renderdoc module cannot open these captures at all, which is why
+# these point at Windows paths and the analysis runs over the interop boundary.
+# replay_python    = 'C:\Users\CHANGEME\AppData\Local\Programs\Python\Python312\python.exe'
+# replay_pymodules = 'C:\Users\CHANGEME\repos\renderdoc\x64\Release\pymodules'
+
 [tools.harness]
 # Windows-visible scratch space: RenderDoc captures, the staged OpenXR mock
 # runtime, and anything else that must be readable by a Windows process.

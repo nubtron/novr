@@ -147,6 +147,12 @@ class Project:
     renderdoc_dir: str  # Windows form
     work_dir: str  # Windows form
     source: str  # which config file this came from
+    #: Windows python.exe able to `import renderdoc`, and the directory holding
+    #: renderdoc.pyd. Both empty unless the machine has a replay-capable build:
+    #: the shipped RenderDoc release embeds Python inside qrenderdoc and does
+    #: not install a standalone module, so replay analysis needs a source build.
+    replay_python: str = ""
+    replay_pymodules: str = ""
 
     @property
     def game_dir_wsl(self) -> Path:
@@ -171,6 +177,25 @@ class Project:
     @property
     def renderdoccmd(self) -> str:
         return str(PureWindowsPath(self.renderdoc_dir) / "renderdoccmd.exe")
+
+    @property
+    def can_replay(self) -> bool:
+        return bool(self.replay_python and self.replay_pymodules)
+
+    def require_replay(self) -> None:
+        """Fail with the reason, not just 'not configured'."""
+        if self.can_replay:
+            return
+        raise HarnessError(
+            "no replay-capable RenderDoc Python module configured.\n"
+            "The RenderDoc release build embeds Python inside qrenderdoc and ships no\n"
+            "importable renderdoc.pyd, so replaying a capture from a script needs a\n"
+            "source build (see REFERENCES.md). Once built, set in "
+            f"{self.source}:\n"
+            "  [tools.renderdoc]\n"
+            "  replay_python    = 'C:\\...\\python.exe'\n"
+            "  replay_pymodules = 'C:\\...\\renderdoc\\x64\\Release\\pymodules'"
+        )
 
     def check(self) -> None:
         """Validate the paths that every command needs, with fixable errors."""
@@ -239,6 +264,8 @@ def load_project(name: str, path: str | os.PathLike[str] | None = None) -> Proje
         ),
         work_dir=_require(tools.get("harness", {}), "work_dir", "tools.harness", source),
         source=source,
+        replay_python=tools.get("renderdoc", {}).get("replay_python", ""),
+        replay_pymodules=tools.get("renderdoc", {}).get("replay_pymodules", ""),
     )
     project.check()
     return project
