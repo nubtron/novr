@@ -48,6 +48,8 @@ public class AutoStartMission : MonoBehaviour
     private float _nextSpawnAttempt;
     private float _nextDumpAt;
     private int _dumpsRemaining;
+    private string _lastSpawnBlocker;
+    private bool _listedMissions;
 
     private void Awake()
     {
@@ -119,6 +121,14 @@ public class AutoStartMission : MonoBehaviour
                 return;
             }
 
+            if (!_listedMissions)
+            {
+                _listedMissions = true;
+                Debug.Log(
+                    "[NOVR-HARNESS] Available single-player missions: " +
+                    string.Join(" | ", missions.Select(entry => entry.key.ToString())));
+            }
+
             var wanted = ModConfiguration.Instance.AutoStartMissionName.Value;
             var chosen = SelectMission(missions, wanted);
             if (!chosen.key.TryLoad(out var mission, out var error))
@@ -169,21 +179,40 @@ public class AutoStartMission : MonoBehaviour
     {
         try
         {
-            if (!GameManager.GetLocalPlayer<Player>(out var player) || player == null) return false;
-            if (player.HQ == null) return false;
+            if (!GameManager.GetLocalPlayer<Player>(out var player) || player == null)
+            {
+                return NotReady("no local player yet");
+            }
+
+            if (player.HQ == null && !TryJoinFaction(player))
+            {
+                return NotReady("local player has no faction HQ yet");
+            }
 
             var spawner = NetworkSceneSingleton<Spawner>.i;
-            if (spawner == null) return false;
+            if (spawner == null)
+            {
+                return NotReady("Spawner scene singleton not available yet");
+            }
+
+            // Counted rather than just filtered: "nothing is spawnable" has
+            // four different causes and they need different fixes, so the log
+            // has to say which one it was.
+            int airbases = 0, owned = 0, offered = 0, noHangar = 0, notOwned = 0;
 
             foreach (var airbase in player.HQ.GetAirbases())
             {
+                airbases++;
                 if (airbase == null || airbase.CurrentHQ != player.HQ) continue;
+                owned++;
 
                 foreach (var definition in airbase.GetAvailableAircraft())
                 {
                     if (definition == null) continue;
-                    if (!airbase.CanSpawnAircraft(definition)) continue;
-                    if (!player.OwnsAirframe(definition, includeReserved: true)) continue;
+                    offered++;
+
+                    if (!airbase.CanSpawnAircraft(definition)) { noHangar++; continue; }
+                    if (!player.OwnsAirframe(definition, includeReserved: true)) { notOwned++; continue; }
 
                     spawner
                         .RequestSpawnAtAirbase(airbase, definition, default, new Loadout(), 1f)
@@ -193,8 +222,9 @@ public class AutoStartMission : MonoBehaviour
                 }
             }
 
-            Debug.Log("[NOVR-HARNESS] No spawnable aircraft at any friendly airbase yet; retrying.");
-            return false;
+            return NotReady(
+                $"no spawnable aircraft (airbases={airbases} ours={owned} " +
+                $"offered={offered} noHangar={noHangar} notOwned={notOwned})");
         }
         catch (Exception e)
         {
@@ -203,6 +233,46 @@ public class AutoStartMission : MonoBehaviour
             Debug.Log($"[NOVR-HARNESS] Spawn attempt failed (will retry): {e.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Join a faction, which the join menu normally does before you ever reach
+    /// aircraft selection. Without it <c>Player.HQ</c> stays null and
+    /// <c>Spawner.AllowedToSpawn</c> rejects every request, so no aircraft ever
+    /// spawns and the run just times out.
+    /// </summary>
+    private bool TryJoinFaction(Player player)
+    {
+        var factions = FindObjectsOfType<FactionHQ>();
+        foreach (var hq in factions)
+        {
+            if (hq == null || hq.preventJoin) continue;
+
+            player.SetFaction(hq);
+            if (player.HQ == null) continue;
+
+            Debug.Log($"[NOVR-HARNESS] Joined faction '{hq.faction?.name ?? hq.name}'.");
+            return true;
+        }
+
+        if (factions.Length == 0) NotReady("no FactionHQ in the scene yet");
+        return false;
+    }
+
+    /// <summary>
+    /// Log why the spawn is not possible yet, once per distinct reason.
+    /// Silent early returns here cost a full run to diagnose: the harness just
+    /// times out with no output and no indication which precondition failed.
+    /// </summary>
+    private bool NotReady(string reason)
+    {
+        if (reason != _lastSpawnBlocker)
+        {
+            _lastSpawnBlocker = reason;
+            Debug.Log($"[NOVR-HARNESS] Waiting to spawn: {reason}.");
+        }
+
+        return false;
     }
 
     private static (MissionKey key, MissionQuickLoad mission) SelectMission(
@@ -222,9 +292,16 @@ public class AutoStartMission : MonoBehaviour
             Debug.LogWarning($"[NOVR-HARNESS] No mission matched '{wanted}'; falling back to Free Flight.");
         }
 
-        // Free Flight (MissionGroup.Default) puts the player in the air with
-        // the HUD live in a few seconds and nothing shooting at them — the
-        // cheapest reproducible frame for HUD work.
+        // Prefer a normal built-in mission. Free Flight looks like the obvious
+        // choice (fast to load, nothing shooting at you) but it does not appear
+        // to offer an airbase hangar spawn, and the harness spawns by calling
+        // Spawner.RequestSpawnAtAirbase — so it can start the mission and then
+        // never get into a cockpit. A built-in mission spawns from an airbase.
+        foreach (var entry in missions)
+        {
+            if (SameGroup(entry.key.Group, MissionGroup.BuiltIn)) return entry;
+        }
+
         foreach (var entry in missions)
         {
             if (SameGroup(entry.key.Group, MissionGroup.Default)) return entry;
