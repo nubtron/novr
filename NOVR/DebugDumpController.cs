@@ -8,6 +8,11 @@ namespace NOVR;
 // F1 (or a "dump.trigger" file next to NOVR.dll) fires one frame's buffer
 // dump via VrDebugDump. The trigger file lets an external process (the WSL
 // dev session) request a dump without focusing the game window.
+//
+// The same trigger also fires a RenderDoc frame capture when RenderDoc is
+// injected, so one keypress produces both halves of the picture: the mod's own
+// C# state (VrDebugDump) and the GPU's view of the frame (RenderDoc). Outside
+// the harness RenderDoc is absent and that half is silently skipped.
 public class DebugDumpController : NOVRBehaviour
 {
     private readonly KeyboardKey _dumpKey = new(KeyboardKey.KeyCode.F1);
@@ -24,6 +29,10 @@ public class DebugDumpController : NOVRBehaviour
         if (_dumpKey.UpdateIsDown() || ConsumeDumpTriggerFile())
         {
             VrDebugDump.Request();
+            if (ModConfiguration.Instance.RenderDocCaptureOnDump.Value)
+            {
+                RenderDocCapture.TryTriggerCapture();
+            }
         }
 
         VrDebugDump.Tick();
