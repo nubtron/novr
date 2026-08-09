@@ -19,6 +19,7 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     private float _appliedOpacity = -1f;
     private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
     private static Shader _alphaBlendedUiShader;
+    private static Shader _maskedUiShader;
 
     public override void Awake()
     {
@@ -126,7 +127,12 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     /// </summary>
     private void ApplyHudOpacity()
     {
-        var opacity = Mathf.Clamp(ModConfiguration.Instance.HudOpacity.Value, 0.25f, 1f);
+        var opacity = Mathf.Clamp(ModConfiguration.Instance.HudOpacity.Value, 0f, 1f);
+        if (opacity <= 0f)
+        {
+            return;
+        }
+
         var configChanged = !Mathf.Approximately(opacity, _appliedOpacity);
 
         var newGraphics = false;
@@ -167,6 +173,15 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         color.a = Mathf.Max(color.a, opacity);
         graphic.color = color;
 
+        // The tactical map keeps its own rendering: it depends on its original
+        // materials, masks, and texture transparency. Swapping them for the
+        // alpha-blended stand-ins makes the map overflow its clip region and
+        // lose its look.
+        if (IsPartOfDynamicMap(graphic))
+        {
+            return;
+        }
+
         var material = GetOpaqueMaterial(graphic);
         if (material == null)
         {
@@ -204,7 +219,10 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         }
         else
         {
-            var shader = GetAlphaBlendedUiShader();
+            // Elements inside a Mask/RectMask2D region need a stencil-capable
+            // shader or their clip regions overflow; the plain alpha-blended
+            // shader (Mobile/Particles/Alpha Blended) has no stencil support.
+            var shader = IsInsideMaskedRegion(graphic) ? GetMaskedUiShader() : GetAlphaBlendedUiShader();
             if (shader != null)
             {
                 material = new Material(shader);
@@ -222,6 +240,36 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         }
 
         return material;
+    }
+
+    private static bool IsPartOfDynamicMap(Graphic graphic)
+    {
+        if (graphic.GetComponentInParent<global::DynamicMap>() != null)
+        {
+            return true;
+        }
+
+        // The map content may live under its own canvases (MapCanvas,
+        // MaximizedMapCanvas) rather than under the DynamicMap component.
+        var canvas = graphic.canvas;
+        while (canvas != null)
+        {
+            if (canvas.name != null && canvas.name.Contains("MapCanvas"))
+            {
+                return true;
+            }
+            canvas = canvas.transform.parent != null
+                ? canvas.transform.parent.GetComponentInParent<Canvas>()
+                : null;
+        }
+
+        return false;
+    }
+
+    private static bool IsInsideMaskedRegion(Graphic graphic)
+    {
+        return graphic.GetComponentInParent<Mask>() != null ||
+               graphic.GetComponentInParent<RectMask2D>() != null;
     }
 
     private static Texture GetGraphicTexture(Graphic graphic)
@@ -244,32 +292,49 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     /// shader to grab. Mobile/Particles/Alpha Blended (and TMP's Sprite
     /// shader as a fallback) are unlit alpha-blended shaders that ship with
     /// the game; at least one is normally loaded in the cockpit scene.
+    /// Mobile/Particles/Alpha Blended has no stencil support, so masked
+    /// regions use TextMeshPro/Sprite instead (it has the standard UI
+    /// stencil/ClipRect properties).
     /// </summary>
     private static Shader GetAlphaBlendedUiShader()
     {
-        if (_alphaBlendedUiShader != null)
+        return GetCachedUiShader(ref _alphaBlendedUiShader, "Mobile/Particles/Alpha Blended", "TextMeshPro/Sprite");
+    }
+
+    private static Shader GetMaskedUiShader()
+    {
+        return GetCachedUiShader(ref _maskedUiShader, "TextMeshPro/Sprite", "Mobile/Particles/Alpha Blended");
+    }
+
+    private static Shader GetCachedUiShader(ref Shader cache, params string[] preferred)
+    {
+        if (cache != null)
         {
-            return _alphaBlendedUiShader;
+            return cache;
         }
 
-        _alphaBlendedUiShader = Shader.Find("Mobile/Particles/Alpha Blended");
-        if (_alphaBlendedUiShader == null)
+        for (var i = 0; i < preferred.Length; i++)
         {
-            _alphaBlendedUiShader = Shader.Find("TextMeshPro/Sprite");
-        }
-        if (_alphaBlendedUiShader == null)
-        {
-            foreach (var shader in Resources.FindObjectsOfTypeAll<Shader>())
+            cache = Shader.Find(preferred[i]);
+            if (cache != null)
             {
-                if (shader.name == "Mobile/Particles/Alpha Blended" || shader.name == "TextMeshPro/Sprite")
+                return cache;
+            }
+        }
+
+        foreach (var shader in Resources.FindObjectsOfTypeAll<Shader>())
+        {
+            for (var i = 0; i < preferred.Length; i++)
+            {
+                if (shader.name == preferred[i])
                 {
-                    _alphaBlendedUiShader = shader;
-                    break;
+                    cache = shader;
+                    return cache;
                 }
             }
         }
 
-        return _alphaBlendedUiShader;
+        return null;
     }
 
     private void CaptureLineElements()

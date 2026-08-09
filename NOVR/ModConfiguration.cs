@@ -54,8 +54,8 @@ public class ModConfiguration
             "HUD Opacity",
             1.0f,
             new ConfigDescription(
-                "How opaque the VR HUD is. 1.0 renders HUD elements as solid, alpha-blended lines instead of the game's additive glow, so they keep their own color and stay readable over bright sky/terrain (additive blending makes white lines saturate to white over bright backgrounds). Lower values make the HUD progressively more translucent. Values from 0.25 to 1.0 are supported.",
-                new AcceptableValueRange<float>(0.25f, 1.0f)));
+                "How opaque the VR HUD is. 1.0 renders HUD elements as solid, alpha-blended lines instead of the game's additive glow, so they keep their own color and stay readable over bright sky/terrain (additive blending makes white lines saturate to white over bright backgrounds). Lower values make the HUD progressively more translucent. 0 disables the opacity pass entirely.",
+                new AcceptableValueRange<float>(0.0f, 1.0f)));
 
         HudLineThickness = config.Bind(
             "General",
