@@ -14,6 +14,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> CursorSizeMultiplier;
     public readonly ConfigEntry<float> VrHudScale;
     public readonly ConfigEntry<float> HudElementScale;
+    public readonly ConfigEntry<float> HudOpacity;
     public readonly ConfigEntry<float> HudLineThickness;
     public readonly ConfigEntry<float> PitchLadderWidth;
     public readonly ConfigEntry<float> PitchLadderRange;
@@ -56,6 +57,14 @@ public class ModConfiguration
             new ConfigDescription(
                 "Size of the individual HUD symbols (numbers, icons, markers) without moving them. VR HUD Scale alone cannot solve legibility: it scales element size and their distance from the view center together, so a value large enough to read pushes the outer elements past comfortable head movement, and a value tight enough to see leaves the symbols too small. This scales each element in place instead, so the HUD envelope stays where VR HUD Scale puts it. Values from 0.5 to 3.0 are supported.",
                 new AcceptableValueRange<float>(0.5f, 3.0f)));
+
+        HudOpacity = config.Bind(
+            "General",
+            "HUD Opacity",
+            1.0f,
+            new ConfigDescription(
+                "How opaque the VR HUD is. 1.0 renders HUD elements as solid, alpha-blended lines instead of the game's additive glow, so they keep their own color and stay readable over bright sky/terrain (additive blending makes white lines saturate to white over bright backgrounds). Lower values make the HUD progressively more translucent. 0 disables the opacity pass entirely.",
+                new AcceptableValueRange<float>(0.0f, 1.0f)));
 
         HudLineThickness = config.Bind(
             "General",
