@@ -182,6 +182,16 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
             return;
         }
 
+        // The game renders the HUD with additive blending, so its textures are
+        // authored for that: the background is plain black (black adds nothing)
+        // and many textures carry no alpha channel at all. Alpha-blending such
+        // a texture would show that background as an opaque rectangle, so
+        // additive-authored textures keep their original material.
+        if (IsAdditiveAuthoredTexture(graphic))
+        {
+            return;
+        }
+
         var material = GetOpaqueMaterial(graphic);
         if (material == null)
         {
@@ -195,6 +205,128 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         else
         {
             graphic.material = material;
+        }
+    }
+
+    private static readonly Dictionary<Texture, bool> _additiveAuthoredTextures = new Dictionary<Texture, bool>();
+
+    /// <summary>
+    /// Returns true when the graphic's texture cannot be alpha-blended because
+    /// it was authored for the game's additive HUD rendering: either it has no
+    /// alpha channel at all (DXT1 etc. — the black background only disappears
+    /// under additive blending, where black adds nothing), or it carries large
+    /// opaque black regions despite having an alpha channel. Such textures must
+    /// keep their original additive material or they render as opaque black
+    /// rectangles behind the HUD elements.
+    /// </summary>
+    private static bool IsAdditiveAuthoredTexture(Graphic graphic)
+    {
+        var texture = GetGraphicTexture(graphic);
+        if (texture == null)
+        {
+            return false;
+        }
+
+        if (_additiveAuthoredTextures.TryGetValue(texture, out var cached))
+        {
+            return cached;
+        }
+
+        var result = false;
+        if (texture is Texture2D tex2d)
+        {
+            if (!TextureFormatHasAlpha(tex2d.format))
+            {
+                result = true;
+            }
+            else if (HasOpaqueBlackBackground(tex2d, GetTextureRegion(graphic)))
+            {
+                result = true;
+            }
+
+            if (result)
+            {
+                Debug.Log($"{nameof(NOVRFlightHudBehavior)}: HUD opacity keeps '{texture.name}' on its original additive material (additive-authored texture, no usable alpha).");
+            }
+        }
+
+        _additiveAuthoredTextures[texture] = result;
+        return result;
+    }
+
+    private static Rect? GetTextureRegion(Graphic graphic)
+    {
+        if (graphic is Image image && image.sprite != null)
+        {
+            return image.sprite.textureRect;
+        }
+
+        return null;
+    }
+
+    private static bool HasOpaqueBlackBackground(Texture2D tex2d, Rect? region)
+    {
+        try
+        {
+            var x0 = region.HasValue ? Mathf.FloorToInt(region.Value.x) : 0;
+            var y0 = region.HasValue ? Mathf.FloorToInt(region.Value.y) : 0;
+            var w = region.HasValue ? Mathf.FloorToInt(region.Value.width) : tex2d.width;
+            var h = region.HasValue ? Mathf.FloorToInt(region.Value.height) : tex2d.height;
+
+            // Sample a bounded grid so large textures stay cheap.
+            var stride = Mathf.Max(1, Mathf.FloorToInt(Mathf.Sqrt(w * h / 8192f)));
+            var opaqueBlack = 0;
+            var total = 0;
+            for (var y = y0; y < y0 + h; y += stride)
+            {
+                for (var x = x0; x < x0 + w; x += stride)
+                {
+                    var pixel = tex2d.GetPixel(x, y);
+                    total++;
+                    if (pixel.a >= 0.97f && pixel.r < 0.08f && pixel.g < 0.08f && pixel.b < 0.08f)
+                    {
+                        opaqueBlack++;
+                    }
+                }
+            }
+
+            return total > 0 && opaqueBlack / (float)total > 0.2f;
+        }
+        catch (Exception)
+        {
+            // Texture is not readable; fall back to treating it as alpha-safe.
+            return false;
+        }
+    }
+
+    private static bool TextureFormatHasAlpha(TextureFormat format)
+    {
+        switch (format)
+        {
+            case TextureFormat.RGBA32:
+            case TextureFormat.ARGB32:
+            case TextureFormat.BGRA32:
+            case TextureFormat.RGBA4444:
+            case TextureFormat.RGBAFloat:
+            case TextureFormat.RGBAHalf:
+            case TextureFormat.R16:
+            case TextureFormat.RG16:
+            case TextureFormat.DXT5:
+            case TextureFormat.BC7:
+            case TextureFormat.ASTC_4x4:
+            case TextureFormat.ASTC_5x5:
+            case TextureFormat.ASTC_6x6:
+            case TextureFormat.ASTC_8x8:
+            case TextureFormat.ASTC_10x10:
+            case TextureFormat.ASTC_12x12:
+            case TextureFormat.PVRTC_RGBA2:
+            case TextureFormat.PVRTC_RGBA4:
+            case TextureFormat.ETC2_RGBA8:
+            case TextureFormat.ETC2_RGBA1:
+            case TextureFormat.ATC_RGBA8:
+                return true;
+            default:
+                return false;
         }
     }
 
