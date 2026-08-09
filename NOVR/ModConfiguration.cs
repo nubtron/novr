@@ -148,7 +148,7 @@ public class ModConfiguration
         HeadGazeMultiplier = config.Bind(
             "General",
             "Head Gaze Multiplier",
-            1.5f,
+            2.0f,
             new ConfigDescription(
                 "How much the head-gaze cursor moves relative to your head turn. 1.0 keeps the cursor at the exact center of your view; higher values amplify head movement so you reach the edges of menus with less neck craning.",
                 new AcceptableValueRange<float>(0.5f, 3.0f)));
