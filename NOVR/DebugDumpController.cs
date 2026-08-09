@@ -13,6 +13,12 @@ namespace NOVR;
 // injected, so one keypress produces both halves of the picture: the mod's own
 // C# state (VrDebugDump) and the GPU's view of the frame (RenderDoc). Outside
 // the harness RenderDoc is absent and that half is silently skipped.
+//
+// Both entry points are behind [Debug] Enable Frame Dumps, off by default. A
+// dump stalls the frame and writes several megabytes of PNGs, so claiming F1 in
+// a shipped mod would mean a player who pressed it while flying got an
+// unexplained hitch. Auto Start Mission does not come through here — it calls
+// VrDebugDump directly — so the harness is unaffected by the gate.
 public class DebugDumpController : NOVRBehaviour
 {
     private readonly KeyboardKey _dumpKey = new(KeyboardKey.KeyCode.F1);
@@ -26,7 +32,8 @@ public class DebugDumpController : NOVRBehaviour
 
     private void Update()
     {
-        if (_dumpKey.UpdateIsDown() || ConsumeDumpTriggerFile())
+        if (ModConfiguration.Instance.EnableFrameDumps.Value &&
+            (_dumpKey.UpdateIsDown() || ConsumeDumpTriggerFile()))
         {
             VrDebugDump.Request();
             if (ModConfiguration.Instance.RenderDocCaptureOnDump.Value)
