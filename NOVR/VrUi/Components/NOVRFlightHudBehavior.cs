@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
@@ -323,7 +324,6 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
             case TextureFormat.PVRTC_RGBA4:
             case TextureFormat.ETC2_RGBA8:
             case TextureFormat.ETC2_RGBA1:
-            case TextureFormat.ATC_RGBA8:
                 return true;
             default:
                 return false;
