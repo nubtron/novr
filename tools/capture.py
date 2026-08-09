@@ -38,24 +38,32 @@ DUMPS_DIR = "dumps"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--mission", default="", help="mission name to match (default: a Free Flight mission)")
+    parser.add_argument("--mission", default="",
+                        help="mission name to match (default: a built-in mission — Free Flight has no airbase spawn)")
     parser.add_argument("--dumps", type=int, default=3, help="how many dumps to fire (default 3)")
     parser.add_argument("--delay", type=float, default=8.0, help="seconds before the first dump and between dumps")
     parser.add_argument("--timeout", type=int, default=300, help="seconds to wait for the run to finish")
+    # Measured: a successful run is ~35s wall clock with one dump (launch ~1s,
+    # mission load and spawn ~20s, dump, capture settle), so roughly 50s with
+    # the default three. 300s is deliberate slack for a cold start after a game
+    # update rather than a tight bound — the point is that the script cannot sit
+    # there indefinitely with a game process running. Each wait below is
+    # individually capped too, but those caps stack; this one is absolute.
+    parser.add_argument("--max-runtime", type=int, default=300,
+                        help="hard ceiling in seconds for the whole run (default 300)")
     parser.add_argument("--no-renderdoc", action="store_true", help="skip the GPU capture, buffer dumps only")
     parser.add_argument("--keep-running", action="store_true", help="do not close the game at the end")
     parser.add_argument("--config", default=None, help="override the harness config path")
     return parser.parse_args()
 
 
-def wait_for_done(marker: Path, project, deadline_s: int) -> bool:
-    """Wait for the mod's completion marker.
+def wait_for_done(marker: Path, project, deadline: float) -> bool:
+    """Wait for the mod's completion marker, up to an absolute deadline.
 
     Polling for output files instead would mean a crashed or mod-less run always
     costs the full timeout; the marker plus a liveness check turns most failures
     into a fast, specific error.
     """
-    deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
         if marker.exists():
             return True
@@ -65,7 +73,76 @@ def wait_for_done(marker: Path, project, deadline_s: int) -> bool:
     return False
 
 
-def wait_for_captures_to_settle(captures_dir: Path, timeout_s: int = 90) -> None:
+def harness_log(project, limit: int = 8) -> list[str]:
+    """The mod's own [NOVR-HARNESS] lines from Player.log, newest last.
+
+    Every failure in this harness announces itself in the game log and nowhere
+    else. Telling the user to "check Player.log" costs them a grep through
+    ~1500 lines of Unity noise to find the one line that names the problem, so
+    the driver reads it for them.
+    """
+    log = project.player_log_wsl if project.player_log else None
+    if not log or not log.is_file():
+        return []
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = [
+        l.strip()
+        for l in text.splitlines()
+        if "[NOVR-HARNESS]" in l
+        # The mission inventory is one enormous line; useful when choosing a
+        # mission, pure noise in a failure report.
+        and "Available single-player missions" not in l
+    ]
+    return lines[-limit:]
+
+
+def explain_failure(project) -> None:
+    """Print what the mod said, and what it usually means."""
+    lines = harness_log(project)
+    if not lines:
+        print(
+            "\nThe mod logged nothing. Either BepInEx did not load (see the "
+            "launch table in tools/README.md) or [Debug] Auto Start Mission "
+            "never took effect.",
+            file=sys.stderr,
+        )
+        return
+
+    print("\nWhat the mod reported:", file=sys.stderr)
+    for line in lines:
+        print(f"  {line}", file=sys.stderr)
+
+    # Map the *last* state the mod reached to a fix. Scanning the whole tail for
+    # any match reads stale lines from earlier in the same run — a completed run
+    # still contains "no local player yet" from before the mission loaded, and
+    # matching that would blame a timeout for a run that actually succeeded.
+    hints = [
+        ("Run complete", None),
+        ("Fired dump", None),
+        ("local aircraft acquired",
+         "the aircraft spawned but no output appeared — check the dump path and disk space"),
+        ("no spawnable aircraft",
+         "this mission has no airbase hangar spawn (Free Flight is like this) — "
+         "use --mission with a built-in mission such as '01. Convoy Attack'"),
+        ("no faction HQ",
+         "faction join failed; check the mission actually has a joinable faction"),
+        ("no local player yet",
+         "the mission never finished loading — try a longer --timeout"),
+        ("Started mission",
+         "mission started but never reached a cockpit — see the spawn lines above"),
+    ]
+    for line in reversed(lines):
+        for needle, hint in hints:
+            if needle in line:
+                if hint:
+                    print(f"\nLikely fix: {hint}.", file=sys.stderr)
+                return
+
+
+def wait_for_captures_to_settle(captures_dir: Path, deadline: float) -> None:
     """Wait until RenderDoc has finished writing its .rdc files.
 
     RenderDoc serialises the capture asynchronously, well after the frame that
@@ -76,7 +153,6 @@ def wait_for_captures_to_settle(captures_dir: Path, timeout_s: int = 90) -> None
     """
     stable_rounds = 0
     previous: dict[Path, int] = {}
-    deadline = time.monotonic() + timeout_s
 
     while time.monotonic() < deadline:
         current = {p: p.stat().st_size for p in captures_dir.glob("*.rdc")}
@@ -151,6 +227,11 @@ def main() -> int:
         ("Debug", "RenderDoc Capture On Dump"): "false" if args.no_renderdoc else "true",
     }
 
+    # One ceiling for the whole run. Each wait below is individually bounded,
+    # but those bounds stack; a single deadline is what actually guarantees the
+    # harness cannot sit there indefinitely with a game process running.
+    deadline = time.monotonic() + args.max_runtime
+
     game.kill(project)
 
     with bepinex_cfg.temporarily(project.config_file_wsl, updates):
@@ -178,15 +259,18 @@ def main() -> int:
             if not args.no_renderdoc and not status.renderdoc:
                 print("  warning: renderdoc.dll not present; continuing with buffer dumps only")
 
-            print(f"waiting up to {args.timeout}s for the run to finish...")
-            finished = wait_for_done(marker, project, args.timeout)
+            wait_deadline = min(deadline, time.monotonic() + args.timeout)
+            print(f"waiting up to {int(wait_deadline - time.monotonic())}s for the run to finish...")
+            finished = wait_for_done(marker, project, wait_deadline)
             if not finished:
                 print("  timed out waiting for harness.done", file=sys.stderr)
         finally:
             # Must happen before the kill: RenderDoc writes the capture from
             # inside the game process.
             if not args.no_renderdoc:
-                wait_for_captures_to_settle(captures_dir)
+                # Allow a little past the ceiling: aborting mid-write is
+                # what produces a corrupt capture in the first place.
+                wait_for_captures_to_settle(captures_dir, min(deadline + 60, time.monotonic() + 90))
             if not args.keep_running:
                 game.kill(project)
                 print("game closed")
@@ -203,7 +287,8 @@ def main() -> int:
     print(f"thumbnails:   {len(thumbs)}")
 
     if dump_dir is None and not captures:
-        print("\nnothing was produced — check Player.log", file=sys.stderr)
+        print("\nnothing was produced.", file=sys.stderr)
+        explain_failure(project)
         return 1
     return 0
 

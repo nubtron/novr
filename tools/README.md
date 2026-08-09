@@ -40,9 +40,22 @@ Output:
   headlessly via `renderdoccmd thumb` as a quick "is this frame black" check.
   Inspect with the `rdc` CLI or qrenderdoc.
 
+A successful run takes about 35 seconds with one dump, ~50 s with the default
+three. `--max-runtime` (default 300 s) is a hard ceiling on the whole script,
+not just the individual waits, so it cannot sit there forever holding a game
+process open.
+
 The run restores your `[Debug]` config afterwards, so a normal launch does not
 suddenly start a mission by itself. The game is always closed on the way out
 unless you pass `--keep-running`.
+
+`--mission` defaults to a **built-in** mission (`01. Convoy Attack` and friends),
+which spawns you into a cockpit by itself. Free Flight looks like the obvious
+choice but offers no airbase hangar spawn, so a run against it starts the
+mission and then waits at aircraft selection forever.
+
+When a run produces nothing, the driver prints the mod's own `[NOVR-HARNESS]`
+lines and a likely fix — read that before opening Player.log.
 
 ## Why the launch path looks strange
 
