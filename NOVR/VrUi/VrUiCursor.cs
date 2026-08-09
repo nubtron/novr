@@ -78,7 +78,7 @@ public class VrUiCursor: NOVRBehaviour
     private float _controllerSmoothing = 0.3f;
     private bool _controllerModeLogged;
     private bool _hmdGazeLogged;
-    private float _headGazeMultiplier = 1.5f;
+    private float _headGazeMultiplier = 2.0f;
     private bool _gazeKeyClickHeld;
     private bool _gazeAnchorCaptured;
     private Quaternion _gazeAnchorRotation = Quaternion.identity;
