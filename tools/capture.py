@@ -251,6 +251,11 @@ def main() -> int:
         ("Debug", "Auto Dump Count"): str(args.dumps),
         ("Debug", "Auto Dump Delay"): str(args.delay),
         ("Debug", "RenderDoc Capture On Dump"): "false" if args.no_renderdoc else "true",
+        # The auto-dump path does not go through the F1/trigger gate, but
+        # --keep-running exists so a human can poke at a live game, and the
+        # trigger file is how they ask for a dump. bepinex_cfg forces this back
+        # off afterwards however the run ends.
+        ("Debug", "Enable Frame Dumps"): "true",
     }
     for override in args.set:
         section, _, rest = override.partition(":")

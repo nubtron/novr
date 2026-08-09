@@ -53,8 +53,12 @@ not just the individual waits, so it cannot sit there forever holding a game
 process open.
 
 The run restores your `[Debug]` config afterwards, so a normal launch does not
-suddenly start a mission by itself. The game is always closed on the way out
-unless you pass `--keep-running`.
+suddenly start a mission by itself. `Auto Start Mission`, `Enable Frame Dumps`
+and `RenderDoc Capture On Dump` are restored to **off**, not to whatever the
+file happened to say on the way in — a run that dies before its cleanup leaves
+them on, and a snapshot-based restore would then preserve that state forever.
+One crash used to arm auto-start for every launch after it. The game is always
+closed on the way out unless you pass `--keep-running`.
 
 `--mission` defaults to a **built-in** mission (`01. Convoy Attack` and friends),
 which spawns you into a cockpit by itself. Free Flight looks like the obvious
@@ -147,6 +151,7 @@ draws you need when you can.
 
 | Key | Purpose |
 |---|---|
+| `Enable Frame Dumps` | Let F1 / `dump.trigger` write a buffer dump. Off for normal play — a dump stalls the frame and writes megabytes, which is not what F1 should do to someone who only wanted to fly. |
 | `RenderDoc Capture On Dump` | Fire a GPU capture whenever a buffer dump fires. No-op without RenderDoc injected. |
 | `Auto Start Mission` | Start a mission and dump unattended. Off for normal play. |
 | `Auto Start Mission Name` | Mission to match by name; empty picks a built-in mission. |

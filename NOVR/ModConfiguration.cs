@@ -30,6 +30,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
+    public readonly ConfigEntry<bool> EnableFrameDumps;
     public readonly ConfigEntry<bool> RenderDocCaptureOnDump;
     public readonly ConfigEntry<bool> AutoStartMission;
     public readonly ConfigEntry<string> AutoStartMissionName;
@@ -182,15 +183,22 @@ public class ModConfiguration
             0.0f,
             "Vertical offset in meters applied when NOVR's native VR menu UI is opened or recentered. Values from -0.25 to 1.0 are supported.");
 
-        // [Debug] drives the offline verification harness (tools/). Everything
-        // here is off by default and inert in a normal play session: the
-        // RenderDoc trigger no-ops without renderdoc.dll injected, and the auto
-        // dump only runs when Auto Start Mission put us in a mission.
+        // [Debug] drives the offline verification harness (tools/). Every key
+        // here is off by default, and a normal play session has to behave as if
+        // the section did not exist: no hotkey doing anything surprising, no
+        // capture firing, no mission starting by itself. The harness turns on
+        // what it needs for the duration of a run and puts it back.
+        EnableFrameDumps = config.Bind(
+            "Debug",
+            "Enable Frame Dumps",
+            false,
+            "Let F1 (or a 'dump.trigger' file next to NOVR.dll) write a buffer dump of the current frame. Off for normal play: a dump stalls the frame and writes several MB of PNGs, which is not what F1 should do to someone who only wanted to fly.");
+
         RenderDocCaptureOnDump = config.Bind(
             "Debug",
             "RenderDoc Capture On Dump",
-            true,
-            "When RenderDoc is injected into the game, also trigger a GPU frame capture whenever a buffer dump fires (F1 or dump.trigger). Has no effect without RenderDoc — see tools/README.md.");
+            false,
+            "When RenderDoc is injected into the game, also trigger a GPU frame capture whenever a buffer dump fires. Has no effect without RenderDoc — see tools/README.md.");
 
         AutoStartMission = config.Bind(
             "Debug",
