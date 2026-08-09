@@ -21,14 +21,14 @@ tools/vr-harness.example.toml.
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from vr_harness import HarnessError, load_project, powershell  # noqa: E402
+from vr_harness import HarnessError, load_project, powershell, to_win  # noqa: E402
 from vr_harness import bepinex_cfg, game, mockxr  # noqa: E402
 
 PROJECT = "novr"
@@ -51,24 +51,48 @@ def parse_args() -> argparse.Namespace:
     # individually capped too, but those caps stack; this one is absolute.
     parser.add_argument("--max-runtime", type=int, default=300,
                         help="hard ceiling in seconds for the whole run (default 300)")
+    # A/B-ing a config value is the whole point of an unattended harness: run
+    # once with the feature on, once off, diff the output. Restricting that to
+    # the [Debug] section would mean hand-editing the .cfg around every run,
+    # which is exactly the manual step this replaces. Values are restored
+    # afterwards like any other harness edit.
+    parser.add_argument("--set", action="append", default=[], metavar="SECTION:KEY=VALUE",
+                        help="override any config entry for this run, e.g. --set 'General:HUD Opacity=0'")
     parser.add_argument("--no-renderdoc", action="store_true", help="skip the GPU capture, buffer dumps only")
     parser.add_argument("--keep-running", action="store_true", help="do not close the game at the end")
     parser.add_argument("--config", default=None, help="override the harness config path")
     return parser.parse_args()
 
 
-def wait_for_done(marker: Path, project, deadline: float) -> bool:
+def wait_for_done(marker: Path, project, deadline: float, pid: int) -> bool:
     """Wait for the mod's completion marker, up to an absolute deadline.
 
     Polling for output files instead would mean a crashed or mod-less run always
     costs the full timeout; the marker plus a liveness check turns most failures
     into a fast, specific error.
+
+    The liveness check watches the pid we launched, not just the process name.
+    A run that says "the game exited" while a game is visibly on screen is
+    baffling, and it happens: the process we set up — mock runtime env, Doorstop,
+    RenderDoc injected — can die and be replaced by one we did not configure.
+    Whatever is on screen then is not the thing under test.
     """
     while time.monotonic() < deadline:
         if marker.exists():
             return True
-        if not game.is_running(project):
-            raise HarnessError("game exited before the run completed — check Player.log")
+        if not game.is_running(project, pid):
+            others = [p for p in game.running_pids(project) if p != pid]
+            if others:
+                raise HarnessError(
+                    f"the game process we launched (pid {pid}) exited and a different "
+                    f"one took its place (pid {', '.join(map(str, others))}).\n"
+                    "That replacement has neither our mock-runtime environment nor "
+                    "RenderDoc injected, so the run is void. Close every game "
+                    "instance and retry."
+                )
+            raise HarnessError(
+                f"the game (pid {pid}) exited before the run completed — check Player.log"
+            )
         time.sleep(2)
     return False
 
@@ -187,8 +211,7 @@ def extract_thumbnails(project, captures: list[Path]) -> list[Path]:
     for rdc in captures:
         png = rdc.with_suffix(".thumb.png")
         result = powershell(
-            f"& '{project.renderdoccmd}' thumb '{PureWindowsPath(project.work_dir)}\\captures\\{rdc.name}' "
-            f"--out '{PureWindowsPath(project.work_dir)}\\captures\\{png.name}'"
+            f"& '{project.renderdoccmd}' thumb '{to_win(rdc)}' --out '{to_win(png)}'"
         )
         if png.exists():
             thumbs.append(png)
@@ -207,11 +230,14 @@ def main() -> int:
     print(f"config: {project.source}")
     print(f"game:   {project.game_dir}")
 
-    captures_dir = project.work_dir_wsl / "captures"
-    if captures_dir.exists():
-        shutil.rmtree(captures_dir)
+    # One directory per run rather than a wiped shared one. Comparing a run
+    # against an earlier run is the main thing this harness is for, and a run
+    # that deletes its predecessor's evidence — including a --no-renderdoc run
+    # that produces none of its own — makes that impossible.
+    stamp = datetime.now().strftime("%H%M%S")
+    captures_dir = project.work_dir_wsl / "captures" / stamp
     captures_dir.mkdir(parents=True, exist_ok=True)
-    capture_prefix = str(PureWindowsPath(project.work_dir) / "captures" / PROJECT)
+    capture_prefix = str(PureWindowsPath(project.work_dir) / "captures" / stamp / PROJECT)
 
     marker = project.plugin_dir_wsl / DONE_MARKER
     marker.unlink(missing_ok=True)
@@ -226,6 +252,13 @@ def main() -> int:
         ("Debug", "Auto Dump Delay"): str(args.delay),
         ("Debug", "RenderDoc Capture On Dump"): "false" if args.no_renderdoc else "true",
     }
+    for override in args.set:
+        section, _, rest = override.partition(":")
+        key, sep, value = rest.partition("=")
+        if not section or not sep:
+            raise HarnessError(f"--set expects SECTION:KEY=VALUE, got {override!r}")
+        updates[(section.strip(), key.strip())] = value.strip()
+        print(f"config: [{section.strip()}] {key.strip()} = {value.strip()} (for this run)")
 
     # One ceiling for the whole run. Each wait below is individually bounded,
     # but those bounds stack; a single deadline is what actually guarantees the
@@ -261,7 +294,7 @@ def main() -> int:
 
             wait_deadline = min(deadline, time.monotonic() + args.timeout)
             print(f"waiting up to {int(wait_deadline - time.monotonic())}s for the run to finish...")
-            finished = wait_for_done(marker, project, wait_deadline)
+            finished = wait_for_done(marker, project, wait_deadline, launch.pid)
             if not finished:
                 print("  timed out waiting for harness.done", file=sys.stderr)
         finally:
