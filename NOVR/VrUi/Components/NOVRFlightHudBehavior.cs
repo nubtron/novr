@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -11,13 +13,34 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     private float _appliedLineThickness = -1f;
     private int _frameCount;
 
-    // HUD opacity state: the game renders the HUD with additive materials
-    // (white lines saturate to white over bright sky/terrain), so we swap
-    // every graphic to an alpha-blended material and raise its alpha.
+    // HUD opacity state.
+    //
+    // The game renders the HUD additively: the framebuffer gets the texture RGB
+    // *added* to the scene, so black background pixels contribute nothing and
+    // coloured pixels contribute their colour. That is invisible over dark
+    // terrain and useless over a bright sky — dst + src saturates to white and
+    // the line loses its hue entirely. Measured from a RenderDoc capture: the
+    // HUD is drawn after tonemapping, so nothing upstream is washing it out.
+    // The blend equation itself is the whole problem.
+    //
+    // So every HUD graphic is moved onto an alpha-blended material. Where the
+    // texture has no alpha channel to blend with, one is reconstructed from the
+    // image itself (see RebuildAlphaFromLuminance) rather than giving up.
     private readonly List<Graphic> _hudGraphics = new List<Graphic>();
     private readonly Dictionary<Graphic, Material> _opaqueMaterials = new Dictionary<Graphic, Material>();
     private float _appliedOpacity = -1f;
     private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
+    //: Reconstructed textures, keyed by the original. Built once and shared by
+    //: every graphic using that texture.
+    private static readonly Dictionary<Texture, Texture2D> _rebuiltTextures =
+        new Dictionary<Texture, Texture2D>();
+    //: Black point for the alpha rebuild, as a fraction of full brightness.
+    //: Deliberately tiny — just enough to drop compression noise. An earlier
+    //: version used a much higher floor with a knee, on the theory that dim
+    //: pixels were background. They are not: the HUD icons are line art, and
+    //: those dim pixels are the antialiased shoulders of one-pixel lines.
+    //: Cutting them broke weaponIcon_gatlingGun into disconnected blobs.
+    private const float CoverageFloor = 0.015f;
     private static Shader _alphaBlendedUiShader;
     private static Shader _maskedUiShader;
 
@@ -150,6 +173,7 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
             return;
         }
 
+        var tally = new Dictionary<string, int>();
         foreach (var graphic in _hudGraphics)
         {
             if (graphic == null)
@@ -159,15 +183,28 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
 
             if (configChanged || !_opaqueMaterials.ContainsKey(graphic))
             {
-                ApplyOpacityToGraphic(graphic, opacity);
+                var outcome = ApplyOpacityToGraphic(graphic, opacity);
+                tally.TryGetValue(outcome, out var count);
+                tally[outcome] = count + 1;
             }
         }
 
         _appliedOpacity = opacity;
-        Debug.Log($"{nameof(NOVRFlightHudBehavior)}: Applied HUD opacity {opacity:F2} to {_hudGraphics.Count} graphics");
+        var breakdown = string.Join(", ", tally.Select(pair => $"{pair.Value} {pair.Key}"));
+        // Report what happened to every graphic, not just how many were seen.
+        // The previous version logged only a total, so an element that silently
+        // kept its additive material was indistinguishable from one that was
+        // converted — and two of them were, which took a GPU capture to notice.
+        Debug.Log($"{nameof(NOVRFlightHudBehavior)}: Applied HUD opacity {opacity:F2} to " +
+                  $"{_hudGraphics.Count} graphics ({breakdown})");
     }
 
-    private void ApplyOpacityToGraphic(Graphic graphic, float opacity)
+    /// <summary>
+    /// Move one graphic onto an alpha-blended material. Returns a short tag
+    /// naming what actually happened, for the summary line — every outcome,
+    /// including every refusal, has to be countable.
+    /// </summary>
+    private string ApplyOpacityToGraphic(Graphic graphic, float opacity)
     {
         var color = graphic.color;
         color.a = Mathf.Max(color.a, opacity);
@@ -179,33 +216,211 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
         // lose its look.
         if (IsPartOfDynamicMap(graphic))
         {
-            return;
-        }
-
-        // The game renders the HUD with additive blending, so its textures are
-        // authored for that: the background is plain black (black adds nothing)
-        // and many textures carry no alpha channel at all. Alpha-blending such
-        // a texture would show that background as an opaque rectangle, so
-        // additive-authored textures keep their original material.
-        if (IsAdditiveAuthoredTexture(graphic))
-        {
-            return;
+            return "skipped:map";
         }
 
         var material = GetOpaqueMaterial(graphic);
         if (material == null)
         {
-            return;
+            return graphic is TextMeshProUGUI ? "skipped:no-font" : "skipped:no-shader";
         }
 
         if (graphic is TextMeshProUGUI tmp)
         {
             tmp.fontSharedMaterial = material;
+            return "tmp-text";
         }
-        else
+
+        // The textures are authored for additive blending: the background is
+        // plain black (black adds nothing) and many carry no alpha channel at
+        // all. Alpha-blending such a texture as-is would show that background
+        // as an opaque rectangle — so rebuild the alpha from the image instead
+        // of leaving the element additive, which is the only way an element
+        // whose texture has no alpha can ever be made readable over bright sky.
+        var outcome = "alpha-blended";
+        if (IsAdditiveAuthoredTexture(graphic))
         {
-            graphic.material = material;
+            var rebuilt = RebuildAlphaFromLuminance(GetGraphicTexture(graphic));
+            if (rebuilt == null || !TryUseRebuiltTexture(graphic, rebuilt))
+            {
+                // Reconstruction failed, or this Graphic type has no texture we
+                // can swap. Additive is the safe fallback: washed out, but never
+                // an opaque black box.
+                return "kept-additive:rebuild-failed";
+            }
+            outcome = "alpha-rebuilt";
         }
+
+        graphic.material = material;
+        return outcome;
+    }
+
+    private static readonly Dictionary<Sprite, Sprite> _rebuiltSprites = new Dictionary<Sprite, Sprite>();
+
+    /// <summary>
+    /// Point the graphic itself at the rebuilt texture.
+    ///
+    /// Setting _MainTex on the material does nothing here: Unity UI binds the
+    /// texture from Graphic.mainTexture at draw time and overwrites whatever the
+    /// material had. Doing it that way looked like it worked — the rebuilt
+    /// texture was created, uploaded, and visible in a GPU capture — while every
+    /// draw still sampled the original. With an alpha-blended material and a
+    /// source texture whose alpha is 255 everywhere, that renders the whole
+    /// quad opaque: black background included. The capture is what caught it;
+    /// the draw's bound texture was the original, not the copy.
+    /// </summary>
+    private static bool TryUseRebuiltTexture(Graphic graphic, Texture2D rebuilt)
+    {
+        switch (graphic)
+        {
+            case RawImage rawImage:
+                rawImage.texture = rebuilt;
+                return true;
+
+            case Image image when image.sprite != null:
+                var original = image.sprite;
+                if (!_rebuiltSprites.TryGetValue(original, out var sprite))
+                {
+                    // Same rect, pivot, border and pixels-per-unit as the
+                    // original, so nothing about layout or 9-slicing changes —
+                    // only the pixels behind it.
+                    var rect = original.rect;
+                    sprite = Sprite.Create(
+                        rebuilt,
+                        rect,
+                        new Vector2(original.pivot.x / rect.width, original.pivot.y / rect.height),
+                        original.pixelsPerUnit,
+                        0,
+                        SpriteMeshType.FullRect,
+                        original.border);
+                    sprite.name = original.name + " (alpha rebuilt)";
+                    _rebuiltSprites[original] = sprite;
+                }
+
+                image.sprite = sprite;
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Build an alpha-blendable copy of an additive-authored texture.
+    ///
+    /// Under additive blending a pixel's brightness *is* its coverage: black
+    /// contributes nothing, a bright pixel contributes its colour. So
+    /// alpha = max(r,g,b) and rgb = rgb / alpha re-expresses exactly the same
+    /// image as colour-times-coverage, which alpha blending can draw. A DXT1
+    /// texture with no alpha channel at all comes out as a clean mask.
+    ///
+    /// Read back through a RenderTexture rather than Texture2D.GetPixels: HUD
+    /// textures are compressed and usually not marked readable, and a blit is
+    /// the only path that works regardless.
+    /// </summary>
+    private static Texture2D RebuildAlphaFromLuminance(Texture source)
+    {
+        if (source == null)
+        {
+            return null;
+        }
+
+        if (_rebuiltTextures.TryGetValue(source, out var cached))
+        {
+            return cached;
+        }
+
+        Texture2D result = null;
+        RenderTexture temporary = null;
+        var previous = RenderTexture.active;
+        var sourceFilter = source.filterMode;
+        try
+        {
+            temporary = RenderTexture.GetTemporary(
+                source.width, source.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+            // Point sampling for the readback. Blit's default bilinear filter
+            // samples on a half-texel offset, which bleeds the bright lines out
+            // into the black background: measured on throttleArc, a texture
+            // that is 94.9% pure black came back with 60.9% of its pixels
+            // non-zero. Every one of those became a low-alpha tint, and the
+            // element rendered as a dark rectangle instead of a line.
+            source.filterMode = FilterMode.Point;
+            Graphics.Blit(source, temporary);
+            RenderTexture.active = temporary;
+
+            // Keep a mip chain. The HUD art is line drawings at 512x256 shown
+            // at a fraction of that size, and the original textures are mipped;
+            // a copy without mips is point-sampled on minification, which broke
+            // weaponIcon_gatlingGun into disconnected dots. Large elements were
+            // unaffected, which is what makes this look like a content bug
+            // rather than a sampling one.
+            result = new Texture2D(source.width, source.height, TextureFormat.RGBA32, true)
+            {
+                name = source.name + " (alpha rebuilt)",
+                wrapMode = source.wrapMode,
+                filterMode = source.filterMode,
+            };
+            result.ReadPixels(new Rect(0f, 0f, source.width, source.height), 0, 0, false);
+
+            var pixels = result.GetPixels32();
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                var pixel = pixels[i];
+                var coverage = Mathf.Max(pixel.r, Mathf.Max(pixel.g, pixel.b));
+
+                // Alpha is the brightness, straight through. That is not a
+                // simplification, it is the identity that makes this work: an
+                // additive draw contributes src, and an alpha draw contributes
+                // src*a, so taking a = brightness and normalising the colour to
+                // full intensity reproduces exactly the same contribution while
+                // also occluding what is behind it. Rescaling alpha on any curve
+                // breaks that equivalence and shows up as line art thinning out.
+                var alpha = coverage / 255f;
+                if (alpha <= CoverageFloor)
+                {
+                    pixels[i] = new Color32(0, 0, 0, 0);
+                    continue;
+                }
+
+                // Normalise the colour to full intensity and carry the intensity
+                // in alpha instead, so a dim line becomes a fully-coloured line
+                // drawn at partial coverage rather than a washed-out one.
+                var scale = 255f / coverage;
+                pixels[i] = new Color32(
+                    (byte)Mathf.Min(255f, pixel.r * scale),
+                    (byte)Mathf.Min(255f, pixel.g * scale),
+                    (byte)Mathf.Min(255f, pixel.b * scale),
+                    (byte)Mathf.Min(255f, alpha * 255f));
+            }
+
+            result.SetPixels32(pixels);
+            result.Apply(true, false);   // regenerate the mip chain from the rebuilt pixels
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning($"{nameof(NOVRFlightHudBehavior)}: could not rebuild alpha for " +
+                             $"'{source.name}' ({exception.GetType().Name}: {exception.Message}); " +
+                             "leaving it on the additive material.");
+            if (result != null)
+            {
+                Destroy(result);
+            }
+            result = null;
+        }
+        finally
+        {
+            // The source is the game's own texture asset — the point filtering
+            // above is ours and must not outlive the readback.
+            source.filterMode = sourceFilter;
+            RenderTexture.active = previous;
+            if (temporary != null)
+            {
+                RenderTexture.ReleaseTemporary(temporary);
+            }
+        }
+
+        _rebuiltTextures[source] = result;
+        return result;
     }
 
     private static readonly Dictionary<Texture, bool> _additiveAuthoredTextures = new Dictionary<Texture, bool>();
@@ -307,11 +522,19 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
             case TextureFormat.ARGB32:
             case TextureFormat.BGRA32:
             case TextureFormat.RGBA4444:
+            case TextureFormat.ARGB4444:
             case TextureFormat.RGBAFloat:
             case TextureFormat.RGBAHalf:
-            case TextureFormat.R16:
-            case TextureFormat.RG16:
+            case TextureFormat.RGBA64:
+            // Alpha-only. Nothing *but* alpha, in fact — this is what Unity's
+            // dynamic font atlas ("Font Texture") and the TMP SDF atlases use.
+            // Omitting it classified every legacy UI Text in the HUD as having
+            // no usable alpha, which is the exact opposite of the truth, and
+            // left them additive. Confirmed from a capture: Font Texture
+            // 256x256 A8_UNORM was rendering with Add(SrcAlpha, One).
+            case TextureFormat.Alpha8:
             case TextureFormat.DXT5:
+            case TextureFormat.DXT5Crunched:
             case TextureFormat.BC7:
             case TextureFormat.ASTC_4x4:
             case TextureFormat.ASTC_5x5:
@@ -323,7 +546,6 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
             case TextureFormat.PVRTC_RGBA4:
             case TextureFormat.ETC2_RGBA8:
             case TextureFormat.ETC2_RGBA1:
-            case TextureFormat.ATC_RGBA8:
                 return true;
             default:
                 return false;
@@ -347,6 +569,16 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
             if (font != null)
             {
                 material = new Material(font.material);
+                // ...except when it does not. Some font assets in this build
+                // (LiberationSans SDF TMPro Atlas) have an *additive* base
+                // material, so copying it kept those draws on Add(One, One) —
+                // visible in a capture, invisible in the log. Force the
+                // non-additive variant instead of trusting the asset.
+                var distanceField = GetDistanceFieldShader();
+                if (distanceField != null && material.shader != distanceField)
+                {
+                    material.shader = distanceField;
+                }
             }
         }
         else
@@ -431,6 +663,15 @@ public class NOVRFlightHudBehavior : UIRenderedCanvasBehavior
     private static Shader GetAlphaBlendedUiShader()
     {
         return GetCachedUiShader(ref _alphaBlendedUiShader, "Mobile/Particles/Alpha Blended", "TextMeshPro/Sprite");
+    }
+
+    private static Shader _distanceFieldShader;
+
+    /// <summary>The alpha-blended TextMeshPro shader, as opposed to the
+    /// additive variant some of this build's font assets ship with.</summary>
+    private static Shader GetDistanceFieldShader()
+    {
+        return GetCachedUiShader(ref _distanceFieldShader, "TextMeshPro/Distance Field");
     }
 
     private static Shader GetMaskedUiShader()
