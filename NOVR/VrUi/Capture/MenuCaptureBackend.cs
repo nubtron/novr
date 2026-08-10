@@ -32,6 +32,9 @@ public class MenuCaptureBackend : NOVRBehaviour
     // first inactive frame meant rebuilding the target, camera and panel three
     // times in one menu visit, so an absence has to persist to count.
     private const float TeardownGrace = 1.5f;
+    // Above the native root and the patched game canvas: when the panel is up
+    // it is what the player is looking at.
+    private const int GazeAnchorPriority = 3;
 
     private static MenuCaptureBackend? _instance;
 
@@ -335,6 +338,10 @@ public class MenuCaptureBackend : NOVRBehaviour
 
         _panelRect.position = position;
         _panelRect.rotation = _anchorRotation;
+
+        // The panel is the surface the cursor is driven against, so head-gaze
+        // amplification is measured from its centre.
+        VrUiCursor.I?.SetGazeAnchorCenter(position, GazeAnchorPriority);
 
         if (_loggedPlacement || origin == Vector3.zero) return;
         _loggedPlacement = true;
