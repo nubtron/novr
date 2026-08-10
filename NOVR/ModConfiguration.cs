@@ -30,6 +30,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
+    public readonly ConfigEntry<bool> ShowNativeUiButton;
     public readonly ConfigEntry<bool> CaptureMenusToTexture;
     public readonly ConfigEntry<float> CapturedMenuDistance;
     public readonly ConfigEntry<float> CapturedMenuWidth;
@@ -199,6 +200,12 @@ public class ModConfiguration
             "Native Menu Height Offset",
             0.0f,
             "Vertical offset in meters applied when NOVR's native VR menu UI is opened or recentered. Values from -0.25 to 1.0 are supported.");
+
+        ShowNativeUiButton = config.Bind(
+            "Experimental",
+            "Show Native UI Button",
+            true,
+            "Show the 'VR UI ON' button in the headset while the game's own menus are in use. It switches back to NOVR's native VR menu UI. Turn it off to keep it out of the view; the native UI can still be re-enabled with Enable Native Menu UI in this file.");
 
         CaptureMenusToTexture = config.Bind(
             "Experimental",
