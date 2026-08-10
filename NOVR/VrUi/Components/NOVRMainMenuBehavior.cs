@@ -29,6 +29,7 @@ public class NOVRMainMenuBehavior : UIRenderedCanvasBehavior
         // The patched game menu is the surface the cursor is driven against on
         // this path, so head-gaze amplification measures from its centre
         // rather than from a head pose captured when the cursor appeared.
+        // Under capture the panel is that surface instead, and reports itself.
         if (MenuCaptureBackend.Enabled) return;
 
         VrUiCursor.I?.SetGazeAnchorCenter(transform.position, GazeAnchorPriority);
