@@ -5,6 +5,7 @@ using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
 using UnityEngine.UI;
 using UnityEngine.XR;
+using XRCommonUsages = UnityEngine.XR.CommonUsages;
 
 namespace NOVR.VrUi;
 
@@ -48,6 +49,7 @@ public class VrUiCursor: NOVRBehaviour
     private const float MaxPitchDegrees = 45f;
     private const float DefaultProjectionDistance = 5;
     private const float CursorMinDistanceMeters = 1.0f;
+    private const float GazeAnchorSettleSeconds = 0.75f;
     private const float CursorCanvasScale = 0.001f;
     private const int CursorTextureSize = 64;
     private const float CursorIdlePulseScale = 0.035f;
@@ -82,6 +84,10 @@ public class VrUiCursor: NOVRBehaviour
     private bool _gazeKeyClickHeld;
     private bool _gazeAnchorCaptured;
     private Quaternion _gazeAnchorRotation = Quaternion.identity;
+    private int _gazeAnchorCalibrationVersion;
+    private bool _headsetPresent = true;
+    private float _gazeAnchorEarliestCaptureTime;
+    private Vector2 _lastScreenPoint;
     
     
     private int ScreenWidth => Screen.width;
@@ -101,11 +107,21 @@ public class VrUiCursor: NOVRBehaviour
         if (_cursor != null && camera != null)
         {
             Vector3 viewportPoint = camera.WorldToViewportPoint(_cursor.transform.position, Camera.MonoOrStereoscopicEye.Mono);
+
+            // Behind the camera, WorldToViewportPoint mirrors x/y and reports a
+            // negative z. Clamping that into screen bounds would put the virtual
+            // mouse at a plausible-looking but wrong point and pin it there, so
+            // hold the last point that was genuinely in front instead.
+            if (viewportPoint.z <= 0f)
+            {
+                return _lastScreenPoint;
+            }
+
             float screenX = Mathf.Clamp(viewportPoint.x * Screen.width, 0f, Screen.width);
             float screenY = Mathf.Clamp(viewportPoint.y * Screen.height, 0f, Screen.height);
-            return new Vector2(screenX, screenY);
+            _lastScreenPoint = new Vector2(screenX, screenY);
         }
-        return Vector2.zero;
+        return _lastScreenPoint;
     }
 
     public void SetProjectionReferenceRotation(Quaternion referenceRotation)
@@ -224,15 +240,19 @@ public class VrUiCursor: NOVRBehaviour
             var referenceRotation = GetProjectionReferenceRotation();
             if (!_hasProjectionReferenceOverride)
             {
-                if (!_gazeAnchorCaptured)
+                if (!_gazeAnchorCaptured && Time.unscaledTime >= _gazeAnchorEarliestCaptureTime)
                 {
-                    var headEuler = camera.transform.eulerAngles;
-                    _gazeAnchorRotation = Quaternion.Euler(headEuler.x, headEuler.y, 0f);
-                    _gazeAnchorCaptured = true;
+                    CaptureGazeAnchor(camera);
                 }
                 referenceRotation = _gazeAnchorRotation;
             }
 
+            // Pitch is the elevation above the anchor's horizon and yaw the
+            // angle around it. Both stay well-behaved now the anchor is level:
+            // elevation cannot fold, because that needs the head tipped past
+            // vertical, and yaw is monotone all the way around to the seam at
+            // 180 degrees — directly behind the user, where any bounded cursor
+            // range has to put its discontinuity.
             var localForward = Quaternion.Inverse(referenceRotation) * camera.transform.forward;
             var gazePitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg * _headGazeMultiplier, -MaxPitchDegrees, MaxPitchDegrees);
             var gazeYaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg * _headGazeMultiplier, -MaxYawDegrees, MaxYawDegrees);
@@ -257,8 +277,20 @@ public class VrUiCursor: NOVRBehaviour
         }
 
         Vector3 viewportSpace = camera.WorldToViewportPoint(camera.transform.position + worldDirection * DefaultProjectionDistance, Camera.MonoOrStereoscopicEye.Mono);
-        Vector2 inScreenSpace = new Vector2(viewportSpace.x * Screen.width, viewportSpace.y * Screen.height);
-        float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
+        // Only probe for UI under the cursor when the cursor direction is in
+        // front of the camera; behind it the viewport point is mirrored, so the
+        // raycast would sample an unrelated part of the screen.
+        float cursorDistance;
+        if (viewportSpace.z > 0f)
+        {
+            Vector2 inScreenSpace = new Vector2(viewportSpace.x * Screen.width, viewportSpace.y * Screen.height);
+            cursorDistance = GetDistanceUnderCursor(inScreenSpace);
+        }
+        else
+        {
+            _cursorOverInteractive = false;
+            cursorDistance = DefaultProjectionDistance;
+        }
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
         _cursor.transform.rotation = Quaternion.LookRotation(worldDirection, camera.transform.up);
@@ -280,6 +312,7 @@ public class VrUiCursor: NOVRBehaviour
         {
             _hmdGazeActive = true;
             _headGazeMultiplier = Mathf.Clamp(ModConfiguration.Instance.HeadGazeMultiplier.Value, 0.5f, 3.0f);
+            UpdateGazeAnchorValidity();
             UpdateGazeClickInput();
             if (!_hmdGazeLogged)
             {
@@ -384,6 +417,81 @@ public class VrUiCursor: NOVRBehaviour
 
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
+    }
+
+    /// <summary>
+    /// Captures the rotation the head-gaze cursor measures head movement
+    /// against. Yaw only, exactly like <c>NativeVrUiRoot.CaptureMenuAnchor</c>:
+    /// the two references have to agree, and any pitch or roll present at the
+    /// capture instant (putting the headset on tilts it in both) would
+    /// otherwise be baked into the cursor's centre for as long as the anchor
+    /// lives. Building it from a horizon-projected forward with world up also
+    /// avoids decomposing the head rotation into Euler angles, which does not
+    /// separate cleanly into yaw and pitch while the head is rolled.
+    /// </summary>
+    private void CaptureGazeAnchor(Camera camera)
+    {
+        var forward = camera.transform.forward;
+        var flatForward = Vector3.ProjectOnPlane(forward, Vector3.up);
+        if (flatForward.sqrMagnitude < 0.0001f)
+        {
+            // Looking straight up or down: forward carries no yaw at all, but
+            // the head's up axis lies along the horizon there, so it recovers
+            // the yaw the user is actually facing.
+            flatForward = Vector3.ProjectOnPlane(
+                forward.y > 0f ? -camera.transform.up : camera.transform.up,
+                Vector3.up);
+        }
+        if (flatForward.sqrMagnitude < 0.0001f)
+        {
+            flatForward = Vector3.forward;
+        }
+
+        _gazeAnchorRotation = Quaternion.LookRotation(flatForward.normalized, Vector3.up);
+        _gazeAnchorCaptured = true;
+        _gazeAnchorCalibrationVersion = NOVRHeadsetData.RotationCalibrationVersion;
+    }
+
+    /// <summary>
+    /// Drops the gaze anchor whenever the mapping between the user's physical
+    /// head pose and its world rotation has moved underneath it. The anchor is
+    /// a world-space rotation, so it silently stops meaning "straight ahead"
+    /// when either end of that mapping shifts: a recenter rewrites
+    /// <c>RotationCalibrationOffset</c>, and taking the headset off and putting
+    /// it back on lets the runtime re-seat its own reference space. Both leave
+    /// the cursor centred somewhere the user is not looking, and amplified by
+    /// Head Gaze Multiplier the error is usually enough to pin it against the
+    /// clamp. Re-capturing costs nothing: the next gaze frame re-anchors to
+    /// wherever the user is facing now.
+    /// </summary>
+    private void UpdateGazeAnchorValidity()
+    {
+        if (_gazeAnchorCaptured && _gazeAnchorCalibrationVersion != NOVRHeadsetData.RotationCalibrationVersion)
+        {
+            _gazeAnchorCaptured = false;
+            Debug.Log("[VrUiCursor] View recentered; head-gaze anchor invalidated.");
+        }
+
+        var head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+        if (!head.isValid || !head.TryGetFeatureValue(XRCommonUsages.userPresence, out var present))
+        {
+            // Runtime does not report presence: keep the last known state so a
+            // missing feature never looks like the headset was taken off.
+            return;
+        }
+
+        if (present && !_headsetPresent)
+        {
+            _gazeAnchorCaptured = false;
+            // Unlike a recenter, nothing here says the user is settled: presence
+            // flips as the headset reaches the face, while it is still being
+            // pulled into place. Capturing on that frame would bake the tilt of
+            // a headset mid-donning into the centre, so hold off briefly.
+            _gazeAnchorEarliestCaptureTime = Time.unscaledTime + GazeAnchorSettleSeconds;
+            Debug.Log("[VrUiCursor] Headset put back on; head-gaze anchor invalidated.");
+        }
+
+        _headsetPresent = present;
     }
 
     private Quaternion GetProjectionReferenceRotation()

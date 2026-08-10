@@ -24,6 +24,15 @@ public class NOVRHeadsetData : NOVRBehaviour
     public static Quaternion Rotation { get; private set; }
     public static Quaternion RotationCalibrationOffset { get; private set; } = Quaternion.identity;
     public static Quaternion RotationError => Quaternion.Inverse(RotationCalibrationOffset) * Rotation;
+
+    /// <summary>
+    /// Bumped every time <see cref="CalibrateRotation"/> changes the world-to-head
+    /// baseline. Anything holding a world-space rotation captured from the tracked
+    /// camera (the head-gaze cursor anchor) is stale once this changes, because the
+    /// same physical head pose now maps to a different world rotation. Consumers
+    /// keep the last value they saw and re-capture when it moves.
+    /// </summary>
+    public static int RotationCalibrationVersion { get; private set; }
     
     
     
@@ -61,6 +70,7 @@ public class NOVRHeadsetData : NOVRBehaviour
             (calibrationAxes & CalibrationAxes.Y) != 0 ? currentError.y : ov ? RotationCalibrationOffset.eulerAngles.y : 0,
             (calibrationAxes & CalibrationAxes.Z) != 0 ? currentError.z : ov ? RotationCalibrationOffset.eulerAngles.z : 0
         );
+        RotationCalibrationVersion++;
     }
     
     
