@@ -35,7 +35,6 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
     public readonly ConfigEntry<bool> ShowNativeUiButton;
-    public readonly ConfigEntry<bool> CaptureMenusToTexture;
     public readonly ConfigEntry<float> CapturedMenuDistance;
     public readonly ConfigEntry<float> CapturedMenuWidth;
     public readonly ConfigEntry<bool> EnableFrameDumps;
@@ -220,12 +219,6 @@ public class ModConfiguration
             "Show Native UI Button",
             true,
             "Show the 'VR UI ON' button in the headset while the game's own menus are in use. It switches back to NOVR's native VR menu UI. Turn it off to keep it out of the view; the native UI can still be re-enabled with Enable Native Menu UI in this file.");
-
-        CaptureMenusToTexture = config.Bind(
-            "Experimental",
-            "Capture Menus To Texture",
-            true,
-            "Render the game's own menus through the engine's screen-space overlay path into a texture and show it on a panel, instead of converting their canvases to world space. The overlay path is the one the game's UI was authored for, so masked text, list ordering and popups behave exactly as they do on a flat screen. Ignored while Enable Native Menu UI is on, and never applies to the flight HUD.");
 
         CapturedMenuDistance = config.Bind(
             "Experimental",
