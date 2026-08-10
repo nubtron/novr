@@ -32,6 +32,9 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
+    public readonly ConfigEntry<bool> CaptureMenusToTexture;
+    public readonly ConfigEntry<float> CapturedMenuDistance;
+    public readonly ConfigEntry<float> CapturedMenuWidth;
     public readonly ConfigEntry<bool> EnableFrameDumps;
     public readonly ConfigEntry<bool> DisableVrMod;
     public readonly ConfigEntry<bool> RenderDocCaptureOnDump;
@@ -199,6 +202,24 @@ public class ModConfiguration
             "Native Menu Height Offset",
             0.0f,
             "Vertical offset in meters applied when NOVR's native VR menu UI is opened or recentered. Values from -0.25 to 1.0 are supported.");
+
+        CaptureMenusToTexture = config.Bind(
+            "Experimental",
+            "Capture Menus To Texture",
+            false,
+            "Render the game's own menus through the engine's screen-space overlay path into a texture and show it on a panel, instead of converting their canvases to world space. The overlay path is the one the game's UI was authored for, so masked text, list ordering and popups behave exactly as they do on a flat screen. Ignored while Enable Native Menu UI is on, and never applies to the flight HUD.");
+
+        CapturedMenuDistance = config.Bind(
+            "Experimental",
+            "Captured Menu Distance",
+            2.5f,
+            "Distance in meters from the headset at which the captured menu panel is placed. Values from 1.0 to 6.0 are supported.");
+
+        CapturedMenuWidth = config.Bind(
+            "Experimental",
+            "Captured Menu Width",
+            3.0f,
+            "Width in meters of the captured menu panel. Values from 0.5 to 8.0 are supported.");
 
         // [Debug] drives the offline verification harness (tools/). Every key
         // here is off by default, and a normal play session has to behave as if
