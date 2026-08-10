@@ -67,12 +67,12 @@ public class MenuCaptureBackend : NOVRBehaviour
     public static bool SuppressesScreenOverlayUi => IsActive;
 
     /// <summary>
-    /// The backend replaces the game's menus, so it stands down when NOVR's own
-    /// native menu UI is the one being shown.
+    /// This backend is how the game's own menus are shown in VR — there is no
+    /// second implementation to fall back to, and no switch to turn it off. It
+    /// stands down for one reason only: NOVR's native menu UI replaces those
+    /// menus outright, so there is nothing left to capture.
     /// </summary>
-    public static bool Enabled =>
-        ModConfiguration.Instance.CaptureMenusToTexture.Value &&
-        !ModConfiguration.Instance.EnableNativeMenuUi.Value;
+    public static bool Enabled => !ModConfiguration.Instance.EnableNativeMenuUi.Value;
 
     public static bool IsCaptureCamera(Camera? camera) =>
         camera != null && _instance != null && ReferenceEquals(camera, _instance._captureCamera);
@@ -403,6 +403,7 @@ public class MenuCaptureBackend : NOVRBehaviour
         // Silence here would look like "the menu is just black", which is the
         // one failure this backend must never present without a reason.
         Debug.LogWarning($"[NOVR] Captured-menu backend cannot inject its render pass: {reason}. " +
-                         "Falling back to nothing being drawn; turn off Capture Menus To Texture.");
+                         "The game's menus will not be drawn. Set Enable Native Menu UI to true " +
+                         "to use NOVR's own VR menus instead, which do not need this hook.");
     }
 }
