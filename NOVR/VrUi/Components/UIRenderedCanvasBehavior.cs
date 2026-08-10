@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.UI;
 
 namespace NOVR.VrUi.SpecialBehavior;
 
@@ -31,6 +32,15 @@ public class UIRenderedCanvasBehavior : MonoBehaviour
         canvas.worldCamera = APIBus.CockpitHudCamera;
         Debug.Log($"{GetType().Name}: Set canvas world camera of {canvas.gameObject.name}. Is currently:  {canvas.worldCamera}");
         canvas.planeDistance = 1f;
+
+        // Materials are resolved once and cached on the graphic, so anything
+        // already drawn under the old render mode never runs back through the
+        // material modifiers. World space is exactly where masked content needs
+        // MaskedUiQueuePatch to correct its queue, so ask for that pass now.
+        foreach (var graphic in GetComponentsInChildren<MaskableGraphic>(true))
+        {
+            graphic.SetMaterialDirty();
+        }
     }
     
     
