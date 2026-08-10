@@ -229,7 +229,7 @@ public class ModConfiguration
         CapturedMenuWidth = config.Bind(
             "Experimental",
             "Captured Menu Width",
-            3.0f,
+            4.0f,
             "Width in meters of the captured menu panel. Values from 0.5 to 8.0 are supported.");
 
         // [Debug] drives the offline verification harness (tools/). Every key
