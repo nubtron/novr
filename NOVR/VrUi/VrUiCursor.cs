@@ -90,6 +90,9 @@ public class VrUiCursor: NOVRBehaviour
     private bool _gazeKeyClickHeld;
     private bool _gazeAnchorCaptured;
     private Quaternion _gazeAnchorRotation = Quaternion.identity;
+    private Vector3 _gazeAnchorCenter;
+    private int _gazeAnchorCenterPriority;
+    private int _gazeAnchorCenterFrame = -1;
     
     
     private int ScreenWidth => Screen.width;
@@ -114,6 +117,45 @@ public class VrUiCursor: NOVRBehaviour
             return new Vector2(screenX, screenY);
         }
         return Vector2.zero;
+    }
+
+    /// <summary>
+    /// Report the world-space centre of the surface the cursor is being driven
+    /// against, once per frame while it is visible. Head-gaze amplification is
+    /// measured from the direction of this point, so looking at the centre of a
+    /// menu always puts the cursor at its centre.
+    ///
+    /// The alternative — the head pose captured when the cursor appeared — is
+    /// only correct until that pose stops meaning anything: lift the headset
+    /// and put it back down and the anchor is left pointing wherever the
+    /// headset happened to be, taking the whole amplified range with it.
+    /// Geometry cannot go stale that way.
+    ///
+    /// Highest priority wins within a frame, so a menu drawn on top of another
+    /// surface owns the cursor without depending on script execution order.
+    /// </summary>
+    public void SetGazeAnchorCenter(Vector3 worldCenter, int priority)
+    {
+        if (_gazeAnchorCenterFrame == Time.frameCount && priority < _gazeAnchorCenterPriority) return;
+
+        _gazeAnchorCenter = worldCenter;
+        _gazeAnchorCenterPriority = priority;
+        _gazeAnchorCenterFrame = Time.frameCount;
+    }
+
+    private bool TryGetGazeAnchorRotation(Camera camera, out Quaternion rotation)
+    {
+        rotation = Quaternion.identity;
+
+        // Accept the previous frame too: providers run in Update, and nothing
+        // guarantees they run before the cursor does.
+        if (_gazeAnchorCenterFrame < Time.frameCount - 1) return false;
+
+        var toCenter = _gazeAnchorCenter - camera.transform.position;
+        if (toCenter.sqrMagnitude < 0.0001f) return false;
+
+        rotation = Quaternion.LookRotation(toCenter, Vector3.up);
+        return true;
     }
 
     public void SetProjectionReferenceRotation(Quaternion referenceRotation)
@@ -283,7 +325,13 @@ public class VrUiCursor: NOVRBehaviour
             // otherwise the direction the user was looking when the cursor
             // appeared. At 1.0x the cursor sits exactly at the view center.
             var referenceRotation = GetProjectionReferenceRotation();
-            if (!_hasProjectionReferenceOverride)
+            if (TryGetGazeAnchorRotation(camera, out var centreRotation))
+            {
+                // Anchored on the surface itself: looking at its centre puts
+                // the cursor at its centre, however the headset got here.
+                referenceRotation = centreRotation;
+            }
+            else if (!_hasProjectionReferenceOverride)
             {
                 if (!_gazeAnchorCaptured)
                 {
