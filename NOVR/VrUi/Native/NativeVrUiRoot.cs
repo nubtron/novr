@@ -286,6 +286,8 @@ public class NativeVrUiRoot : NOVRBehaviour
         ApplyNativeCursorProjectionReference();
     }
 
+    private const int GazeAnchorPriority = 2;
+
     private void CaptureMenuAnchor()
     {
         var reference = APIBus.CockpitHudReference.transform;
@@ -321,6 +323,10 @@ public class NativeVrUiRoot : NOVRBehaviour
 
         _root.transform.position = position;
         _root.transform.rotation = _menuAnchorRotation;
+
+        // Head-gaze amplification measures from the centre of whatever the
+        // cursor is pointed at; the native panel is that surface while it is up.
+        VrUiCursor.I?.SetGazeAnchorCenter(position, GazeAnchorPriority);
     }
 
     private void ApplyNativeCursorProjectionReference()
