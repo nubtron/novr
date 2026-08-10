@@ -232,7 +232,7 @@ public class ModConfiguration
         CaptureMenusToTexture = config.Bind(
             "Experimental",
             "Capture Menus To Texture",
-            false,
+            true,
             "Render the game's own menus through the engine's screen-space overlay path into a texture and show it on a panel, instead of converting their canvases to world space. The overlay path is the one the game's UI was authored for, so masked text, list ordering and popups behave exactly as they do on a flat screen. Ignored while Enable Native Menu UI is on, and never applies to the flight HUD.");
 
         CapturedMenuDistance = config.Bind(
