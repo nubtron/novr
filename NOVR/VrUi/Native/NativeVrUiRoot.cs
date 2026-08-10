@@ -551,6 +551,15 @@ public class NativeVrUiRoot : NOVRBehaviour
 
     private bool ShouldShowStockNativeUiToggle()
     {
+        // The button is the only in-headset way back to the native VR UI, so it
+        // is shown by default — but it sits over the game's menus, and someone
+        // who has deliberately chosen those does not need it offered every
+        // time they open one.
+        if (!ModConfiguration.Instance.ShowNativeUiButton.Value)
+        {
+            return false;
+        }
+
         if (_mainCanvas == null || !_mainCanvas.activeInHierarchy || IsControlMapperOpen())
         {
             return false;
