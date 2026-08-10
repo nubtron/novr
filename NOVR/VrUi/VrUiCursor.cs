@@ -98,6 +98,14 @@ public class VrUiCursor: NOVRBehaviour
     public Vector2 GetScreenPoint()
     {
         var camera = UiCamera;
+        // With the captured-menu backend the game's canvases are still screen
+        // space, so every raycaster expects real screen pixels — which the
+        // panel, not the UI camera's viewport, is what maps back to them.
+        if (_cursor != null && Capture.MenuCaptureBackend.TryGetScreenPoint(_cursor.transform.position, out var panelPoint))
+        {
+            return panelPoint;
+        }
+
         if (_cursor != null && camera != null)
         {
             Vector3 viewportPoint = camera.WorldToViewportPoint(_cursor.transform.position, Camera.MonoOrStereoscopicEye.Mono);
@@ -258,7 +266,11 @@ public class VrUiCursor: NOVRBehaviour
 
         Vector3 viewportSpace = camera.WorldToViewportPoint(camera.transform.position + worldDirection * DefaultProjectionDistance, Camera.MonoOrStereoscopicEye.Mono);
         Vector2 inScreenSpace = new Vector2(viewportSpace.x * Screen.width, viewportSpace.y * Screen.height);
-        float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
+        // The captured menu is a flat panel, so the cursor belongs on its
+        // surface; the world-space UI probing below has nothing to hit.
+        float cursorDistance = Capture.MenuCaptureBackend.TryGetPanelDistance(camera.transform.position, worldDirection, out var panelDistance)
+            ? panelDistance
+            : GetDistanceUnderCursor(inScreenSpace);
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
         _cursor.transform.rotation = Quaternion.LookRotation(worldDirection, camera.transform.up);
