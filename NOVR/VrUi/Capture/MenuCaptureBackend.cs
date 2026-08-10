@@ -27,6 +27,11 @@ public class MenuCaptureBackend : NOVRBehaviour
     private const string MenuCanvasName = "MainCanvas";
     private const float PanelCanvasReferenceWidth = 1000f;
     private const float RebindInterval = 0.5f;
+    // The menu canvas is deactivated for a frame at a time by the behaviour
+    // patcher and during scene transitions. Tearing the capture down on the
+    // first inactive frame meant rebuilding the target, camera and panel three
+    // times in one menu visit, so an absence has to persist to count.
+    private const float TeardownGrace = 1.5f;
 
     private static MenuCaptureBackend? _instance;
 
@@ -36,7 +41,12 @@ public class MenuCaptureBackend : NOVRBehaviour
     private Canvas? _panelCanvas;
     private RawImage? _panelImage;
     private RectTransform? _panelRect;
+    private Vector3 _anchorPosition;
+    private Quaternion _anchorRotation = Quaternion.identity;
+    private bool _anchorInitialized;
+    private bool _loggedPlacement;
     private float _nextRebind;
+    private float _lastWantedCapture;
     private bool _capturing;
     private bool _loggedPassEnqueued;
     private bool _loggedHookFailure;
@@ -94,8 +104,10 @@ public class MenuCaptureBackend : NOVRBehaviour
                           _menuCanvas.isActiveAndEnabled &&
                           _menuCanvas.renderMode == RenderMode.ScreenSpaceOverlay;
 
+        if (wantCapture) _lastWantedCapture = Time.unscaledTime;
+
         if (wantCapture && !_capturing) SetupCapture();
-        else if (!wantCapture && _capturing) TeardownCapture();
+        else if (!wantCapture && _capturing && Time.unscaledTime - _lastWantedCapture > TeardownGrace) TeardownCapture();
 
         if (_capturing) UpdatePanel();
     }
@@ -118,6 +130,7 @@ public class MenuCaptureBackend : NOVRBehaviour
         EnsureTarget();
         EnsureCaptureCamera();
         EnsurePanel();
+        _anchorInitialized = false;
         RecenterPanel();
 
         _capturing = true;
@@ -217,6 +230,10 @@ public class MenuCaptureBackend : NOVRBehaviour
         if (_panelCanvas != null) return;
 
         var go = new GameObject("NOVR Menu Panel");
+        // The menus live in their own scenes (the mission picker is a scene
+        // load away from the main menu), so a plain scene object is destroyed
+        // out from under the backend on the way in.
+        DontDestroyOnLoad(go);
         var canvas = go.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         canvas.worldCamera = APIBus.CockpitHudCamera;
@@ -258,33 +275,71 @@ public class MenuCaptureBackend : NOVRBehaviour
 
     private void UpdatePanel()
     {
+        // Idempotent rebuilds: a scene load can still take the rig with it, and
+        // the capture is only torn down after a grace period, so recovery
+        // cannot wait for the next Setup.
+        EnsureTarget();
+        EnsureCaptureCamera();
+        EnsurePanel();
+
         if (_panelImage != null && _panelImage.texture != _target) _panelImage.texture = _target;
         ApplyPanelSize();
+        ApplyAnchor();
     }
 
     /// <summary>
     /// Park the panel in front of the headset, upright and facing the player.
-    /// Placement is deliberately not continuous: a panel that chases the head
-    /// cannot be pointed at.
+    ///
+    /// Placement is anchored rather than continuous — a panel that chases the
+    /// head cannot be pointed at — but the anchor is re-applied every frame,
+    /// because the reference pose is still settling when a menu first appears
+    /// and the world origin shifts underneath long sessions. Placing once and
+    /// walking away leaves the panel stranded outside the view.
     /// </summary>
     public void RecenterPanel()
     {
-        if (_panelRect == null) return;
+        CaptureAnchor();
+        ApplyAnchor();
+    }
 
-        var reference = APIBus.CockpitHudCamera;
+    private void CaptureAnchor()
+    {
+        var reference = APIBus.CockpitHudReference;
         if (reference == null) return;
 
-        var forward = reference.transform.forward;
-        forward.y = 0f;
+        var forward = Vector3.ProjectOnPlane(reference.transform.forward, Vector3.up);
         if (forward.sqrMagnitude < 0.0001f) forward = Vector3.forward;
         forward.Normalize();
 
+        _anchorPosition = reference.transform.position;
+        _anchorRotation = Quaternion.LookRotation(forward, Vector3.up);
+        _anchorInitialized = true;
+    }
+
+    private void ApplyAnchor()
+    {
+        if (_panelRect == null) return;
+        if (!_anchorInitialized) CaptureAnchor();
+        if (!_anchorInitialized) return;
+
         var distance = Mathf.Clamp(ModConfiguration.Instance.CapturedMenuDistance.Value, 1f, 6f);
-        var position = reference.transform.position + forward * distance;
-        position.y = reference.transform.position.y;
+
+        // Only the facing is anchored. The origin has to be read live: the
+        // reference pose is at the world origin for the first seconds of a
+        // session and only then moves to wherever the menu camera actually is,
+        // so a position captured once leaves the panel stranded in empty space
+        // — which reads as "the backend renders nothing".
+        var reference = APIBus.CockpitHudReference;
+        var origin = reference != null ? reference.transform.position : _anchorPosition;
+        var position = origin + _anchorRotation * Vector3.forward * distance;
 
         _panelRect.position = position;
-        _panelRect.rotation = Quaternion.LookRotation(forward, Vector3.up);
+        _panelRect.rotation = _anchorRotation;
+
+        if (_loggedPlacement || origin == Vector3.zero) return;
+        _loggedPlacement = true;
+        Debug.Log($"[NOVR] Captured menu panel placed at {position} facing {_anchorRotation.eulerAngles} " +
+                  $"(reference at {origin}).");
     }
 
     public static void Recenter() => _instance?.RecenterPanel();
