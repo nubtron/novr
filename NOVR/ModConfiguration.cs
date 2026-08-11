@@ -21,6 +21,15 @@ public class ModConfiguration
         Instance = this;
 
         Config = config;
+
+        // Anything marked [ConfigSection] binds itself, so a feature that owns
+        // its settings in its own file needs no line in this constructor.
+        //
+        // Deliberately the first thing the constructor does rather than the
+        // last: every branch that adds a setting appends to the end of this
+        // method, so an extension point placed there would be in a permanent
+        // three-way tug of war with the very thing it exists to prevent.
+        ConfigSections.BindAll(config);
         TargetDesignatorOvershoot = config.Bind(
             "General",
             "Target Designator Overshoot",
