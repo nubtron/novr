@@ -1,4 +1,5 @@
 using HarmonyLib;
+using NOVR.VrUi;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -9,6 +10,11 @@ internal static class HudTurretCrosshairPatch
     [HarmonyPatch(typeof(HUDTurretCrosshair), "Refresh")]
     private static class Refresh
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPrefix]
         private static bool Prefix(HUDTurretCrosshair __instance, ref Camera mainCamera, out Vector3 crosshairPosition)
         {
