@@ -10,6 +10,7 @@ using NOVR.VrUi;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
 using UnityEngine.XR;
 
@@ -73,6 +74,8 @@ public static class VrDebugDump
     private static readonly HashSet<int> GrabbedTextureIds = new();
 
     private static readonly List<CameraEntry> CameraEntries = new();
+    private static readonly List<VolumeEntry> VolumeEntries = new();
+    private static string? _blendedColorAdjustments;
     private static readonly List<CanvasEntry> CanvasEntries = new();
     private static readonly List<ImageEntry> ImageEntries = new();
     private static readonly List<string> Notes = new();
@@ -108,12 +111,15 @@ public static class VrDebugDump
         Grabs.Clear();
         GrabbedTextureIds.Clear();
         CameraEntries.Clear();
+        VolumeEntries.Clear();
+        _blendedColorAdjustments = null;
         CanvasEntries.Clear();
         Globals.Clear();
         ConfigValues.Clear();
         _pendingReadbacks = 0;
 
         SweepCameras();
+        SweepVolumes();
         SweepCanvases();
         SweepGlobals();
         SweepConfig();
@@ -386,12 +392,99 @@ public static class VrDebugDump
                 entry.StereoViewR = TryMatrix(() => camera.GetStereoViewMatrix(Camera.StereoscopicEye.Right));
                 entry.StereoProjL = TryMatrix(() => camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left));
                 entry.StereoProjR = TryMatrix(() => camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Right));
+                entry.Urp = DescribeUrpCameraData(camera);
             }
             catch (Exception exception)
             {
                 Notes.Add($"camera sweep '{camera.name}' failed: {exception.Message}");
             }
             CameraEntries.Add(entry);
+        }
+    }
+
+    // Post-processing state per camera. A grade that is configured correctly and
+    // still does nothing is usually a camera that never runs post at all, or one
+    // whose volume mask excludes the layer the volume lives on — neither of which
+    // is visible in a screenshot, so record both.
+    //
+    // GetComponent, not GetUniversalAdditionalCameraData(): the extension method
+    // adds the component when it is missing, which would make the dump report a
+    // camera it just changed.
+    private static string? DescribeUrpCameraData(Camera camera)
+    {
+        var data = camera.GetComponent<UniversalAdditionalCameraData>();
+        if (data == null) return null;
+
+        var stack = data.renderType == CameraRenderType.Base && data.cameraStack != null
+            ? string.Join("+", data.cameraStack.ConvertAll(c => c == null ? "<null>" : c.name).ToArray())
+            : "";
+
+        return $"renderType={data.renderType} postFX={data.renderPostProcessing} " +
+               $"volumeMask=0x{data.volumeLayerMask.value:x} " +
+               $"volumeTrigger={(data.volumeTrigger != null ? data.volumeTrigger.name : "(self)")} " +
+               $"antialiasing={data.antialiasing}" +
+               (stack.Length > 0 ? $" stack=[{stack}]" : "");
+    }
+
+    private static readonly FieldInfo? InternalProfileField =
+        typeof(Volume).GetField("m_InternalProfile", BindingFlags.NonPublic | BindingFlags.Instance);
+
+    private static void SweepVolumes()
+    {
+        try
+        {
+            foreach (var volume in UnityEngine.Object.FindObjectsOfType<Volume>())
+            {
+                var layer = volume.gameObject.layer;
+                var layerName = LayerMask.LayerToName(layer);
+                var entry = new VolumeEntry
+                {
+                    Name = volume.gameObject.name,
+                    Layer = string.IsNullOrEmpty(layerName) ? layer.ToString() : $"{layer} ({layerName})",
+                    Enabled = volume.enabled && volume.gameObject.activeInHierarchy,
+                    IsGlobal = volume.isGlobal,
+                    Priority = volume.priority,
+                    Weight = volume.weight,
+                };
+
+                // Not volume.profile: that getter instantiates a private copy of a
+                // shared profile, which would change what the game renders just by
+                // dumping it. This URP version has no profileRef, so read the same
+                // pair it would — the instantiated profile if there is one, the
+                // shared asset otherwise.
+                var profile = InternalProfileField?.GetValue(volume) as VolumeProfile ?? volume.sharedProfile;
+                entry.Profile = profile != null ? profile.name : null;
+                if (profile != null && profile.TryGet<ColorAdjustments>(out var colorAdjustments))
+                {
+                    entry.ColorAdjustments =
+                        $"active={colorAdjustments.active} " +
+                        $"contrast={F(colorAdjustments.contrast.value)}/{colorAdjustments.contrast.overrideState} " +
+                        $"saturation={F(colorAdjustments.saturation.value)}/{colorAdjustments.saturation.overrideState} " +
+                        $"postExposure={F(colorAdjustments.postExposure.value)}/{colorAdjustments.postExposure.overrideState}";
+                }
+
+                VolumeEntries.Add(entry);
+            }
+        }
+        catch (Exception exception)
+        {
+            Notes.Add($"volume sweep failed: {exception.Message}");
+        }
+
+        // The blended stack is what the post pass actually samples. If our values
+        // are not in here, no camera ever saw the volume; if they are, the loss is
+        // downstream (a camera that skips post entirely).
+        try
+        {
+            var blended = VolumeManager.instance?.stack?.GetComponent<ColorAdjustments>();
+            _blendedColorAdjustments = blended == null
+                ? "(no ColorAdjustments in the blended stack)"
+                : $"active={blended.active} contrast={F(blended.contrast.value)} " +
+                  $"saturation={F(blended.saturation.value)} postExposure={F(blended.postExposure.value)}";
+        }
+        catch (Exception exception)
+        {
+            _blendedColorAdjustments = $"(read failed: {exception.Message})";
         }
     }
 
@@ -573,6 +666,7 @@ public static class VrDebugDump
             txt.AppendLine($"{c.Name}: enabled={c.Enabled} depth={c.Depth} {c.PixelWidth}x{c.PixelHeight} " +
                            $"stereo={(int)c.StereoTargetEye} targetTexture={(c.TargetTexture ?? "<null>")} rendered={c.Rendered}");
             txt.AppendLine($"  pos={Vec(c.Position)} euler={Vec(c.Euler)}");
+            if (c.Urp != null) txt.AppendLine($"  urp: {c.Urp}");
             if (c.WorldToCamera != null) txt.AppendLine($"  worldToCamera:\n{c.WorldToCamera}");
             if (c.Projection != null) txt.AppendLine($"  projection:\n{c.Projection}");
             if (c.StereoViewL != null) txt.AppendLine($"  stereoView[L]:\n{c.StereoViewL}");
@@ -580,6 +674,16 @@ public static class VrDebugDump
             if (c.StereoProjL != null) txt.AppendLine($"  stereoProj[L]:\n{c.StereoProjL}");
             if (c.StereoProjR != null) txt.AppendLine($"  stereoProj[R]:\n{c.StereoProjR}");
         }
+
+        txt.AppendLine();
+        txt.AppendLine("--- volumes ---");
+        foreach (var v in VolumeEntries)
+        {
+            txt.AppendLine($"{v.Name}: layer={v.Layer} enabled={v.Enabled} global={v.IsGlobal} " +
+                           $"priority={F(v.Priority)} weight={F(v.Weight)} profile={(v.Profile ?? "<null>")}");
+            if (v.ColorAdjustments != null) txt.AppendLine($"  ColorAdjustments: {v.ColorAdjustments}");
+        }
+        txt.AppendLine($"blended stack ColorAdjustments: {_blendedColorAdjustments ?? "<not read>"}");
 
         txt.AppendLine();
         txt.AppendLine("--- canvases ---");
@@ -648,10 +752,24 @@ public static class VrDebugDump
             j.Append($"\"position\": {J.Vec(c.Position)}, \"euler\": {J.Vec(c.Euler)}, ");
             j.Append($"\"worldToCamera\": {J.Mat(c.WorldToCamera)}, \"projection\": {J.Mat(c.Projection)}, ");
             j.Append($"\"stereoViewL\": {J.Mat(c.StereoViewL)}, \"stereoViewR\": {J.Mat(c.StereoViewR)}, ");
-            j.Append($"\"stereoProjL\": {J.Mat(c.StereoProjL)}, \"stereoProjR\": {J.Mat(c.StereoProjR)}");
+            j.Append($"\"stereoProjL\": {J.Mat(c.StereoProjL)}, \"stereoProjR\": {J.Mat(c.StereoProjR)}, ");
+            j.Append($"\"urp\": {(c.Urp == null ? "null" : J.Str(c.Urp))}");
             j.AppendLine(i == CameraEntries.Count - 1 ? " }" : " },");
         }
         j.AppendLine("  ],");
+        j.AppendLine("  \"volumes\": [");
+        for (var i = 0; i < VolumeEntries.Count; i++)
+        {
+            var v = VolumeEntries[i];
+            j.Append("    {");
+            j.Append($" \"name\": {J.Str(v.Name)}, \"layer\": {J.Str(v.Layer)}, \"enabled\": {J.Bool(v.Enabled)}, ");
+            j.Append($"\"isGlobal\": {J.Bool(v.IsGlobal)}, \"priority\": {F(v.Priority)}, \"weight\": {F(v.Weight)}, ");
+            j.Append($"\"profile\": {(v.Profile == null ? "null" : J.Str(v.Profile))}, ");
+            j.Append($"\"colorAdjustments\": {(v.ColorAdjustments == null ? "null" : J.Str(v.ColorAdjustments))}");
+            j.AppendLine(i == VolumeEntries.Count - 1 ? " }" : " },");
+        }
+        j.AppendLine("  ],");
+        j.AppendLine($"  \"blendedColorAdjustments\": {(_blendedColorAdjustments == null ? "null" : J.Str(_blendedColorAdjustments))},");
         j.AppendLine("  \"canvases\": [");
         for (var i = 0; i < CanvasEntries.Count; i++)
         {
@@ -772,6 +890,19 @@ public static class VrDebugDump
         public Matrix4x4? StereoProjL;
         public Matrix4x4? StereoProjR;
         public bool Rendered;
+        public string? Urp;
+    }
+
+    private sealed class VolumeEntry
+    {
+        public string Name = "";
+        public string Layer = "";
+        public bool Enabled;
+        public bool IsGlobal;
+        public float Priority;
+        public float Weight;
+        public string? Profile;
+        public string? ColorAdjustments;
     }
 
     private sealed class CanvasEntry
