@@ -11,6 +11,7 @@ public class ModConfiguration
 
     public readonly ConfigFile Config;
     public readonly ConfigEntry<float> TargetDesignatorOvershoot;
+    public readonly ConfigEntry<float> CursorSizeMultiplier;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -21,11 +22,28 @@ public class ModConfiguration
         Instance = this;
 
         Config = config;
+
+        // Anything marked [ConfigSection] binds itself, so a feature that owns
+        // its settings in its own file needs no line in this constructor.
+        //
+        // Deliberately the first thing the constructor does rather than the
+        // last: every branch that adds a setting appends to the end of this
+        // method, so an extension point placed there would be in a permanent
+        // three-way tug of war with the very thing it exists to prevent.
+        ConfigSections.BindAll(config);
         TargetDesignatorOvershoot = config.Bind(
             "General",
             "Target Designator Overshoot",
             1.2f,
             "How much the target designator should multiply rotation to make for easier high off boresight target designation. Set to 1.0 to disable");
+
+        CursorSizeMultiplier = config.Bind(
+            "General",
+            "Cursor Size Multiplier",
+            2.0f,
+            new ConfigDescription(
+                "Visual size of the VR cursor. Values from 1.0 to 3.0 are supported.",
+                new AcceptableValueRange<float>(1.0f, 3.0f)));
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
