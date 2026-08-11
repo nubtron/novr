@@ -15,6 +15,11 @@ internal static class FlightHudVelocityVectorPatch
     [HarmonyPatch(typeof(global::FlightHud), "Update")]
     private static class UpdatePatch
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPostfix]
         private static void Postfix(global::FlightHud __instance)
         {
