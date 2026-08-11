@@ -35,6 +35,7 @@ namespace NOVR;
 ///    game hardcodes in the assembly (the rank curve array and the non-kill
 ///    reward formulas respectively), which the mission editor cannot touch.
 /// </summary>
+[ConfigSection(Order = 90)]
 public static class EscalationOverrides
 {
     private const string Section = "Escalation";

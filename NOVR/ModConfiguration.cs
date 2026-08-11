@@ -307,7 +307,10 @@ public class ModConfiguration
             "Auto Dump Yaws",
             "",
             "Comma-separated head yaw angles in degrees to dump at, e.g. '-75,0,75' (negative looks left). One dump per angle, and the count replaces Auto Dump Count. Empty dumps straight ahead. Only works under the harness's OpenXR mock runtime, which is the only runtime whose head pose we are allowed to move; with a real headset the angles are ignored and the run dumps wherever the pilot is looking.");
-        EscalationOverrides.Bind(config);
+        // Every [ConfigSection] class binds itself. A layer that adds settings
+        // adds one file and touches nothing here, which is what stops eight
+        // layers conflicting on this constructor at every restack.
+        ConfigSections.BindAll(config);
         ZoomSpeed = config.Bind(
             "VR Zoom",
             "Zoom Speed",
