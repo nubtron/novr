@@ -73,5 +73,16 @@ def stage(project: Project, force: bool = False) -> str:
 
 
 def env(project: Project, force: bool = False) -> dict[str, str]:
-    """Environment the launcher .cmd must set for headless stereo."""
+    """Environment the launcher .cmd must set for headless stereo.
+
+    Only the runtime manifest. The staged directory also holds mock_api.dll,
+    the runtime's test API, and putting it on PATH is enough to make its
+    DllImports resolve — but not enough to make them do anything: mock_api
+    learns where the runtime lives from the hook the MockRuntime *feature*
+    installs at instance creation, and NOVR loads the runtime straight from
+    XR_RUNTIME_JSON without that feature. MockRuntime_SetView then succeeds and
+    moves nothing. Measured, not assumed: a five-angle yaw sweep through it
+    produced five identical frames. The harness turns the head through the mod
+    instead (NOVR/HarnessViewPose.cs).
+    """
     return {"XR_RUNTIME_JSON": stage(project, force=force)}
