@@ -31,6 +31,14 @@ public class UIRenderedCanvasBehavior : MonoBehaviour
         canvas.worldCamera = APIBus.CockpitHudCamera;
         Debug.Log($"{GetType().Name}: Set canvas world camera of {canvas.gameObject.name}. Is currently:  {canvas.worldCamera}");
         canvas.planeDistance = 1f;
+
+        // A world-space canvas has no screen edge, so UI the game parked
+        // outside the canvas rect stops being invisible and starts being
+        // scenery. See OffscreenGraphicCuller.
+        if (gameObject.GetComponent<OffscreenGraphicCuller>() == null)
+        {
+            gameObject.AddComponent<OffscreenGraphicCuller>();
+        }
     }
     
     
