@@ -71,11 +71,20 @@ public class VrUiCursor: NOVRBehaviour
     private Mouse? _realMouse;
 
     private bool _controllerModeActive;
+    private bool _hmdGazeActive;
     private Vector3 _controllerAimDirection = Vector3.forward;
     private bool _controllerTriggerPressed;
     private bool _controllerTriggerClicked;
     private float _controllerSmoothing = 0.3f;
     private bool _controllerModeLogged;
+    private bool _hmdGazeLogged;
+    private float _headGazeMultiplier = 2.0f;
+    private bool _gazeKeyClickHeld;
+    private bool _gazeAnchorCaptured;
+    private Quaternion _gazeAnchorRotation = Quaternion.identity;
+    private Vector3 _gazeAnchorCenter;
+    private int _gazeAnchorCenterPriority;
+    private int _gazeAnchorCenterFrame = -1;
     
     
     private int ScreenWidth => Screen.width;
@@ -100,6 +109,45 @@ public class VrUiCursor: NOVRBehaviour
             return new Vector2(screenX, screenY);
         }
         return Vector2.zero;
+    }
+
+    /// <summary>
+    /// Report the world-space centre of the surface the cursor is being driven
+    /// against, once per frame while it is visible. Head-gaze amplification is
+    /// measured from the direction of this point, so looking at the centre of a
+    /// menu always puts the cursor at its centre.
+    ///
+    /// The alternative — the head pose captured when the cursor appeared — is
+    /// only correct until that pose stops meaning anything: lift the headset
+    /// and put it back down and the anchor is left pointing wherever the
+    /// headset happened to be, taking the whole amplified range with it.
+    /// Geometry cannot go stale that way.
+    ///
+    /// Highest priority wins within a frame, so a menu drawn on top of another
+    /// surface owns the cursor without depending on script execution order.
+    /// </summary>
+    public void SetGazeAnchorCenter(Vector3 worldCenter, int priority)
+    {
+        if (_gazeAnchorCenterFrame == Time.frameCount && priority < _gazeAnchorCenterPriority) return;
+
+        _gazeAnchorCenter = worldCenter;
+        _gazeAnchorCenterPriority = priority;
+        _gazeAnchorCenterFrame = Time.frameCount;
+    }
+
+    private bool TryGetGazeAnchorRotation(Camera camera, out Quaternion rotation)
+    {
+        rotation = Quaternion.identity;
+
+        // Accept the previous frame too: providers run in Update, and nothing
+        // guarantees they run before the cursor does.
+        if (_gazeAnchorCenterFrame < Time.frameCount - 1) return false;
+
+        var toCenter = _gazeAnchorCenter - camera.transform.position;
+        if (toCenter.sqrMagnitude < 0.0001f) return false;
+
+        rotation = Quaternion.LookRotation(toCenter, Vector3.up);
+        return true;
     }
 
     public void SetProjectionReferenceRotation(Quaternion referenceRotation)
@@ -127,6 +175,7 @@ public class VrUiCursor: NOVRBehaviour
             {
                 _cursor.SetActive(false);
             }
+            _gazeAnchorCaptured = false;
             return;
         }
 
@@ -136,6 +185,7 @@ public class VrUiCursor: NOVRBehaviour
             {
                 _cursor.SetActive(false);
             }
+            _gazeAnchorCaptured = false;
             return;
         }
         
@@ -155,7 +205,7 @@ public class VrUiCursor: NOVRBehaviour
             }
         }
         if (_texture == null) return;
-        UpdateControllerInput();
+        UpdateCursorInput();
         UpdateCursorAngles();
         
         var realMouse = _realMouse;
@@ -205,7 +255,38 @@ public class VrUiCursor: NOVRBehaviour
         }
 
         Vector3 worldDirection;
-        if (_controllerModeActive)
+        if (_hmdGazeActive)
+        {
+            // Head-gaze: the cursor follows where the user looks, optionally
+            // amplified by Head Gaze Multiplier so small head turns cover
+            // more of the menu (less neck craning). Amplification is relative
+            // to a fixed reference: the native menu anchor when one is up,
+            // otherwise the direction the user was looking when the cursor
+            // appeared. At 1.0x the cursor sits exactly at the view center.
+            var referenceRotation = GetProjectionReferenceRotation();
+            if (TryGetGazeAnchorRotation(camera, out var centreRotation))
+            {
+                // Anchored on the surface itself: looking at its centre puts
+                // the cursor at its centre, however the headset got here.
+                referenceRotation = centreRotation;
+            }
+            else if (!_hasProjectionReferenceOverride)
+            {
+                if (!_gazeAnchorCaptured)
+                {
+                    var headEuler = camera.transform.eulerAngles;
+                    _gazeAnchorRotation = Quaternion.Euler(headEuler.x, headEuler.y, 0f);
+                    _gazeAnchorCaptured = true;
+                }
+                referenceRotation = _gazeAnchorRotation;
+            }
+
+            var localForward = Quaternion.Inverse(referenceRotation) * camera.transform.forward;
+            var gazePitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg * _headGazeMultiplier, -MaxPitchDegrees, MaxPitchDegrees);
+            var gazeYaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg * _headGazeMultiplier, -MaxYawDegrees, MaxYawDegrees);
+            worldDirection = referenceRotation * Quaternion.Euler(-gazePitch, gazeYaw, 0f) * Vector3.forward;
+        }
+        else if (_controllerModeActive)
         {
             worldDirection = _controllerAimDirection;
         }
@@ -232,16 +313,31 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Drives the cursor from an XR motion controller ray when the configured
-    /// input source is a hand: the aim direction is the controller's forward,
-    /// intersected with the plane facing the camera at the default projection
-    /// distance so the cursor lands where the controller points. Falls back to
-    /// the mouse when the controller is not tracked.
+    /// Selects and updates the active cursor input mode: head-gaze (the
+    /// cursor follows the center of the HMD and the trigger clicks), an XR
+    /// motion controller ray, or the desktop mouse. Head-gaze is enabled by
+    /// default and while it is on, the mouse and motion controller cursor
+    /// modes are disabled.
     /// </summary>
-    private void UpdateControllerInput()
+    private void UpdateCursorInput()
     {
-        var source = ModConfiguration.Instance.CursorInputSource.Value;
+        _hmdGazeActive = false;
         _controllerModeActive = false;
+
+        if (ModConfiguration.Instance.HeadGazeCursor.Value)
+        {
+            _hmdGazeActive = true;
+            _headGazeMultiplier = Mathf.Clamp(ModConfiguration.Instance.HeadGazeMultiplier.Value, 0.5f, 3.0f);
+            UpdateGazeClickInput();
+            if (!_hmdGazeLogged)
+            {
+                Debug.Log("[VrUiCursor] Head-gaze cursor active: cursor follows HMD center; clicks from trigger, Fire action, or the Head Gaze Click Key.");
+                _hmdGazeLogged = true;
+            }
+            return;
+        }
+
+        var source = ModConfiguration.Instance.CursorInputSource.Value;
 
         XRNode node;
         switch (source)
@@ -291,6 +387,49 @@ public class VrUiCursor: NOVRBehaviour
         }
 
         var triggerPressed = triggerValue > 0.5f;
+        _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
+        _controllerTriggerPressed = triggerPressed;
+    }
+
+    /// <summary>
+    /// In head-gaze mode no controller drives the cursor, but a click can come
+    /// from several sources: a press on either hand's trigger, the game's
+    /// Fire action (Rewired keeps its maps enabled in menus, so Fire reads
+    /// there too — whatever the player bound Fire to works as a click), or a
+    /// configurable keyboard key. All are ORed into the virtual mouse's left
+    /// button, so any of them clicks whatever the gaze cursor is over.
+    /// </summary>
+    private void UpdateGazeClickInput()
+    {
+        var triggerPressed =
+            MotionControllerPose.TryRead(XRNode.RightHand, out _, out _, out _, out _, out var rightTrigger) && rightTrigger > 0.5f ||
+            MotionControllerPose.TryRead(XRNode.LeftHand, out _, out _, out _, out _, out var leftTrigger) && leftTrigger > 0.5f;
+
+        if (GameManager.playerInput != null && GameManager.playerInput.GetButton("Fire"))
+        {
+            triggerPressed = true;
+        }
+
+        // Edge-track the keyboard click key so even a quick tap registers as a
+        // full press-and-release instead of being missed between frames.
+        var clickKey = ModConfiguration.Instance.HeadGazeClickKey.Value;
+        var keyboard = Keyboard.current;
+        if (keyboard != null && clickKey != Key.None)
+        {
+            if (keyboard[clickKey].wasPressedThisFrame)
+            {
+                _gazeKeyClickHeld = true;
+            }
+            if (keyboard[clickKey].wasReleasedThisFrame)
+            {
+                _gazeKeyClickHeld = false;
+            }
+        }
+        if (_gazeKeyClickHeld)
+        {
+            triggerPressed = true;
+        }
+
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
     }

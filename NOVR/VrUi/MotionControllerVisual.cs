@@ -38,14 +38,20 @@ public class MotionControllerVisual : MonoBehaviour
 
     private void Update()
     {
-        var showModels = ModConfiguration.Instance.ShowMotionControllers.Value;
+        // In head-gaze mode no hand drives the cursor, so the controller
+        // models are hidden entirely (and neither hand gets a laser); the
+        // models follow the Show Motion Controllers setting otherwise.
+        var gazeActive = ModConfiguration.Instance.HeadGazeCursor.Value;
+        var showModels = ModConfiguration.Instance.ShowMotionControllers.Value && !gazeActive;
         var showLaser = ModConfiguration.Instance.ShowControllerLaser.Value;
-        var cursorHand = ModConfiguration.Instance.CursorInputSource.Value switch
-        {
-            "Right Hand" => XRNode.RightHand,
-            "Left Hand" => XRNode.LeftHand,
-            _ => (XRNode?)null
-        };
+        var cursorHand = gazeActive
+            ? (XRNode?)null
+            : ModConfiguration.Instance.CursorInputSource.Value switch
+            {
+                "Right Hand" => XRNode.RightHand,
+                "Left Hand" => XRNode.LeftHand,
+                _ => (XRNode?)null
+            };
 
         // The laser follows only the hand that drives the cursor; the other
         // hand just shows the model.
