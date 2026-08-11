@@ -4,6 +4,7 @@ using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.LowLevel;
 using UnityEngine.UI;
+using UnityEngine.XR;
 
 namespace NOVR.VrUi;
 
@@ -68,6 +69,13 @@ public class VrUiCursor: NOVRBehaviour
     private bool _hasInitializedEventSystem = false;
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
+
+    private bool _controllerModeActive;
+    private Vector3 _controllerAimDirection = Vector3.forward;
+    private bool _controllerTriggerPressed;
+    private bool _controllerTriggerClicked;
+    private float _controllerSmoothing = 0.3f;
+    private bool _controllerModeLogged;
     
     
     private int ScreenWidth => Screen.width;
@@ -147,17 +155,20 @@ public class VrUiCursor: NOVRBehaviour
             }
         }
         if (_texture == null) return;
+        UpdateControllerInput();
         UpdateCursorAngles();
         
         var realMouse = _realMouse;
         if (realMouse == null || _virtualMouse == null) return;
 
-        UpdateCursorAnimation(realMouse);
+        var leftPressed = realMouse.leftButton.isPressed || _controllerTriggerPressed;
+        var leftClicked = realMouse.leftButton.wasPressedThisFrame || _controllerTriggerClicked;
+        UpdateCursorAnimation(leftPressed, leftClicked);
 
         var screenPoint = GetScreenPoint();
 
         ushort buttons = 0;
-        if (realMouse.leftButton.isPressed) buttons |= 1;
+        if (leftPressed) buttons |= 1;
         if (realMouse.rightButton.isPressed) buttons |= 2;
         if (realMouse.middleButton.isPressed) buttons |= 4;
 
@@ -192,23 +203,96 @@ public class VrUiCursor: NOVRBehaviour
         {
             _cursor.SetActive(true);
         }
-        
-        var mouse = _realMouse;
-        if (mouse == null) return;
 
-        var mousePos = mouse.position.ReadValue();
-        float cursorPitch = ProjectPitchAngle(mousePos.y);
-        float cursorYaw = ProjectYawAngle(mousePos.x);        
-        
-        Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
-        Quaternion referenceRotation = GetProjectionReferenceRotation();
-        Vector3 worldDirection = referenceRotation * localDirection;
+        Vector3 worldDirection;
+        if (_controllerModeActive)
+        {
+            worldDirection = _controllerAimDirection;
+        }
+        else
+        {
+            var mouse = _realMouse;
+            if (mouse == null) return;
+
+            var mousePos = mouse.position.ReadValue();
+            float cursorPitch = ProjectPitchAngle(mousePos.y);
+            float cursorYaw = ProjectYawAngle(mousePos.x);
+
+            Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
+            Quaternion referenceRotation = GetProjectionReferenceRotation();
+            worldDirection = referenceRotation * localDirection;
+        }
+
         Vector3 viewportSpace = camera.WorldToViewportPoint(camera.transform.position + worldDirection * DefaultProjectionDistance, Camera.MonoOrStereoscopicEye.Mono);
         Vector2 inScreenSpace = new Vector2(viewportSpace.x * Screen.width, viewportSpace.y * Screen.height);
         float cursorDistance = GetDistanceUnderCursor(inScreenSpace);
         Vector3 pos = camera.transform.position + worldDirection * cursorDistance;
         _cursor.transform.position = pos;
         _cursor.transform.rotation = Quaternion.LookRotation(worldDirection, camera.transform.up);
+    }
+
+    /// <summary>
+    /// Drives the cursor from an XR motion controller ray when the configured
+    /// input source is a hand: the aim direction is the controller's forward,
+    /// intersected with the plane facing the camera at the default projection
+    /// distance so the cursor lands where the controller points. Falls back to
+    /// the mouse when the controller is not tracked.
+    /// </summary>
+    private void UpdateControllerInput()
+    {
+        var source = ModConfiguration.Instance.CursorInputSource.Value;
+        _controllerModeActive = false;
+
+        XRNode node;
+        switch (source)
+        {
+            case "Right Hand":
+                node = XRNode.RightHand;
+                break;
+            case "Left Hand":
+                node = XRNode.LeftHand;
+                break;
+            default:
+                return;
+        }
+
+        _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
+
+        if (!MotionControllerPose.TryRead(node, out var controllerPosition, out var controllerRotation, out _, out _, out var triggerValue))
+        {
+            if (_controllerModeLogged)
+            {
+                Debug.Log("[VrUiCursor] Controller not tracked this frame; falling back to mouse.");
+                _controllerModeLogged = false;
+            }
+            return;
+        }
+
+        // Aim from the controller's direction relative to the SAME projection
+        // reference the mouse uses (the native menu anchor, or world when no
+        // override is set). The reference is fixed, so head movement does not
+        // move the cursor — it tracks the controller only. Clamping to the
+        // mouse's pitch/yaw bounds keeps the cursor inside the HUD.
+        var referenceRotation = GetProjectionReferenceRotation();
+        var localForward = Quaternion.Inverse(referenceRotation) * (controllerRotation * Vector3.forward);
+        var pitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(localForward.y, -1f, 1f)) * Mathf.Rad2Deg, -MaxPitchDegrees, MaxPitchDegrees);
+        var yaw = Mathf.Clamp(Mathf.Atan2(localForward.x, localForward.z) * Mathf.Rad2Deg, -MaxYawDegrees, MaxYawDegrees);
+
+        var localDirection = Quaternion.Euler(-pitch, yaw, 0f) * Vector3.forward;
+        var aimDirection = referenceRotation * localDirection;
+
+        _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
+        _controllerModeActive = true;
+
+        if (!_controllerModeLogged)
+        {
+            Debug.Log($"[VrUiCursor] Controller cursor active: controller={controllerRotation.eulerAngles} relPitch={pitch:F1} relYaw={yaw:F1} trigger={triggerValue:F2}");
+            _controllerModeLogged = true;
+        }
+
+        var triggerPressed = triggerValue > 0.5f;
+        _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
+        _controllerTriggerPressed = triggerPressed;
     }
 
     private Quaternion GetProjectionReferenceRotation()
@@ -259,7 +343,7 @@ public class VrUiCursor: NOVRBehaviour
     private float GetDistanceUnderCursor(Vector2 screenPos)
     {
         _cursorOverInteractive = false;
-        float distance;
+        float distance = 0f;
         if (TryGetUiDistanceUnderCursor(screenPos, out var uiDistance, out var overInteractive))
         {
             _cursorOverInteractive = overInteractive;
@@ -267,7 +351,29 @@ public class VrUiCursor: NOVRBehaviour
         }
         else
         {
-            distance = DefaultProjectionDistance;
+            // No interactive UI under the cursor: snap to the tactical map
+            // surface when hovering it, so the cursor sits on the map instead
+            // of floating at the default distance behind it.
+            var dynamicMap = SceneSingleton<global::DynamicMap>.i;
+            var camera = UiCamera;
+            if (dynamicMap != null && dynamicMap.mapImage != null && camera != null)
+            {
+                var mapRect = dynamicMap.mapImage.GetComponent<RectTransform>();
+                if (mapRect != null && RectTransformUtility.RectangleContainsScreenPoint(mapRect, screenPos, camera))
+                {
+                    var ray = camera.ScreenPointToRay(screenPos);
+                    var plane = new Plane(dynamicMap.mapImage.transform.forward, dynamicMap.mapImage.transform.position);
+                    if (plane.Raycast(ray, out var mapDistance) && mapDistance > 0f)
+                    {
+                        distance = mapDistance;
+                    }
+                }
+            }
+
+            if (distance <= 0f)
+            {
+                distance = DefaultProjectionDistance;
+            }
         }
 
         // Keep the cursor at least CursorMinDistanceMeters away from the
@@ -331,16 +437,14 @@ public class VrUiCursor: NOVRBehaviour
                ExecuteEvents.GetEventHandler<IDragHandler>(gameObject) != null;
     }
 
-    private void UpdateCursorAnimation(Mouse realMouse)
+    private void UpdateCursorAnimation(bool isPressed, bool wasClicked)
     {
         if (_cursor == null || _cursorImage == null) return;
 
-        if (realMouse.leftButton.wasPressedThisFrame)
+        if (wasClicked)
         {
             _lastCursorClickTime = Time.unscaledTime;
         }
-
-        var isPressed = realMouse.leftButton.isPressed;
         var idlePulse = Mathf.Sin(Time.unscaledTime * CursorIdlePulseSpeed) * CursorIdlePulseScale;
         var clickProgress = Mathf.Clamp01((Time.unscaledTime - _lastCursorClickTime) / CursorClickPulseDuration);
         var clickPulse = clickProgress < 1f
