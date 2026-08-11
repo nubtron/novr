@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Cysharp.Threading.Tasks;
@@ -51,6 +52,14 @@ public class AutoStartMission : MonoBehaviour
     private string _lastSpawnBlocker;
     private bool _listedMissions;
 
+    // Frames between setting the head pose and dumping. Three is empirical
+    // slack, not a measured minimum: the pose has to reach the runtime, come
+    // back through InputTracking, and be consumed by a camera update.
+    private const int YawSettleFrames = 3;
+    private float[] _yaws;
+    private bool _yawApplied;
+    private int _yawSettleFrames;
+
     private void Awake()
     {
         if (!ModConfiguration.Instance.AutoStartMission.Value)
@@ -59,9 +68,11 @@ public class AutoStartMission : MonoBehaviour
             return;
         }
 
-        _dumpsRemaining = ModConfiguration.Instance.AutoDumpCount.Value;
+        _yaws = ParseYaws(ModConfiguration.Instance.AutoDumpYaws.Value);
+        _dumpsRemaining = _yaws != null ? _yaws.Length : ModConfiguration.Instance.AutoDumpCount.Value;
         ClearDoneMarker();
-        Debug.Log("[NOVR-HARNESS] Auto Start Mission enabled — the game will start a mission and dump unattended.");
+        Debug.Log("[NOVR-HARNESS] Auto Start Mission enabled — the game will start a mission and dump unattended." +
+                  (_yaws != null ? $" Yaw sweep: {string.Join(", ", Array.ConvertAll(_yaws, y => $"{y:0.#}°"))}." : ""));
     }
 
     private void Update()
@@ -324,15 +335,46 @@ public class AutoStartMission : MonoBehaviour
 
     private void FireDump()
     {
-        var index = ModConfiguration.Instance.AutoDumpCount.Value - _dumpsRemaining + 1;
-        VrDebugDump.Request($"auto-{index}");
+        var total = _yaws != null ? _yaws.Length : ModConfiguration.Instance.AutoDumpCount.Value;
+        var index = total - _dumpsRemaining + 1;
+
+        var label = $"auto-{index}";
+        if (_yaws != null)
+        {
+            var yaw = _yaws[index - 1];
+
+            // Set the pose, then dump some frames later. The runtime pose has
+            // to round-trip through the XR subsystem before NOVR's camera, HUD
+            // reference direction and gaze all follow it; dumping in the same
+            // frame captures the previous view under the new label, which is
+            // the most misleading output this harness could produce.
+            if (!_yawApplied)
+            {
+                HarnessViewPose.SetYaw(yaw);
+                _yawApplied = true;
+                _yawSettleFrames = YawSettleFrames;
+                return;
+            }
+
+            if (_yawSettleFrames > 0)
+            {
+                _yawSettleFrames--;
+                return;
+            }
+
+            label = $"auto-{index}-yaw{yaw:0.#}";
+        }
+
+        VrDebugDump.Request(label);
         if (ModConfiguration.Instance.RenderDocCaptureOnDump.Value)
         {
             RenderDocCapture.TryTriggerCapture();
         }
 
+        _yawApplied = false;
         _dumpsRemaining--;
-        Debug.Log($"[NOVR-HARNESS] Fired dump {index}/{ModConfiguration.Instance.AutoDumpCount.Value}.");
+        Debug.Log($"[NOVR-HARNESS] Fired dump {index}/{total}" +
+                  (_yaws != null ? $" at yaw {_yaws[index - 1]:0.#}° (measured {HarnessViewPose.MeasuredYaw():0.#}°)." : "."));
 
         if (_dumpsRemaining > 0)
         {
@@ -341,6 +383,31 @@ public class AutoStartMission : MonoBehaviour
         }
 
         Finish();
+    }
+
+    /// <summary>
+    /// Parse [Debug] Auto Dump Yaws. Returns null when it is empty, which is
+    /// the ordinary "dump straight ahead" path.
+    /// </summary>
+    private static float[] ParseYaws(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+
+        var parts = raw.Split(',');
+        var yaws = new List<float>(parts.Length);
+        foreach (var part in parts)
+        {
+            if (float.TryParse(part.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var yaw))
+            {
+                yaws.Add(yaw);
+            }
+            else
+            {
+                Debug.LogWarning($"[NOVR-HARNESS] Ignoring unparseable yaw '{part.Trim()}'.");
+            }
+        }
+
+        return yaws.Count > 0 ? yaws.ToArray() : null;
     }
 
     /// <summary>
@@ -354,7 +421,8 @@ public class AutoStartMission : MonoBehaviour
         try
         {
             var path = Path.Combine(NOVRPlugin.ModFolderPath, DoneMarkerName);
-            File.WriteAllText(path, $"dumps={ModConfiguration.Instance.AutoDumpCount.Value}\nrenderdoc={RenderDocCapture.IsAvailable}\n");
+            var dumps = _yaws != null ? _yaws.Length : ModConfiguration.Instance.AutoDumpCount.Value;
+            File.WriteAllText(path, $"dumps={dumps}\nrenderdoc={RenderDocCapture.IsAvailable}\n");
             Debug.Log($"[NOVR-HARNESS] Run complete, wrote {DoneMarkerName}.");
         }
         catch (Exception e)
