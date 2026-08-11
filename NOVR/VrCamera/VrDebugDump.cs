@@ -12,6 +12,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 using UnityEngine.XR;
 
 namespace NOVR.VrCamera;
@@ -77,6 +78,7 @@ public static class VrDebugDump
     private static readonly List<VolumeEntry> VolumeEntries = new();
     private static string? _blendedColorAdjustments;
     private static readonly List<CanvasEntry> CanvasEntries = new();
+    private static readonly List<HudGraphicEntry> HudGraphicEntries = new();
     private static readonly List<ImageEntry> ImageEntries = new();
     private static readonly List<string> Notes = new();
     private static readonly Dictionary<string, string?> Globals = new();
@@ -114,12 +116,14 @@ public static class VrDebugDump
         VolumeEntries.Clear();
         _blendedColorAdjustments = null;
         CanvasEntries.Clear();
+        HudGraphicEntries.Clear();
         Globals.Clear();
         ConfigValues.Clear();
         _pendingReadbacks = 0;
 
         SweepCameras();
         SweepVolumes();
+        SweepHudGraphics();
         SweepCanvases();
         SweepGlobals();
         SweepConfig();
@@ -488,6 +492,96 @@ public static class VrDebugDump
         }
     }
 
+    /// <summary>
+    /// Inventory of every graphic on the canvases NOVR moved to world space,
+    /// each with its angle off the canvas camera's forward and its viewport
+    /// position.
+    ///
+    /// The canvas list says which canvases exist and where they are; it cannot
+    /// answer "what is that white rectangle out to the side", because in VR a
+    /// whole canvas shares one transform and everything interesting is in the
+    /// element layout underneath it. The viewport coordinate is what makes this
+    /// usable in practice: find the thing in mirror.png, read off its position,
+    /// look it up here.
+    ///
+    /// Measure against the canvas's own worldCamera, not Camera.main and not
+    /// the cockpit HUD reference. NOVR's world-space UI does not live next to
+    /// the aircraft: the canvases sit around the origin (HUDCanvas is at
+    /// (0,0,1000)) with the VR overlay camera parked there among them.
+    /// Comparing them to anything in aircraft space is comparing two unrelated
+    /// coordinate systems, and it produces numbers that look real — the first
+    /// version of this sweep put NOVR's own pitch ladder 173 degrees off axis.
+    /// </summary>
+    private static void SweepHudGraphics()
+    {
+        try
+        {
+            var count = 0;
+            foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            {
+                if (canvas == null || !canvas.isRootCanvas) continue;
+                if (canvas.renderMode != RenderMode.WorldSpace) continue;
+
+                var viewCamera = canvas.worldCamera;
+                if (viewCamera == null) continue;
+
+                var eye = viewCamera.transform.position;
+                var forward = viewCamera.transform.forward;
+                var up = viewCamera.transform.up;
+
+                foreach (var graphic in canvas.GetComponentsInChildren<Graphic>(true))
+                {
+                    if (graphic == null) continue;
+                    if (count++ >= 4000) break;
+
+                    var direction = graphic.transform.position - eye;
+                    if (direction.sqrMagnitude < 1e-6f) continue;
+
+                    // Signed, so a symmetric pair of strays reads as ±N rather
+                    // than as two unrelated numbers.
+                    var flat = Vector3.ProjectOnPlane(direction, up);
+                    var yaw = Vector3.SignedAngle(forward, flat, up);
+                    var pitch = Vector3.Angle(flat, direction) * (Vector3.Dot(direction, up) < 0f ? -1f : 1f);
+
+                    var rect = graphic.rectTransform;
+                    HudGraphicEntries.Add(new HudGraphicEntry
+                    {
+                        Path = canvas.name + "/" + PathUnder(canvas.transform, graphic.transform),
+                        Type = graphic.GetType().Name,
+                        Active = graphic.isActiveAndEnabled,
+                        // Distinct from Active: OffscreenGraphicCuller hides
+                        // parked UI by culling the renderer, not by
+                        // deactivating it, so a dump that reported only Active
+                        // would show no difference at all.
+                        Culled = graphic.canvasRenderer != null && graphic.canvasRenderer.cull,
+                        Color = graphic.color,
+                        Yaw = yaw,
+                        Pitch = pitch,
+                        Size = rect != null ? rect.rect.size : Vector2.zero,
+                        LocalPosition = graphic.transform.localPosition,
+                        Viewport = viewCamera.WorldToViewportPoint(graphic.transform.position),
+                    });
+                }
+            }
+
+            HudGraphicEntries.Sort((a, b) => Mathf.Abs(b.Yaw).CompareTo(Mathf.Abs(a.Yaw)));
+        }
+        catch (Exception exception)
+        {
+            Notes.Add($"hud graphic sweep failed: {exception.Message}");
+        }
+    }
+
+    private static string PathUnder(Transform root, Transform node)
+    {
+        var path = node.name;
+        for (var t = node.parent; t != null && t != root; t = t.parent)
+        {
+            path = t.name + "/" + path;
+        }
+        return path;
+    }
+
     private static void SweepCanvases()
     {
         var canvases = UnityEngine.Object.FindObjectsOfType<Canvas>();
@@ -684,6 +778,16 @@ public static class VrDebugDump
             if (v.ColorAdjustments != null) txt.AppendLine($"  ColorAdjustments: {v.ColorAdjustments}");
         }
         txt.AppendLine($"blended stack ColorAdjustments: {_blendedColorAdjustments ?? "<not read>"}");
+
+        txt.AppendLine();
+        txt.AppendLine("--- hud graphics (most off-axis first) ---");
+        foreach (var g in HudGraphicEntries)
+        {
+            txt.AppendLine($"{F(g.Yaw),8}deg yaw {F(g.Pitch),8}deg pitch  {g.Type,-16} active={g.Active} culled={g.Culled} " +
+                           $"rgba=({F(g.Color.r)},{F(g.Color.g)},{F(g.Color.b)},{F(g.Color.a)}) " +
+                           $"size={Vec(g.Size)} local={Vec(g.LocalPosition)} " +
+                           $"viewport=({F(g.Viewport.x)},{F(g.Viewport.y)},{F(g.Viewport.z)})  {g.Path}");
+        }
 
         txt.AppendLine();
         txt.AppendLine("--- canvases ---");
@@ -903,6 +1007,20 @@ public static class VrDebugDump
         public float Weight;
         public string? Profile;
         public string? ColorAdjustments;
+    }
+
+    private sealed class HudGraphicEntry
+    {
+        public string Path = "";
+        public string Type = "";
+        public bool Active;
+        public bool Culled;
+        public Color Color;
+        public float Yaw;
+        public float Pitch;
+        public Vector2 Size;
+        public Vector3 LocalPosition;
+        public Vector3 Viewport;
     }
 
     private sealed class CanvasEntry
