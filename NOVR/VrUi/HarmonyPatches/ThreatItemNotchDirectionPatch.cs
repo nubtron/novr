@@ -31,6 +31,11 @@ internal static class ThreatItemNotchDirectionPatch
     [HarmonyPatch(typeof(global::ThreatItem), "AlignNotchLine")]
     private static class AlignNotchLinePatch
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPrefix]
         private static bool Prefix(global::ThreatItem __instance)
         {
@@ -57,6 +62,11 @@ internal static class ThreatItemNotchDirectionPatch
     [HarmonyPatch(typeof(global::ThreatItem), "AlignNotchIndicator")]
     private static class AlignNotchIndicatorPatch
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPrefix]
         private static bool Prefix(global::ThreatItem __instance)
         {

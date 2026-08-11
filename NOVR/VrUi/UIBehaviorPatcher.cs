@@ -14,13 +14,29 @@ namespace NOVR.VrUi;
 public class UIBehaviorPatcher : NOVRBehaviour
 {
 
-    private static Dictionary<Type, Type> _patchMap = new()
+    private static Dictionary<Type, Type> _patchMap = BuildPatchMap();
+
+    private static Dictionary<Type, Type> BuildPatchMap()
     {
-        { typeof(FlightHud), typeof(NOVRFlightHudBehavior) },
-        { typeof(GameplayUI), typeof(NOVRGameplayUIBehaviour) },
-        { typeof(MessageUI), typeof(NOVRGameplayUIBehaviour) },
-        { typeof(StatusDisplay), typeof(NOVRStatusDisplayBehavior) }
-    };
+        var map = new Dictionary<Type, Type>
+        {
+            { typeof(GameplayUI), typeof(NOVRGameplayUIBehaviour) },
+            { typeof(MessageUI), typeof(NOVRGameplayUIBehaviour) },
+            { typeof(StatusDisplay), typeof(NOVRStatusDisplayBehavior) }
+        };
+
+        //: The flight HUD is the single entry the Vanilla Flight HUD diagnostic
+        //: withholds. NOVRFlightHudBehavior is the root of all of it: it is what
+        //: converts the canvas to world space, and it attaches the HUD/HMD centre
+        //: behaviours, the pitch compass and the target designator on the way.
+        //: Leaving it off is what makes the HUD the game's own.
+        if (VanillaFlightHud.ModdedHudActive)
+        {
+            map[typeof(FlightHud)] = typeof(NOVRFlightHudBehavior);
+        }
+
+        return map;
+    }
 
     private static Dictionary<string, Type> _sceneLoadPatchMap = new() // We patch gameobjects by name the first time a scene is loaded (yes we iterate the tree recursively)
     {

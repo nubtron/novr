@@ -21,6 +21,11 @@ internal static class AirbaseOverlayViewPositionPatch
     [HarmonyPatch(typeof(global::AirbaseOverlay), "LateUpdate")]
     private static class LateUpdatePatch
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPostfix]
         private static void Postfix(global::AirbaseOverlay __instance)
         {
