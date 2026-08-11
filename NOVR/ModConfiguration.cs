@@ -36,6 +36,7 @@ public class ModConfiguration
     public readonly ConfigEntry<string> AutoStartMissionName;
     public readonly ConfigEntry<int> AutoDumpCount;
     public readonly ConfigEntry<float> AutoDumpDelay;
+    public readonly ConfigEntry<string> AutoDumpYaws;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -227,5 +228,10 @@ public class ModConfiguration
             new ConfigDescription(
                 "Seconds to wait after the mission starts before the first automatic dump, and between dumps.",
                 new AcceptableValueRange<float>(1f, 60f)));
+        AutoDumpYaws = config.Bind(
+            "Debug",
+            "Auto Dump Yaws",
+            "",
+            "Comma-separated head yaw angles in degrees to dump at, e.g. '-75,0,75' (negative looks left). One dump per angle, and the count replaces Auto Dump Count. Empty dumps straight ahead. Only works under the harness's OpenXR mock runtime, which is the only runtime whose head pose we are allowed to move; with a real headset the angles are ignored and the run dumps wherever the pilot is looking.");
     }
 }

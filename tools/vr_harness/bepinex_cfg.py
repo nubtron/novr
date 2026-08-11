@@ -86,6 +86,9 @@ UNSAFE_KEYS = {
     ("Debug", "Auto Start Mission"): "false",
     ("Debug", "Enable Frame Dumps"): "false",
     ("Debug", "RenderDoc Capture On Dump"): "false",
+    # A yaw sweep left armed would move the head of someone wearing a real
+    # headset, who has one of their own and did not ask for ours.
+    ("Debug", "Auto Dump Yaws"): "",
 }
 
 
