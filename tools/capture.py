@@ -58,6 +58,16 @@ def parse_args() -> argparse.Namespace:
     # afterwards like any other harness edit.
     parser.add_argument("--set", action="append", default=[], metavar="SECTION:KEY=VALUE",
                         help="override any config entry for this run, e.g. --set 'General:HUD Opacity=0'")
+    # Looking around is the difference between "the HUD is fine" and "the HUD is
+    # fine in the part of it the default pose happens to cover". The angles drive
+    # the OpenXR mock runtime's view pose, so the mod sees a head that turned
+    # rather than a camera someone nudged afterwards.
+    # Written --yaw=... in the help on purpose: a leading-minus value is parsed
+    # as an option unless it is attached with '=', so "--yaw -75,0,75" fails
+    # with an unhelpful "expected one argument".
+    parser.add_argument("--yaw", default="", metavar="DEG[,DEG,...]",
+                        help="dump at these head yaw angles instead of straight ahead, e.g. "
+                             "--yaw=-75,0,75 (negative looks left); one dump per angle, replacing --dumps")
     parser.add_argument("--no-renderdoc", action="store_true", help="skip the GPU capture, buffer dumps only")
     parser.add_argument("--keep-running", action="store_true", help="do not close the game at the end")
     parser.add_argument("--config", default=None, help="override the harness config path")
@@ -256,7 +266,12 @@ def main() -> int:
         # trigger file is how they ask for a dump. bepinex_cfg forces this back
         # off afterwards however the run ends.
         ("Debug", "Enable Frame Dumps"): "true",
+        # Always written, so a run without --yaw clears a sweep an earlier run
+        # left behind rather than inheriting it.
+        ("Debug", "Auto Dump Yaws"): args.yaw,
     }
+    if args.yaw:
+        print(f"yaw sweep: {args.yaw} ({len(args.yaw.split(','))} dumps, overriding --dumps)")
     for override in args.set:
         section, _, rest = override.partition(":")
         key, sep, value = rest.partition("=")
