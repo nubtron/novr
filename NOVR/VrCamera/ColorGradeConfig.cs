@@ -42,9 +42,9 @@ public static class ColorGradeConfig
         Gamma = config.Bind(
             "Display",
             "Color Gamma",
-            0f,
+            -0.3f,
             new ConfigDescription(
-                "Gamma adjustment applied to the final image. Negative darkens the midtones, positive lifts them; highlights and blacks move far less than with contrast, which is what makes it the right control for a headset streamer's gamma curve. 0 disables. Adjustable in flight with the two shortcuts below, which write the value back here, so you can tune it in the headset and keep what you picked.",
+                "Gamma adjustment applied to the final image. Negative darkens the midtones, positive lifts them; highlights and blacks move far less than with contrast, which is what makes it the right control for a headset streamer's gamma curve. 0 disables. Adjustable in flight with the two shortcuts below, which write the value back here, so you can tune it in the headset and keep what you picked. The default was tuned in a headset against Virtual Desktop's washed-out image; a different streamer, or none, may want less.",
                 new AcceptableValueRange<float>(-1f, 1f)));
         // Live tuning is the point of these: the value that cancels the
         // streamer's curve cannot be judged from a desktop mirror, and quitting
