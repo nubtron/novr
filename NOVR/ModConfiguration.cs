@@ -19,6 +19,9 @@ public class ModConfiguration
     public readonly ConfigEntry<float> PitchLadderRange;
     public readonly ConfigEntry<float> ColorContrast;
     public readonly ConfigEntry<float> ColorSaturation;
+    public readonly ConfigEntry<float> ColorGamma;
+    public readonly ConfigEntry<KeyCode> ColorGammaDecreaseShortcut;
+    public readonly ConfigEntry<KeyCode> ColorGammaIncreaseShortcut;
     public readonly ConfigEntry<bool> EnableNativeMenuUi;
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
@@ -98,6 +101,29 @@ public class ModConfiguration
             new ConfigDescription(
                 "Saturation boost applied to the final image. 0 disables.",
                 new AcceptableValueRange<float>(-100f, 100f)));
+
+        ColorGamma = config.Bind(
+            "Display",
+            "Color Gamma",
+            0f,
+            new ConfigDescription(
+                "Gamma adjustment applied to the final image. Negative darkens the midtones, positive lifts them; highlights and blacks move far less than with contrast, which is what makes it the right control for a headset streamer's gamma curve. 0 disables. Adjustable in flight with the two shortcuts below, which write the value back here, so you can tune it in the headset and keep what you picked.",
+                new AcceptableValueRange<float>(-1f, 1f)));
+
+        // Live tuning is the point of these: the value that cancels the
+        // streamer's curve cannot be judged from a desktop mirror, and quitting
+        // to edit a config file loses the comparison you were making.
+        ColorGammaDecreaseShortcut = config.Bind(
+            "Input",
+            "Color Gamma Decrease Shortcut",
+            KeyCode.LeftBracket,
+            "Keyboard shortcut to darken the midtones by one step (0.05). Rebind if your keyboard layout has no bracket keys.");
+
+        ColorGammaIncreaseShortcut = config.Bind(
+            "Input",
+            "Color Gamma Increase Shortcut",
+            KeyCode.RightBracket,
+            "Keyboard shortcut to lift the midtones by one step (0.05). Rebind if your keyboard layout has no bracket keys.");
 
         EnableNativeMenuUi = config.Bind(
             "Experimental",
