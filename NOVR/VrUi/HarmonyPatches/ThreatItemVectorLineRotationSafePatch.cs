@@ -13,6 +13,11 @@ internal static class ThreatItemVectorLineRotationSafePatch
     [HarmonyPatch(typeof(global::ThreatItem), "AlignVectorLine")]
     private static class AlignVectorLinePatch
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPrefix]
         private static bool Prefix(global::ThreatItem __instance)
         {
