@@ -322,6 +322,17 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         // changes how collimated it is.
         var widthMeters = 2f * distance * Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad);
 
+        // Additive against a daylit sky needs help: the overlay pass writes the
+        // HUD pre-multiplied by its own alpha, so what lands in the texture is
+        // already dimmer than the flat game draws it, and adding that to bright
+        // cloud leaves it washed out. A tint multiplier on the panel is the one
+        // knob that fixes it, and it is the same knob a real HUD has.
+        if (_panelImage != null)
+        {
+            var brightness = Mathf.Clamp(CapturedFlightHud.Brightness?.Value ?? 2f, 0.25f, 8f);
+            _panelImage.color = new Color(brightness, brightness, brightness, 1f);
+        }
+
         var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
         _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth / aspect);
 
