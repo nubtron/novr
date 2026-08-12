@@ -41,17 +41,17 @@ public static class CapturedFlightHud
             "Experimental",
             "Captured HUD Conformal",
             true,
-            "Place the panel so the world lines up with the symbols. The game computes every "
-            + "world-referenced symbol — velocity vector, pitch ladder, target markers — by "
-            + "projecting through the main camera, which in VR is the head. Matching the panel to "
-            + "that exact camera frustum puts every captured pixel back on the ray the game "
-            + "computed, so the velocity vector sits on where you are actually going and target "
-            + "markers sit on their targets. (The pitch ladder stays as the flat game draws it — "
-            + "expanded for readability — so its lines are not true angles; that is the game's "
-            + "choice, reproduced faithfully.) The cost: the panel is locked to your head like a "
-            + "helmet-mounted display, not fixed to the airframe, and Captured HUD Field Of View "
-            + "is ignored (the game's own projection dictates the size). Off = a cockpit-fixed "
-            + "panel on the nose that holds still when you look around, but whose symbols do not "
+            "Make the world line up with the symbols the way a real HUD does: the game's HUD code "
+            + "is made to project from a fixed 'design eye' at the cockpit camera mount, "
+            + "boresighted with the airframe, at exactly the panel's field of view — instead of "
+            + "from your head. The airframe-fixed panel then shows every symbol on its true ray: "
+            + "the velocity vector sits on where you are going, unit markers sit on their units, "
+            + "and the pitch ladder stays horizon-parallel as the aircraft rolls. Head movement "
+            + "is absorbed by the panel distance, like a real collimator — recenter facing the "
+            + "boresight, since the whole frame is only as aligned as your recenter. (The ladder's "
+            + "line spacing stays as the flat game draws it — expanded for readability — so its "
+            + "lines are not true angles; that is the game's choice, reproduced faithfully.) "
+            + "Off = the same fixed panel, but symbols drawn from the head camera, which do not "
             + "line up with the world. Takes effect immediately.");
 
         Distance = config.Bind(
@@ -71,9 +71,11 @@ public static class CapturedFlightHud
             "Captured HUD Field Of View",
             60f,
             new ConfigDescription(
-                "Horizontal angle the HUD panel covers, in degrees. The panel carries the whole "
-                + "flat frame, so this is the flat game's field of view: 60 puts the screen edges "
-                + "about 30 degrees off the nose. Larger spreads the symbols wider and coarser.",
+                "Horizontal angle the HUD panel covers, in degrees. In conformal mode this is "
+                + "also the design eye's field of view, so it stays the angle the symbols are "
+                + "true at: 60 puts the screen edges about 30 degrees off the nose. Larger "
+                + "spreads the frame wider (and targets stay on-panel further off boresight) but "
+                + "draws everything coarser.",
                 new AcceptableValueRange<float>(20f, 120f)));
 
         Brightness = config.Bind(
