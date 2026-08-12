@@ -260,6 +260,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         var image = imageGo.AddComponent<RawImage>();
         image.texture = _target;
         image.raycastTarget = false;
+        image.material = CreatePanelMaterial();
 
         var imageRect = (RectTransform)imageGo.transform;
         imageRect.anchorMin = Vector2.zero;
@@ -274,6 +275,35 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         _panelRect = rect;
 
         ApplyPlacement();
+    }
+
+    /// <summary>
+    /// The panel adds light rather than compositing over the view, because that
+    /// is what a combiner does — it is a half-silvered mirror and has no way to
+    /// make the world behind it darker.
+    ///
+    /// This is not a cosmetic preference. The captured texture is the whole flat
+    /// frame, and the game's HUD draws translucent backing panels behind the
+    /// weapon status and the tactical map. Alpha-composited onto a quad those
+    /// become solid grey rectangles hanging in the sky; added, their near-black
+    /// contributes nothing and only the green strokes survive. Measured on the
+    /// first harness run of this backend, which is what prompted it.
+    ///
+    /// <c>Unlit/AdditiveTextShader</c> is the game's own HUD text shader, so it
+    /// is guaranteed to be in the build — the same reason
+    /// <see cref="MotionControllerVisual"/> tries it first. If it ever is not,
+    /// the fallback is the stock UI material: alpha-blended and ugly, but
+    /// visible, which beats a magenta panel or none at all.
+    /// </summary>
+    private static Material? CreatePanelMaterial()
+    {
+        var shader = Shader.Find("Unlit/AdditiveTextShader");
+        if (shader != null) return new Material(shader);
+
+        Debug.LogWarning("[NOVR] Unlit/AdditiveTextShader not found; the captured HUD panel will " +
+                         "be alpha-blended, so the game's translucent HUD backings will show as " +
+                         "grey boxes.");
+        return null;
     }
 
     /// <summary>
