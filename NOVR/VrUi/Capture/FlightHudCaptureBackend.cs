@@ -45,32 +45,41 @@ namespace NOVR.VrUi.Capture;
 /// the cockpit. Size is given as an angle rather than metres for the same
 /// reason — what matters is how much of the view it covers, not how big it is.
 ///
-/// **Conformal mode** (the default) makes the world line up with the symbols,
-/// which the cockpit-fixed panel cannot do. The game places every
-/// world-referenced symbol via <c>CameraStateManager.i.mainCamera
-/// .WorldToScreenPoint(...)</c> (seen in the decompile of <c>FlightHud</c>), and
-/// under NO:VR the main camera *is* the head — so each captured pixel encodes a
-/// ray in the head's frame under the main camera's mono projection. Parking the
-/// panel under <c>VrCockpitHudCamera</c> (whose pose driver writes the same
-/// <see cref="NOVRHeadsetData"/> pose the main camera gets) and sizing it to
-/// that exact frustum puts every pixel back on its ray: the velocity vector
-/// overlays the true flight path (measured in-game: panel direction and true
-/// velocity direction agree to 1e-4 in tan space in steady flight). What does
-/// *not* become conformal is anything the flat game itself draws at an expanded
-/// scale — the pitch ladder is scaled by 50/fov as a readability choice, and
-/// that expansion is reproduced faithfully, not corrected.
-/// The trade flips: symbols conform, but the frame is locked to the
-/// head like a helmet-mounted sight instead of fixed to the airframe. A real
-/// HUD gets both only because its symbol generator draws for a fixed design eye
-/// — the game recomputes from the head every frame, so we can either follow the
-/// projection (conformal) or ignore it (cockpit-fixed), not both.
+/// **Conformal mode** (the default) makes the world line up with the symbols
+/// the way a real HUD does: by fixing the *symbol generator's* eye, not by
+/// chasing the pilot's. The game places every world-referenced symbol via
+/// <c>CameraStateManager.i.mainCamera.WorldToScreenPoint(...)</c> (seen in the
+/// decompile of <c>FlightHud</c>, <c>CombatHUD</c>, <c>HUDUnitMarker</c> and
+/// <c>HUDFunctions</c>), and under NO:VR that camera is the head — which forces
+/// a choice between a head-locked conformal frame (flown, rejected: the frame
+/// follows the head and the one-frame pose lag makes the symbols swim) and an
+/// airframe-fixed frame whose symbols are wrong.
 ///
-/// The frustum math allows for the camera's pixel rect and <c>Screen</c>
-/// disagreeing (under XR one may be the eye texture, the other the window): the
-/// game writes <c>WorldToScreenPoint</c>'s camera-pixel output straight into an
-/// overlay canvas laid out in Screen pixels, so the capture texture's UVs map to
-/// camera pixels through the ratio of the two, and the quad is scaled and
-/// off-centred by that same ratio to compensate.
+/// A real HUD escapes the dilemma because its symbol generator draws for a
+/// fixed <em>design eye</em> and the collimator absorbs head movement. This
+/// backend does the same: a disabled camera is parked at the game camera's
+/// mount (the cockpit eye point — the pose driver overwrites the camera's
+/// local pose, so its parent is exactly the seat), boresighted with the
+/// airframe, with its field of view equal to the panel's. While the HUD code
+/// runs, <see cref="HarmonyPatches.HudDesignEyePatches"/> swaps the public
+/// <c>CameraStateManager.mainCamera</c> field to that camera and restores it
+/// after, so every symbol is projected from the fixed eye. The airframe-fixed
+/// panel spanning the same frustum then puts every pixel back on its ray by
+/// construction: the velocity vector sits on the flight path, markers sit on
+/// their units, and head motion is handled by collimation (at 25 m, a 10 cm
+/// lean moves the symbols ~0.23 degrees against the world).
+///
+/// Free win from the swap: <c>FlightHud</c> counter-rolls the pitch ladder by
+/// the projecting camera's roll, and the design eye rolls with the airframe —
+/// so the ladder stays horizon-parallel in the world, which is what a real
+/// HUD's ladder does.
+///
+/// What does *not* become conformal is anything the flat game itself draws at
+/// an expanded scale — the pitch ladder is scaled by 50/fov as a readability
+/// choice, and that expansion is reproduced faithfully, not corrected. And the
+/// alignment is only as good as the recenter: the panel lives in the overlay
+/// room, whose forward is wherever the pilot recentred; recentre facing the
+/// boresight or the whole frame is rotated against the world by the error.
 /// </summary>
 public class FlightHudCaptureBackend : NOVRBehaviour
 {
@@ -201,6 +210,8 @@ public class FlightHudCaptureBackend : NOVRBehaviour
             Destroy(_captureCamera.gameObject);
             _captureCamera = null;
         }
+
+        TeardownProjectionCamera();
 
         if (_target != null)
         {
@@ -366,15 +377,12 @@ public class FlightHudCaptureBackend : NOVRBehaviour
             _panelImage.material.SetColor("_Color", new Color(brightness, brightness, brightness, 1f));
         }
 
-        var mainCamera = (CapturedFlightHud.Conformal?.Value ?? true) ? APIBus.MainCamera : null;
-        if (mainCamera != null) ApplyConformalPlacement(mainCamera, distance);
-        else ApplyFixedPlacement(distance);
+        ApplyFixedPlacement(distance);
+        UpdateProjectionCamera();
     }
 
     private void ApplyFixedPlacement(float distance)
     {
-        Reparent(transform);
-
         var fovDegrees = Mathf.Clamp(CapturedFlightHud.FieldOfView?.Value ?? 60f, 20f, 120f);
 
         // Width from the angle it should subtend at that distance, so changing
@@ -400,91 +408,84 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     }
 
     /// <summary>
-    /// Reproduce the game's own projection, so the world lines up with the
-    /// symbols.
-    ///
-    /// The game wrote each symbol at <c>WorldToScreenPoint</c>'s output — a pixel
-    /// in the main camera's pixel rect under its mono projection — straight into
-    /// a canvas laid out in Screen pixels, and the capture texture spans that
-    /// canvas. So texture UV <c>u</c> corresponds to camera pixel
-    /// <c>u * Screen / pixelRect</c>, and the quad must span the tan-space region
-    /// those pixels project to. For Unity's projection matrix,
-    /// <c>ndc = m00 * tan_x - m02</c>, so <c>tan_x = (ndc + m02) / m00</c> (and
-    /// likewise m11/m12 vertically) — the m02/m12 terms carry any off-centre
-    /// (lens-shifted) projection instead of assuming a symmetric one.
-    ///
-    /// The panel hangs off <c>VrCockpitHudCamera</c>, whose pose driver writes
-    /// the same head pose the main camera gets, so "the main camera's frustum"
-    /// and "a quad in front of this camera" are the same directions by
-    /// construction.
+    /// The design eye: a disabled camera the HUD code is made to project
+    /// through while conformal mode is on (see
+    /// <see cref="HarmonyPatches.HudDesignEyePatches"/>). Null whenever the swap
+    /// must not happen — setting off, not capturing, or no mount to sit on.
     /// </summary>
-    private void ApplyConformalPlacement(Camera mainCamera, float distance)
-    {
-        var hudCamera = APIBus.CockpitHudCamera;
-        if (hudCamera == null)
-        {
-            ApplyFixedPlacement(distance);
-            return;
-        }
+    public static Camera? ConformalProjectionCamera =>
+        _instance != null &&
+        _instance._capturing &&
+        (CapturedFlightHud.Conformal?.Value ?? true) &&
+        _instance._projectionCamera != null &&
+        _instance._projectionCamera.gameObject.activeInHierarchy
+            ? _instance._projectionCamera
+            : null;
 
-        Reparent(hudCamera.transform);
-
-        var projection = mainCamera.projectionMatrix;
-        if (Mathf.Approximately(projection.m00, 0f) || Mathf.Approximately(projection.m11, 0f))
-        {
-            ApplyFixedPlacement(distance);
-            return;
-        }
-
-        var pixelToScreenX = mainCamera.pixelWidth > 0 ? (float)Screen.width / mainCamera.pixelWidth : 1f;
-        var pixelToScreenY = mainCamera.pixelHeight > 0 ? (float)Screen.height / mainCamera.pixelHeight : 1f;
-
-        // Texture UV 0 is camera NDC -1; UV 1 is wherever Screen's edge lands in
-        // the camera's pixel space. When the two agree this is plain [-1, 1].
-        var tanLeft = (-1f + projection.m02) / projection.m00;
-        var tanRight = (2f * pixelToScreenX - 1f + projection.m02) / projection.m00;
-        var tanBottom = (-1f + projection.m12) / projection.m11;
-        var tanTop = (2f * pixelToScreenY - 1f + projection.m12) / projection.m11;
-
-        var widthMeters = (tanRight - tanLeft) * distance;
-        var heightMeters = (tanTop - tanBottom) * distance;
-        if (widthMeters <= 0f || heightMeters <= 0f)
-        {
-            ApplyFixedPlacement(distance);
-            return;
-        }
-
-        _panelRect!.sizeDelta = new Vector2(
-            PanelCanvasReferenceWidth,
-            PanelCanvasReferenceWidth * heightMeters / widthMeters);
-
-        var scale = widthMeters / PanelCanvasReferenceWidth;
-        _panelRect.localScale = new Vector3(scale, scale, scale);
-
-        _panelRect.localPosition = new Vector3(
-            (tanRight + tanLeft) * 0.5f * distance,
-            (tanTop + tanBottom) * 0.5f * distance,
-            distance);
-        _panelRect.localRotation = Quaternion.identity;
-
-        if (_loggedPlacement) return;
-        _loggedPlacement = true;
-        Debug.Log($"[NOVR] Flight HUD panel (conformal): tan extents " +
-                  $"[{tanLeft:F3}, {tanRight:F3}] x [{tanBottom:F3}, {tanTop:F3}] at {distance:F1} m, " +
-                  $"camera pixels {mainCamera.pixelWidth}x{mainCamera.pixelHeight}, " +
-                  $"screen {Screen.width}x{Screen.height}, head-locked.");
-    }
+    private Camera? _projectionCamera;
 
     /// <summary>
-    /// Conformal follows the head (the projection's origin), cockpit-fixed stays
-    /// on the root; the setting can flip at runtime, so the panel moves between
-    /// the two parents rather than being rebuilt.
+    /// Keep the design eye on the game camera's mount with the panel's field of
+    /// view. The mount is <c>mainCamera.transform.parent</c>: the pose driver
+    /// overwrites the camera's local pose with the head pose, so the parent is
+    /// the fixed seat eye point the flat game placed the camera at. Disabled —
+    /// it never renders; it exists so <c>WorldToScreenPoint</c> has a fixed,
+    /// airframe-boresighted projection to answer with. Its pixel rect defaults
+    /// to Screen, which is exactly the space the HUD canvas is laid out in.
     /// </summary>
-    private void Reparent(Transform parent)
+    private void UpdateProjectionCamera()
     {
-        if (_panelCanvas == null || _panelCanvas.transform.parent == parent) return;
-        _panelCanvas.transform.SetParent(parent, false);
-        LayerHelper.SetLayerRecursive(_panelCanvas.transform, LayerHelper.GetVrUiLayer());
+        if (!(CapturedFlightHud.Conformal?.Value ?? true))
+        {
+            TeardownProjectionCamera();
+            return;
+        }
+
+        var mainCamera = APIBus.MainCamera;
+        var mount = mainCamera != null ? mainCamera.transform.parent : null;
+        if (mount == null)
+        {
+            // No mount to define the airframe eye (external view, scene churn):
+            // stop swapping rather than project from a stale pose.
+            TeardownProjectionCamera();
+            return;
+        }
+
+        if (_projectionCamera == null)
+        {
+            var go = new GameObject("NOVR HUD Design Eye");
+            var camera = go.AddComponent<Camera>();
+            camera.enabled = false;
+            camera.cullingMask = 0;
+            camera.targetTexture = null;
+            camera.stereoTargetEye = StereoTargetEyeMask.None;
+            camera.nearClipPlane = 0.1f;
+            camera.farClipPlane = 50000f;
+            VrCameraManager.IgnoredCameras.Add(camera);
+            _projectionCamera = camera;
+            Debug.Log("[NOVR] HUD design eye created: the HUD now projects from the cockpit " +
+                      "mount instead of the head.");
+        }
+
+        var t = _projectionCamera.transform;
+        if (t.parent != mount) t.SetParent(mount, false);
+        t.localPosition = Vector3.zero;
+        t.localRotation = Quaternion.identity;
+
+        // Same angular size as the panel, by construction. The setting is the
+        // horizontal angle; Unity's fieldOfView is vertical.
+        var fovDegrees = Mathf.Clamp(CapturedFlightHud.FieldOfView?.Value ?? 60f, 20f, 120f);
+        var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
+        _projectionCamera.fieldOfView =
+            2f * Mathf.Atan(Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad) / aspect) * Mathf.Rad2Deg;
+    }
+
+    private void TeardownProjectionCamera()
+    {
+        if (_projectionCamera == null) return;
+        VrCameraManager.IgnoredCameras.Remove(_projectionCamera);
+        Destroy(_projectionCamera.gameObject);
+        _projectionCamera = null;
     }
 
     private void UpdatePanel()
