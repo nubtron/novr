@@ -269,6 +269,8 @@ def main() -> int:
         # Always written, so a run without --yaw clears a sweep an earlier run
         # left behind rather than inheriting it.
         ("Debug", "Auto Dump Yaws"): args.yaw,
+        # An unattended run has no listener, and the machine it runs on does.
+        ("Debug", "Harness Mute"): "true",
     }
     if args.yaw:
         print(f"yaw sweep: {args.yaw} ({len(args.yaw.split(','))} dumps, overriding --dumps)")

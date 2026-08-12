@@ -32,6 +32,14 @@ public class DebugDumpController : NOVRBehaviour
 
     private void Update()
     {
+        // Enforced every frame rather than set once: the game writes the
+        // player's volume settings back on its own schedule, and a mute that
+        // can be un-muted mid-run is not a mute.
+        if (ModConfiguration.Instance.HarnessMute.Value && AudioListener.volume != 0f)
+        {
+            AudioListener.volume = 0f;
+        }
+
         if (ModConfiguration.Instance.EnableFrameDumps.Value &&
             (_dumpKey.UpdateIsDown() || ConsumeDumpTriggerFile()))
         {
