@@ -45,9 +45,17 @@ public static class VanillaFlightHud
     /// <summary>
     /// True when the mod's HUD work should be applied — i.e. normal operation.
     ///
+    /// <see cref="CapturedFlightHud"/> counts as a second way of asking for the
+    /// unmodified HUD: it captures the engine's overlay pass, which only has
+    /// anything in it while the canvas is still ScreenSpaceOverlay. Having it
+    /// imply this, rather than requiring two settings to agree, means the
+    /// combination that yields a blank panel cannot be configured at all.
+    ///
     /// Null-safe on purpose: this is read from <c>[HarmonyPrepare]</c>, and if
-    /// the section were ever not bound the honest failure is "behave as we
+    /// a section were ever not bound the honest failure is "behave as we
     /// always have", not "silently ship the diagnostic path".
     /// </summary>
-    public static bool ModdedHudActive => Enabled == null || !Enabled.Value;
+    public static bool ModdedHudActive =>
+        (Enabled == null || !Enabled.Value) &&
+        (CapturedFlightHud.Enabled == null || !CapturedFlightHud.Enabled.Value);
 }
