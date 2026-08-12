@@ -54,8 +54,12 @@ namespace NOVR.VrUi.Capture;
 /// panel under <c>VrCockpitHudCamera</c> (whose pose driver writes the same
 /// <see cref="NOVRHeadsetData"/> pose the main camera gets) and sizing it to
 /// that exact frustum puts every pixel back on its ray: the velocity vector
-/// overlays the true flight path, the pitch ladder's zero line sits on the
-/// horizon. The trade flips: symbols conform, but the frame is locked to the
+/// overlays the true flight path (measured in-game: panel direction and true
+/// velocity direction agree to 1e-4 in tan space in steady flight). What does
+/// *not* become conformal is anything the flat game itself draws at an expanded
+/// scale — the pitch ladder is scaled by 50/fov as a readability choice, and
+/// that expansion is reproduced faithfully, not corrected.
+/// The trade flips: symbols conform, but the frame is locked to the
 /// head like a helmet-mounted sight instead of fixed to the airframe. A real
 /// HUD gets both only because its symbol generator draws for a fixed design eye
 /// — the game recomputes from the head every frame, so we can either follow the
