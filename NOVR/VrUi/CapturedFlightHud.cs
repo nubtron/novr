@@ -19,6 +19,7 @@ namespace NOVR.VrUi;
 public static class CapturedFlightHud
 {
     public static ConfigEntry<bool> Enabled;
+    public static ConfigEntry<bool> Conformal;
     public static ConfigEntry<float> Distance;
     public static ConfigEntry<float> FieldOfView;
     public static ConfigEntry<float> Brightness;
@@ -35,6 +36,21 @@ public static class CapturedFlightHud
             + "place — but a flat panel cannot conform to the world either: the velocity vector "
             + "and target markers show where the flat HUD drew them, not where they are from the "
             + "headset. Implies Vanilla Flight HUD. Requires a restart.");
+
+        Conformal = config.Bind(
+            "Experimental",
+            "Captured HUD Conformal",
+            true,
+            "Place the panel so the world lines up with the symbols. The game computes every "
+            + "world-referenced symbol — velocity vector, pitch ladder, target markers — by "
+            + "projecting through the main camera, which in VR is the head. Matching the panel to "
+            + "that exact camera frustum puts every captured pixel back on the ray the game "
+            + "computed, so the velocity vector sits on where you are actually going and the "
+            + "horizon line sits on the horizon. The cost: the panel is locked to your head like a "
+            + "helmet-mounted display, not fixed to the airframe, and Captured HUD Field Of View "
+            + "is ignored (the game's own projection dictates the size). Off = a cockpit-fixed "
+            + "panel on the nose that holds still when you look around, but whose symbols do not "
+            + "line up with the world. Takes effect immediately.");
 
         Distance = config.Bind(
             "Experimental",
