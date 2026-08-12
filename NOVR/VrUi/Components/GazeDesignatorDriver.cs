@@ -28,6 +28,12 @@ namespace NOVR.VrUi.Components;
 /// distance stays meaningful beyond the visible frame, out to nearly 90
 /// degrees off boresight. Behind that the designator is parked far away and
 /// nothing selects.
+///
+/// Only the designator is driven. <c>FlightHud.HMDCenter</c> means "the view
+/// centre" too, but it turned out to be the HeadMountedDisplay subtree's own
+/// root (measured: driving it teleported the whole helmet suite into overlay
+/// pixel coordinates and emptied the visor) — and with the visor head-locked
+/// that rect already *is* at the view centre, cargo and sling UI included.
 /// </summary>
 public class GazeDesignatorDriver : NOVRBehaviour
 {
@@ -35,9 +41,7 @@ public class GazeDesignatorDriver : NOVRBehaviour
 
     private bool _driving;
     private Vector3 _savedDesignatorLocal;
-    private Vector3 _savedHmdCenterLocal;
     private Transform? _designator;
-    private Transform? _hmdCenter;
 
     private void Update()
     {
@@ -51,11 +55,9 @@ public class GazeDesignatorDriver : NOVRBehaviour
         }
 
         var combatHud = SceneSingleton<CombatHUD>.i;
-        var flightHud = SceneSingleton<FlightHud>.i;
         var designator = combatHud != null && combatHud.targetDesignator != null
             ? combatHud.targetDesignator.transform
             : null;
-        var hmdCenter = flightHud != null ? flightHud.HMDCenter : null;
 
         if (designator == null)
         {
@@ -63,13 +65,11 @@ public class GazeDesignatorDriver : NOVRBehaviour
             return;
         }
 
-        if (!_driving || !ReferenceEquals(designator, _designator) || !ReferenceEquals(hmdCenter, _hmdCenter))
+        if (!_driving || !ReferenceEquals(designator, _designator))
         {
             if (_driving) StopDriving();
             _designator = designator;
-            _hmdCenter = hmdCenter;
             _savedDesignatorLocal = designator.localPosition;
-            if (hmdCenter != null) _savedHmdCenterLocal = hmdCenter.localPosition;
             _driving = true;
         }
 
@@ -91,7 +91,6 @@ public class GazeDesignatorDriver : NOVRBehaviour
         }
 
         designator.position = position;
-        if (hmdCenter != null) hmdCenter.position = position;
     }
 
     private void OnDisable()
@@ -100,15 +99,13 @@ public class GazeDesignatorDriver : NOVRBehaviour
     }
 
     /// <summary>
-    /// Put the scene's own positions back — the reticle is a static element the
+    /// Put the scene's own position back — the reticle is a static element the
     /// game never moves, so whatever we leave behind is where it stays.
     /// </summary>
     private void StopDriving()
     {
         _driving = false;
         if (_designator != null) _designator.localPosition = _savedDesignatorLocal;
-        if (_hmdCenter != null) _hmdCenter.localPosition = _savedHmdCenterLocal;
         _designator = null;
-        _hmdCenter = null;
     }
 }
