@@ -493,54 +493,5 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
         if (_panelImage != null && _panelImage.texture != _target) _panelImage.texture = _target;
         ApplyPlacement();
-        LogConformalDiagnostic();
-    }
-
-    private float _nextDiagnostic;
-
-    /// <summary>
-    /// Temporary instrument: the conformality claim, measured in-game instead of
-    /// off screenshots. Takes the velocity vector's actual screen position, maps
-    /// it through the panel's *actual* world corners (so parent scale, rect and
-    /// hierarchy bugs all show up), and compares the resulting view direction
-    /// with the aircraft's true velocity direction in the main camera's frame.
-    /// If the two tan pairs agree, the pixel sits on the ray — conformal.
-    /// </summary>
-    private void LogConformalDiagnostic()
-    {
-        if (!(CapturedFlightHud.Conformal?.Value ?? true)) return;
-        if (Time.unscaledTime < _nextDiagnostic) return;
-        _nextDiagnostic = Time.unscaledTime + 5f;
-
-        var hud = SceneSingleton<FlightHud>.i;
-        var mainCamera = APIBus.MainCamera;
-        var hudCamera = APIBus.CockpitHudCamera;
-        if (hud == null || mainCamera == null || hudCamera == null || _panelRect == null) return;
-        if (hud.velocityVector == null || !hud.velocityVector.gameObject.activeInHierarchy) return;
-
-        var rb = typeof(FlightHud)
-            .GetField("cockpitRB", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?
-            .GetValue(hud) as Rigidbody;
-        if (rb == null) return;
-
-        var vvScreen = hud.velocityVector.transform.position;
-        var u = vvScreen.x / Screen.width;
-        var v = vvScreen.y / Screen.height;
-
-        var corners = new Vector3[4];
-        _panelRect.GetWorldCorners(corners); // bl, tl, tr, br
-        var world = corners[0] + u * (corners[3] - corners[0]) + v * (corners[1] - corners[0]);
-        var local = hudCamera.transform.InverseTransformPoint(world);
-        if (local.z <= 0.01f) return;
-
-        var trueLocal = mainCamera.transform.InverseTransformDirection(rb.velocity);
-        if (trueLocal.z <= 0.01f) return;
-
-        Debug.Log($"[NOVR] Conformal check: VV panel dir ({local.x / local.z:F4}, {local.y / local.z:F4}) " +
-                  $"vs true velocity dir ({trueLocal.x / trueLocal.z:F4}, {trueLocal.y / trueLocal.z:F4}); " +
-                  $"vvScreen=({vvScreen.x:F0},{vvScreen.y:F0}) screen={Screen.width}x{Screen.height} " +
-                  $"camPixels={mainCamera.pixelWidth}x{mainCamera.pixelHeight} " +
-                  $"monoProj m00={mainCamera.projectionMatrix.m00:F4} m11={mainCamera.projectionMatrix.m11:F4} " +
-                  $"panelLossyScale={_panelRect.lossyScale.x:F4} camLossy={hudCamera.transform.lossyScale.x:F4}");
     }
 }
