@@ -298,7 +298,17 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private static Material? CreatePanelMaterial()
     {
         var shader = Shader.Find("Unlit/AdditiveTextShader");
-        if (shader != null) return new Material(shader);
+        if (shader != null)
+        {
+            var names = new System.Text.StringBuilder();
+            for (var i = 0; i < shader.GetPropertyCount(); i++)
+            {
+                if (i > 0) names.Append(", ");
+                names.Append(shader.GetPropertyName(i)).Append(':').Append(shader.GetPropertyType(i));
+            }
+            Debug.Log($"[NOVR-PROBE] Unlit/AdditiveTextShader properties: {names}");
+            return new Material(shader);
+        }
 
         Debug.LogWarning("[NOVR] Unlit/AdditiveTextShader not found; the captured HUD panel will " +
                          "be alpha-blended, so the game's translucent HUD backings will show as " +
