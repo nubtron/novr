@@ -21,6 +21,7 @@ public static class CapturedFlightHud
     public static ConfigEntry<bool> Enabled;
     public static ConfigEntry<float> Distance;
     public static ConfigEntry<float> FieldOfView;
+    public static ConfigEntry<float> Brightness;
 
     public static void Bind(ConfigFile config)
     {
@@ -56,5 +57,17 @@ public static class CapturedFlightHud
                 + "flat frame, so this is the flat game's field of view: 60 puts the screen edges "
                 + "about 30 degrees off the nose. Larger spreads the symbols wider and coarser.",
                 new AcceptableValueRange<float>(20f, 120f)));
+
+        Brightness = config.Bind(
+            "Experimental",
+            "Captured HUD Brightness",
+            2f,
+            new ConfigDescription(
+                "How hard the HUD panel is driven. The panel adds light rather than covering the "
+                + "view, like a real combiner, and the captured texture arrives pre-multiplied by "
+                + "the HUD's own alpha — so at 1.0 it washes out against daylit cloud. Raise it "
+                + "until the symbology reads against the brightest sky you fly in; lower it if it "
+                + "glares at night. Takes effect immediately.",
+                new AcceptableValueRange<float>(0.25f, 8f)));
     }
 }
