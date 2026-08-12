@@ -68,7 +68,7 @@ internal static class HudDesignEyePatches
     {
         previous = null;
 
-        var designEye = FlightHudCaptureBackend.ConformalProjectionCamera;
+        var designEye = FlightHudCaptureBackend.AcquireDesignEyeForProjection();
         if (designEye == null) return;
 
         var manager = SceneSingleton<CameraStateManager>.i;
