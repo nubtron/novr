@@ -498,5 +498,50 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
         if (_panelImage != null && _panelImage.texture != _target) _panelImage.texture = _target;
         ApplyPlacement();
+        LogConformalDiagnostic();
+    }
+
+    private float _nextDiagnostic;
+
+    /// <summary>
+    /// Temporary instrument for the design-eye scheme. Takes the velocity
+    /// vector's actual screen pixel, maps it through the panel's real world
+    /// corners into the panel-parent frame (the airframe room), and compares
+    /// that ray with the true velocity direction in the design eye's frame.
+    /// The two frames are both "the airframe" by construction, so the tan pairs
+    /// must agree if — and only if — the whole chain is right.
+    /// </summary>
+    private void LogConformalDiagnostic()
+    {
+        if (Time.unscaledTime < _nextDiagnostic) return;
+        _nextDiagnostic = Time.unscaledTime + 5f;
+
+        var designEye = ConformalProjectionCamera;
+        var hud = SceneSingleton<FlightHud>.i;
+        if (designEye == null || hud == null || _panelRect == null || _panelRect.parent == null) return;
+        if (hud.velocityVector == null || !hud.velocityVector.gameObject.activeInHierarchy) return;
+
+        var rb = typeof(FlightHud)
+            .GetField("cockpitRB", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)?
+            .GetValue(hud) as Rigidbody;
+        if (rb == null) return;
+
+        var vvScreen = hud.velocityVector.transform.position;
+        var u = vvScreen.x / Screen.width;
+        var v = vvScreen.y / Screen.height;
+
+        var corners = new Vector3[4];
+        _panelRect.GetWorldCorners(corners); // bl, tl, tr, br
+        var world = corners[0] + u * (corners[3] - corners[0]) + v * (corners[1] - corners[0]);
+        var local = _panelRect.parent.InverseTransformPoint(world);
+        if (local.z <= 0.01f) return;
+
+        var trueLocal = designEye.transform.InverseTransformDirection(rb.velocity);
+        if (trueLocal.z <= 0.01f) return;
+
+        Debug.Log($"[NOVR] Design-eye check: VV panel ray ({local.x / local.z:F4}, {local.y / local.z:F4}) " +
+                  $"vs true velocity ({trueLocal.x / trueLocal.z:F4}, {trueLocal.y / trueLocal.z:F4}); " +
+                  $"designEye fov={designEye.fieldOfView:F2} pixels={designEye.pixelWidth}x{designEye.pixelHeight} " +
+                  $"screen={Screen.width}x{Screen.height} mountLossy={designEye.transform.lossyScale.x:F4}");
     }
 }
