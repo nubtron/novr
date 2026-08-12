@@ -159,6 +159,9 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
         if (_panelCanvas != null)
         {
+            // The material is a `new Material(...)` instance, and destroying the
+            // GameObject does not take it with it.
+            if (_panelImage != null && _panelImage.material != null) Destroy(_panelImage.material);
             Destroy(_panelCanvas.gameObject);
             _panelCanvas = null;
             _panelImage = null;
@@ -294,21 +297,18 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     /// <see cref="MotionControllerVisual"/> tries it first. If it ever is not,
     /// the fallback is the stock UI material: alpha-blended and ugly, but
     /// visible, which beats a magenta panel or none at all.
+    ///
+    /// Brightness goes through the material's <c>_Color</c>, not through the
+    /// <see cref="RawImage"/>'s tint. The graphic's colour reaches a UI shader
+    /// as vertex colour and this one ignores it — measured, not assumed: harness
+    /// runs at 2.0 and 6.0 produced the same green-excess to three digits.
+    /// Asking the shader what it has (<c>_MainTex, _Color, _Stencil*,
+    /// _ColorMask, _UseUIAlphaClip</c>) was quicker than guessing.
     /// </summary>
     private static Material? CreatePanelMaterial()
     {
         var shader = Shader.Find("Unlit/AdditiveTextShader");
-        if (shader != null)
-        {
-            var names = new System.Text.StringBuilder();
-            for (var i = 0; i < shader.GetPropertyCount(); i++)
-            {
-                if (i > 0) names.Append(", ");
-                names.Append(shader.GetPropertyName(i)).Append(':').Append(shader.GetPropertyType(i));
-            }
-            Debug.Log($"[NOVR-PROBE] Unlit/AdditiveTextShader properties: {names}");
-            return new Material(shader);
-        }
+        if (shader != null) return new Material(shader);
 
         Debug.LogWarning("[NOVR] Unlit/AdditiveTextShader not found; the captured HUD panel will " +
                          "be alpha-blended, so the game's translucent HUD backings will show as " +
@@ -337,10 +337,10 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         // already dimmer than the flat game draws it, and adding that to bright
         // cloud leaves it washed out. A tint multiplier on the panel is the one
         // knob that fixes it, and it is the same knob a real HUD has.
-        if (_panelImage != null)
+        if (_panelImage != null && _panelImage.material != null)
         {
             var brightness = Mathf.Clamp(CapturedFlightHud.Brightness?.Value ?? 2f, 0.25f, 8f);
-            _panelImage.color = new Color(brightness, brightness, brightness, 1f);
+            _panelImage.material.SetColor("_Color", new Color(brightness, brightness, brightness, 1f));
         }
 
         var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
