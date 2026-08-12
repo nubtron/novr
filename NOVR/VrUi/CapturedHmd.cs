@@ -51,8 +51,7 @@ public static class CapturedHmd
             + "gaze across the HUD, and Select picks the marker under it — the game's own "
             + "selection code (radius, priority, painting, the edge arrow) runs unmodified, it "
             + "is only handed where you are actually looking instead of a fixed screen centre. "
-            + "Also moves the game's HMD anchor (cargo and sling UI) with the gaze, as the "
-            + "original does. Only active while Captured Flight HUD is on with Conformal. Takes "
-            + "effect immediately.");
+            + "Only active while Captured Flight HUD is on with Conformal. Takes effect "
+            + "immediately.");
     }
 }
