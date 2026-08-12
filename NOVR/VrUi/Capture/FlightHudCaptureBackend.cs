@@ -423,6 +423,24 @@ public class FlightHudCaptureBackend : NOVRBehaviour
             : null;
 
     private Camera? _projectionCamera;
+    private float _designEyeVerticalFov = 60f;
+
+    /// <summary>
+    /// What the Harmony swap hands to the game. Re-asserts the field of view on
+    /// every acquisition: game code inside the swap window writes its own FOV
+    /// into whatever camera the <c>mainCamera</c> field points at, and a design
+    /// eye that drifts from the panel's FOV silently de-conforms every symbol.
+    /// </summary>
+    public static Camera? AcquireDesignEyeForProjection()
+    {
+        var camera = ConformalProjectionCamera;
+        if (camera != null && _instance != null)
+        {
+            camera.fieldOfView = _instance._designEyeVerticalFov;
+        }
+
+        return camera;
+    }
 
     /// <summary>
     /// Keep the design eye on the game camera's mount with the panel's field of
@@ -476,8 +494,9 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         // horizontal angle; Unity's fieldOfView is vertical.
         var fovDegrees = Mathf.Clamp(CapturedFlightHud.FieldOfView?.Value ?? 60f, 20f, 120f);
         var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
-        _projectionCamera.fieldOfView =
+        _designEyeVerticalFov =
             2f * Mathf.Atan(Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad) / aspect) * Mathf.Rad2Deg;
+        _projectionCamera.fieldOfView = _designEyeVerticalFov;
     }
 
     private void TeardownProjectionCamera()
@@ -541,7 +560,8 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
         Debug.Log($"[NOVR] Design-eye check: VV panel ray ({local.x / local.z:F4}, {local.y / local.z:F4}) " +
                   $"vs true velocity ({trueLocal.x / trueLocal.z:F4}, {trueLocal.y / trueLocal.z:F4}); " +
-                  $"designEye fov={designEye.fieldOfView:F2} pixels={designEye.pixelWidth}x{designEye.pixelHeight} " +
+                  $"designEye fov={designEye.fieldOfView:F2} (set {_designEyeVerticalFov:F2}) " +
+                  $"pixels={designEye.pixelWidth}x{designEye.pixelHeight} " +
                   $"screen={Screen.width}x{Screen.height} mountLossy={designEye.transform.lossyScale.x:F4}");
     }
 }
