@@ -37,6 +37,7 @@ public class ModConfiguration
     public readonly ConfigEntry<int> AutoDumpCount;
     public readonly ConfigEntry<float> AutoDumpDelay;
     public readonly ConfigEntry<string> AutoDumpYaws;
+    public readonly ConfigEntry<bool> HarnessMute;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -233,5 +234,11 @@ public class ModConfiguration
             "Auto Dump Yaws",
             "",
             "Comma-separated head yaw angles in degrees to dump at, e.g. '-75,0,75' (negative looks left). One dump per angle, and the count replaces Auto Dump Count. Empty dumps straight ahead. Only works under the harness's OpenXR mock runtime, which is the only runtime whose head pose we are allowed to move; with a real headset the angles are ignored and the run dumps wherever the pilot is looking.");
+
+        HarnessMute = config.Bind(
+            "Debug",
+            "Harness Mute",
+            false,
+            "Silence the game for the duration of a harness run (AudioListener.volume forced to 0 every frame, so nothing the game does can unmute it). The harness turns this on for its own launches and the config guard forces it back off afterwards; a normal play session never hears the difference.");
     }
 }

@@ -89,6 +89,8 @@ UNSAFE_KEYS = {
     # A yaw sweep left armed would move the head of someone wearing a real
     # headset, who has one of their own and did not ask for ours.
     ("Debug", "Auto Dump Yaws"): "",
+    # A mute left armed would silence the next real play session.
+    ("Debug", "Harness Mute"): "false",
 }
 
 
