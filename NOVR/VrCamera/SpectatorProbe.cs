@@ -51,25 +51,6 @@ internal class SpectatorProbe : MonoBehaviour
             $"camEuler={cam.transform.rotation.eulerAngles.ToString("F1")} " +
             $"pivotEuler={(pivot != null ? pivot.rotation.eulerAngles.ToString("F1") : "n/a")} " +
             $"unitEuler={unit.transform.rotation.eulerAngles.ToString("F1")} " +
-            $"speed={(unit.rb != null ? unit.rb.velocity.magnitude : 0f):F1} " +
-            $"panAxis={SafeAxis("Pan View"):F3} tiltAxis={SafeAxis("Tilt View"):F3} " +
-            $"zoomAxis={SafeAxis("Zoom View"):F3} " +
-            $"pan={Field(cam, "panView"):F1} tilt={Field(cam, "tiltView"):F1} " +
-            $"cursorVisible={Cursor.visible} mouse={Input.mousePosition.ToString("F0")}");
-    }
-
-    private static float SafeAxis(string axis)
-    {
-        try { return GameManager.playerInput.GetAxis(axis); }
-        catch { return float.NaN; }
-    }
-
-    private static float Field(CameraStateManager cam, string name)
-    {
-        try
-        {
-            return HarmonyLib.Traverse.Create(cam.orbitState).Field(name).GetValue<float>();
-        }
-        catch { return float.NaN; }
+            $"speed={(unit.rb != null ? unit.rb.velocity.magnitude : 0f):F1}");
     }
 }
