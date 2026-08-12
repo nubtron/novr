@@ -343,7 +343,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     /// Asking the shader what it has (<c>_MainTex, _Color, _Stencil*,
     /// _ColorMask, _UseUIAlphaClip</c>) was quicker than guessing.
     /// </summary>
-    private static Material? CreatePanelMaterial()
+    internal static Material? CreatePanelMaterial()
     {
         var shader = Shader.Find("Unlit/AdditiveTextShader");
         if (shader != null) return new Material(shader);
@@ -424,6 +424,16 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
     private Camera? _projectionCamera;
     private Matrix4x4 _designEyeProjection = Matrix4x4.identity;
+
+    /// <summary>
+    /// The projection the HUD is currently being drawn with, while conformal
+    /// mode is live — what the gaze designator projects the look direction
+    /// through. Null whenever the design eye is not in use.
+    /// </summary>
+    public static Matrix4x4? ActiveDesignProjection =>
+        ConformalProjectionCamera != null && _instance != null
+            ? _instance._designEyeProjection
+            : (Matrix4x4?)null;
 
     /// <summary>
     /// What the Harmony swap hands to the game. Re-asserts the projection

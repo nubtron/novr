@@ -48,6 +48,8 @@ public class NOUIManager : NOVRBehaviour
         Create<VrUiCursor>(transform);
         Create<MenuCaptureBackend>(transform);
         Create<FlightHudCaptureBackend>(transform);
+        Create<HmdVisorBackend>(transform);
+        Create<Components.GazeDesignatorDriver>(transform);
         Create<NativeVrUiRoot>(transform);
         ConfigureUiCameras();
     }
