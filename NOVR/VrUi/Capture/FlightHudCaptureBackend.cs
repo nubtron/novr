@@ -423,20 +423,22 @@ public class FlightHudCaptureBackend : NOVRBehaviour
             : null;
 
     private Camera? _projectionCamera;
-    private float _designEyeVerticalFov = 60f;
+    private Matrix4x4 _designEyeProjection = Matrix4x4.identity;
 
     /// <summary>
-    /// What the Harmony swap hands to the game. Re-asserts the field of view on
-    /// every acquisition: game code inside the swap window writes its own FOV
-    /// into whatever camera the <c>mainCamera</c> field points at, and a design
-    /// eye that drifts from the panel's FOV silently de-conforms every symbol.
+    /// What the Harmony swap hands to the game. Re-asserts the projection
+    /// matrix on every acquisition. The matrix, not <c>fieldOfView</c>: under
+    /// XR the property is inert — assigning 35.98 and reading it back in the
+    /// same frame returned 60.00 (measured) — while an explicitly assigned
+    /// <c>projectionMatrix</c> both sticks and is exactly what
+    /// <c>WorldToScreenPoint</c> projects through.
     /// </summary>
     public static Camera? AcquireDesignEyeForProjection()
     {
         var camera = ConformalProjectionCamera;
         if (camera != null && _instance != null)
         {
-            camera.fieldOfView = _instance._designEyeVerticalFov;
+            camera.projectionMatrix = _instance._designEyeProjection;
         }
 
         return camera;
@@ -491,12 +493,13 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         t.localRotation = Quaternion.identity;
 
         // Same angular size as the panel, by construction. The setting is the
-        // horizontal angle; Unity's fieldOfView is vertical.
+        // horizontal angle; Matrix4x4.Perspective takes the vertical one.
         var fovDegrees = Mathf.Clamp(CapturedFlightHud.FieldOfView?.Value ?? 60f, 20f, 120f);
         var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
-        _designEyeVerticalFov =
+        var verticalFov =
             2f * Mathf.Atan(Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad) / aspect) * Mathf.Rad2Deg;
-        _projectionCamera.fieldOfView = _designEyeVerticalFov;
+        _designEyeProjection = Matrix4x4.Perspective(verticalFov, aspect, 0.1f, 50000f);
+        _projectionCamera.projectionMatrix = _designEyeProjection;
     }
 
     private void TeardownProjectionCamera()
@@ -560,7 +563,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
         Debug.Log($"[NOVR] Design-eye check: VV panel ray ({local.x / local.z:F4}, {local.y / local.z:F4}) " +
                   $"vs true velocity ({trueLocal.x / trueLocal.z:F4}, {trueLocal.y / trueLocal.z:F4}); " +
-                  $"designEye fov={designEye.fieldOfView:F2} (set {_designEyeVerticalFov:F2}) " +
+                  $"designEye m11={designEye.projectionMatrix.m11:F4} (set {_designEyeProjection.m11:F4}) " +
                   $"pixels={designEye.pixelWidth}x{designEye.pixelHeight} " +
                   $"screen={Screen.width}x{Screen.height} mountLossy={designEye.transform.lossyScale.x:F4}");
     }
