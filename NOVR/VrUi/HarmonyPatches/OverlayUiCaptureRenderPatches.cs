@@ -48,13 +48,15 @@ internal static class OverlayUiCaptureRenderPatches
         [HarmonyPostfix]
         private static void Postfix(ScriptableRenderer __instance, ref RenderingData renderingData)
         {
-            if (!MenuCaptureBackend.IsCaptureCamera(renderingData.cameraData.camera)) return;
+            var camera = renderingData.cameraData.camera;
+            var isMenuCapture = MenuCaptureBackend.IsCaptureCamera(camera);
+            if (!isMenuCapture && !FlightHudCaptureBackend.IsCaptureCamera(camera)) return;
 
             var enqueue = EnqueuePass;
             if (enqueue == null) return;
 
             enqueue(__instance, CapturePass);
-            MenuCaptureBackend.NotifyCapturePassEnqueued();
+            if (isMenuCapture) MenuCaptureBackend.NotifyCapturePassEnqueued();
         }
     }
 
@@ -65,7 +67,12 @@ internal static class OverlayUiCaptureRenderPatches
         private static void Postfix(ref bool __result)
         {
             if (!__result) return;
-            if (!MenuCaptureBackend.SuppressesScreenOverlayUi) return;
+            // Either backend: whichever one is capturing has taken ownership of
+            // the overlay canvases, and URP must stop drawing them into the eye
+            // buffers or they appear twice — once on the panel, once smeared
+            // flat across both eyes.
+            if (!MenuCaptureBackend.SuppressesScreenOverlayUi &&
+                !FlightHudCaptureBackend.IsActive) return;
 
             __result = false;
         }

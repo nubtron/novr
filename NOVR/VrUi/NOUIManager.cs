@@ -47,6 +47,7 @@ public class NOUIManager : NOVRBehaviour
         UIBehaviorPatcher.DoPatching();
         Create<VrUiCursor>(transform);
         Create<MenuCaptureBackend>(transform);
+        Create<FlightHudCaptureBackend>(transform);
         Create<NativeVrUiRoot>(transform);
         ConfigureUiCameras();
     }
