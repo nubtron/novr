@@ -310,43 +310,9 @@ public class HmdVisorBackend : NOVRBehaviour
         _panelRect.localPosition = new Vector3(0f, 0f, distance);
         _panelRect.localRotation = Quaternion.identity;
 
-        if (!_loggedPlacement)
-        {
-            _loggedPlacement = true;
-            Debug.Log($"[NOVR] HMD visor panel: {widthMeters:F1} m wide at {distance:F1} m " +
-                      $"({fovDegrees:F0}deg horizontal), head-locked.");
-        }
-
-        LogVisorDiagnostic();
-    }
-
-    private float _nextDiagnostic;
-
-    /// <summary>Temporary probe: what is actually in the visor canvas and why
-    /// is it (not) drawing.</summary>
-    private void LogVisorDiagnostic()
-    {
-        if (Time.unscaledTime < _nextDiagnostic) return;
-        _nextDiagnostic = Time.unscaledTime + 5f;
-        if (_hmdRect == null || _visorCanvas == null) return;
-
-        var sb = new System.Text.StringBuilder();
-        sb.Append($"[NOVR] Visor probe: hmdRect active={_hmdRect.gameObject.activeInHierarchy} ");
-        sb.Append($"children={_hmdRect.childCount} rect={_hmdRect.rect.size} ");
-        sb.Append($"anchoredPos={_hmdRect.anchoredPosition} scale={_hmdRect.localScale.x:F3} ");
-        sb.Append($"canvasScale={_visorCanvas.scaleFactor:F3} nose={NoseInVisorPixels()} ");
-        sb.Append($"hideDist={PlayerSettings.hmdHideDist * 0.5f * (PlayerSettings.hmdWidth + PlayerSettings.hmdHeight):F0}; ");
-        for (var i = 0; i < _hmdRect.childCount && i < 12; i++)
-        {
-            var c = _hmdRect.GetChild(i);
-            sb.Append($"[{c.name} act={c.gameObject.activeSelf} lp={c.localPosition} wp={c.position}] ");
-        }
-        var graphic = _hmdRect.GetComponentInChildren<Graphic>(true);
-        if (graphic != null)
-        {
-            sb.Append($"sampleGraphic={graphic.name} canvas={(graphic.canvas != null ? graphic.canvas.name : "<null>")} " +
-                      $"enabled={graphic.enabled} activeInHierarchy={graphic.gameObject.activeInHierarchy}");
-        }
-        Debug.Log(sb.ToString());
+        if (_loggedPlacement) return;
+        _loggedPlacement = true;
+        Debug.Log($"[NOVR] HMD visor panel: {widthMeters:F1} m wide at {distance:F1} m " +
+                  $"({fovDegrees:F0}deg horizontal), head-locked.");
     }
 }
