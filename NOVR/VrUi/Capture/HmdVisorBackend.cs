@@ -15,17 +15,18 @@ namespace NOVR.VrUi.Capture;
 /// glued to wherever the pilot looks. In VR "glued to the view" means glued to
 /// the head, so this backend puts that canvas on a head-locked panel: the visor.
 ///
-/// **Why the canvas gets its own orthographic camera.** The HMD canvas is
-/// ScreenSpaceOverlay, which is broken here twice over: the overlay capture
-/// draws *every* overlay canvas, so the helmet readouts were riding the
-/// airframe HUD panel; and the game's declutter (`HMD Hide Distance`) compares
-/// pixel positions that stop being pixels the moment the canvas leaves screen
-/// space. Retargeting the canvas to ScreenSpaceCamera on an orthographic
-/// camera whose half-height equals half the texture height makes the canvas
-/// scale exactly 1 — every widget position is a pixel again, like the flat
-/// game — and removes it from the overlay set, so it leaves the HUD panel
-/// automatically. The camera sits on an island far below the world and renders
-/// only the canvas plane parked in front of it.
+/// **Why the subtree moves to our own canvas.** The HMD is not a canvas of its
+/// own — <c>HeadMountedDisplay</c> is a rect *inside* <c>HUDCanvas</c>
+/// (measured: retargeting its parent canvas dragged the whole flight HUD to
+/// the island). So its subtree is reparented into a canvas this backend owns:
+/// ScreenSpaceCamera on an orthographic camera whose half-height equals half
+/// the texture height, which makes the canvas scale exactly 1 — every widget
+/// position is a pixel, the same arithmetic the game's declutter
+/// (`HMD Hide Distance`) assumes. Moving it out of <c>HUDCanvas</c> also takes
+/// the readouts off the airframe HUD panel, where the overlay capture had been
+/// smearing them. The camera sits on an island far below the world; teardown
+/// puts the subtree back where the scene had it, same parent, same sibling
+/// index.
 ///
 /// The declutter itself runs unmodified: <see cref="HarmonyPatches.HmdDeclutterPatch"/>
 /// hands `HeadMountedDisplay.Update` the one input it needs — where the nose
@@ -40,7 +41,8 @@ public class HmdVisorBackend : NOVRBehaviour
 
     private static HmdVisorBackend? _instance;
 
-    private Canvas? _hmdCanvas;
+    private RectTransform? _hmdRect;
+    private Canvas? _visorCanvas;
     private Camera? _visorCamera;
     private RenderTexture? _target;
     private Canvas? _panelCanvas;
@@ -52,9 +54,8 @@ public class HmdVisorBackend : NOVRBehaviour
     private int _targetWidth;
     private int _targetHeight;
 
-    private RenderMode _savedRenderMode;
-    private Camera? _savedWorldCamera;
-    private float _savedPlaneDistance;
+    private Transform? _savedParent;
+    private int _savedSiblingIndex;
 
     public static bool IsVisorActive => _instance != null && _instance._active;
 
@@ -68,9 +69,9 @@ public class HmdVisorBackend : NOVRBehaviour
     public static Vector3? NoseInVisorPixels()
     {
         var self = _instance;
-        if (self == null || !self._active || self._hmdCanvas == null) return null;
+        if (self == null || !self._active || self._visorCanvas == null) return null;
 
-        var canvasRect = (RectTransform)self._hmdCanvas.transform;
+        var canvasRect = (RectTransform)self._visorCanvas.transform;
         var nose = Quaternion.Inverse(NOVRHeadsetData.Rotation) * Vector3.forward;
         if (nose.z < 0.05f) return canvasRect.TransformPoint(new Vector3(1e6f, 1e6f, 0f));
 
@@ -103,13 +104,13 @@ public class HmdVisorBackend : NOVRBehaviour
             return;
         }
 
-        if (_hmdCanvas == null && Time.unscaledTime >= _nextRebind)
+        if (_hmdRect == null && Time.unscaledTime >= _nextRebind)
         {
             _nextRebind = Time.unscaledTime + RebindInterval;
-            _hmdCanvas = FindHmdCanvas();
+            _hmdRect = FindHmdRect();
         }
 
-        if (_hmdCanvas == null || !_hmdCanvas.gameObject.activeInHierarchy)
+        if (_hmdRect == null)
         {
             if (_active) Teardown();
             return;
@@ -119,19 +120,21 @@ public class HmdVisorBackend : NOVRBehaviour
         Maintain();
     }
 
-    private static Canvas? FindHmdCanvas()
+    private static RectTransform? FindHmdRect()
     {
+        // The component's own rect, never a parent canvas: the HMD is a subtree
+        // of HUDCanvas, and walking up grabs the entire flight HUD (measured —
+        // the first version of this backend did exactly that).
         var hmd = SceneSingleton<HeadMountedDisplay>.i;
-        if (hmd == null) return null;
-        return hmd.GetComponent<Canvas>() ?? hmd.GetComponentInParent<Canvas>();
+        return hmd != null ? hmd.GetComponent<RectTransform>() : null;
     }
 
     private void Setup()
     {
-        // Pixel-for-pixel with the flat game's HMD layout, which is sized by
-        // the game's own settings.
-        _targetWidth = Mathf.Clamp(Mathf.RoundToInt(PlayerSettings.hmdWidth), 512, 4096);
-        _targetHeight = Mathf.Clamp(Mathf.RoundToInt(PlayerSettings.hmdHeight), 256, 4096);
+        // The reference space HUDCanvas gave the subtree: 1920x1080 regardless
+        // of the HMD size settings, which size the subtree's own rect within it.
+        _targetWidth = 1920;
+        _targetHeight = 1080;
 
         _target = new RenderTexture(_targetWidth, _targetHeight, 0, RenderTextureFormat.ARGB32)
         {
@@ -172,12 +175,19 @@ public class HmdVisorBackend : NOVRBehaviour
         VrCameraManager.IgnoredCameras.Add(camera);
         _visorCamera = camera;
 
-        _savedRenderMode = _hmdCanvas!.renderMode;
-        _savedWorldCamera = _hmdCanvas.worldCamera;
-        _savedPlaneDistance = _hmdCanvas.planeDistance;
-        _hmdCanvas.renderMode = RenderMode.ScreenSpaceCamera;
-        _hmdCanvas.worldCamera = camera;
-        _hmdCanvas.planeDistance = 1f;
+        // Our own canvas on the island camera; the game's subtree moves into
+        // it and keeps its layout (worldPositionStays: false preserves local
+        // values, and the canvas rect matches the reference space it came from).
+        var canvasGo = new GameObject("NOVR HMD Visor Canvas");
+        var canvas = canvasGo.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceCamera;
+        canvas.worldCamera = camera;
+        canvas.planeDistance = 1f;
+        _visorCanvas = canvas;
+
+        _savedParent = _hmdRect!.parent;
+        _savedSiblingIndex = _hmdRect.GetSiblingIndex();
+        _hmdRect.SetParent(canvas.transform, false);
 
         EnsurePanel();
 
@@ -190,13 +200,19 @@ public class HmdVisorBackend : NOVRBehaviour
     {
         _active = false;
 
-        if (_hmdCanvas != null)
+        if (_hmdRect != null && _savedParent != null)
         {
-            _hmdCanvas.renderMode = _savedRenderMode;
-            _hmdCanvas.worldCamera = _savedWorldCamera;
-            _hmdCanvas.planeDistance = _savedPlaneDistance;
+            _hmdRect.SetParent(_savedParent, false);
+            _hmdRect.SetSiblingIndex(_savedSiblingIndex);
         }
-        _hmdCanvas = null;
+        _hmdRect = null;
+        _savedParent = null;
+
+        if (_visorCanvas != null)
+        {
+            Destroy(_visorCanvas.gameObject);
+            _visorCanvas = null;
+        }
 
         if (_panelCanvas != null)
         {
@@ -264,15 +280,14 @@ public class HmdVisorBackend : NOVRBehaviour
 
     private void Maintain()
     {
-        // The canvas is the game's object; nothing stops game code or a scene
-        // event from putting it back. Re-assert rather than assume.
-        if (_hmdCanvas != null &&
-            (_hmdCanvas.renderMode != RenderMode.ScreenSpaceCamera ||
-             !ReferenceEquals(_hmdCanvas.worldCamera, _visorCamera)))
+        // The subtree is the game's object; a scene event or an aircraft change
+        // can rebuild things. If it left our canvas, stand down and let the
+        // rebind find the new one.
+        if (_hmdRect == null || _visorCanvas == null ||
+            _hmdRect.parent != _visorCanvas.transform)
         {
-            _hmdCanvas.renderMode = RenderMode.ScreenSpaceCamera;
-            _hmdCanvas.worldCamera = _visorCamera;
-            _hmdCanvas.planeDistance = 1f;
+            Teardown();
+            return;
         }
 
         EnsurePanel();
