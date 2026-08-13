@@ -37,7 +37,6 @@ public class Core : MonoBehaviour
         gameObject.AddComponent<APIBus>();
         gameObject.AddComponent<ColorGradeController>();
         gameObject.AddComponent<MotionControllerVisual>();
-        gameObject.AddComponent<VrUi.Components.ViewLayerProbe>();
     }
 
     private void OnDestroy()
