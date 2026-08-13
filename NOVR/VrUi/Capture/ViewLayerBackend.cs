@@ -296,7 +296,19 @@ public class ViewLayerBackend : NOVRBehaviour
 
     private void EnsureProjectionCamera()
     {
-        var mount = APIBus.CockpitHudCamera;
+        // The real head, not the overlay-room head. VrCockpitHudCamera carries
+        // the headset pose in the overlay room, which is anchored to the NOVR
+        // root at the world origin and does not turn with the airframe —
+        // projecting world positions from there put every icon off its unit by
+        // the aircraft's attitude and up to a kilometre of parallax (measured:
+        // icons detached from units in flight; the harness probe compared the
+        // projection against itself and could not see it). The world-posed eye
+        // is the game camera the pose driver drives: a child of the cockpit
+        // mount whose local transform is the headset pose. A pixel drawn
+        // through an eye parented there is seen from the head at exactly the
+        // direction it was projected from, because the panel hangs off the
+        // room camera carrying the same headset rotation.
+        var mount = APIBus.MainCamera;
         if (mount == null) return;
 
         if (_projectionCamera == null)
