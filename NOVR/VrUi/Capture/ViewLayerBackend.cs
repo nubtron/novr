@@ -39,6 +39,19 @@ namespace NOVR.VrUi.Capture;
 /// the "screen edge" the arrow pins to is the visor rect, comfortably inside
 /// what the eye can reach, by construction.
 ///
+/// **Why the panel is pinned rather than parented to the head.** The icons
+/// are projected during the game's LateUpdate with the headset pose of that
+/// instant, but the pose drivers re-latch every head camera to a fresher
+/// prediction just before rendering, and the compositor reprojects on top. A
+/// panel welded to the head camera takes those corrections while its painted
+/// contents cannot — through a head turn every icon trails the world by the
+/// correction delta. So the panel hangs in the room and is re-pinned, on
+/// every projection-camera acquisition, at the exact pose the projection is
+/// using (<see cref="PinPanel"/>): the late corrections then reproject the
+/// panel the same way they reproject the world, icons hold their units, and
+/// it is the panel itself that follows the head one pose-latch late — the
+/// same small trail the world already has, instead of a smear on top of it.
+///
 /// **Why the island is pinned at the world origin's zero.** The game's code
 /// writes *absolute world positions* that are numerically screen pixels; the
 /// canvas plane must therefore keep a fixed world pose. The rig lives in the
@@ -151,6 +164,7 @@ public class ViewLayerBackend : NOVRBehaviour
         if (self == null || !self._active || self._projectionCamera == null) return null;
 
         self._projectionCamera.projectionMatrix = self._projectionMatrix;
+        self.PinPanel();
         return self._projectionCamera;
     }
 
@@ -351,9 +365,10 @@ public class ViewLayerBackend : NOVRBehaviour
         if (hudCamera == null) return;
 
         var go = new GameObject("NOVR View Layer Panel");
-        // Head-locked, like the visor: this layer is the half of the flat
-        // game's screen that follows the look.
-        go.transform.SetParent(hudCamera.transform, false);
+        // In the room beside the head camera, not under it: the panel must
+        // hold the projection-time pose (PinPanel), so it cannot inherit the
+        // camera's own before-render pose latch.
+        go.transform.SetParent(hudCamera.transform.parent, false);
 
         var canvas = go.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
@@ -379,6 +394,30 @@ public class ViewLayerBackend : NOVRBehaviour
         _panelCanvas = canvas;
         _panelImage = image;
         _panelRect = rect;
+    }
+
+    /// <summary>
+    /// Place the panel, in the room, at the head pose the projection is using
+    /// right now. Runs on every projection-camera acquisition, so the frame's
+    /// last projection is the pose the panel renders at; the before-render
+    /// latch then moves the head cameras but not the panel, and the icons
+    /// hold their units through a head turn instead of trailing by the latch
+    /// delta. The pose is read off the world eye's mount — its local
+    /// transform *is* the headset pose, the same numbers the room head
+    /// camera's driver copies — so panel and projection agree by construction
+    /// even mid-frame.
+    /// </summary>
+    private void PinPanel()
+    {
+        if (_panelRect == null) return;
+
+        var mount = APIBus.MainCamera;
+        if (mount == null) return;
+
+        var head = mount.transform;
+        var distance = Mathf.Clamp(CapturedFlightHud.Distance?.Value ?? 25f, 2f, 200f);
+        _panelRect.localPosition = head.localPosition + head.localRotation * new Vector3(0f, 0f, distance);
+        _panelRect.localRotation = head.localRotation;
     }
 
     private void Maintain()
@@ -413,8 +452,9 @@ public class ViewLayerBackend : NOVRBehaviour
         _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth / aspect);
         var scale = widthMeters / PanelCanvasReferenceWidth;
         _panelRect.localScale = new Vector3(scale, scale, scale);
-        _panelRect.localPosition = new Vector3(0f, 0f, distance);
-        _panelRect.localRotation = Quaternion.identity;
+        // Pose comes from PinPanel; this Update-time pin only covers frames
+        // where nothing projects (the acquisitions in LateUpdate overwrite it).
+        PinPanel();
 
         if (_loggedPlacement) return;
         _loggedPlacement = true;
