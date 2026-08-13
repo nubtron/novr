@@ -45,8 +45,14 @@ public class GazeDesignatorDriver : NOVRBehaviour
 
     private void Update()
     {
+        // The view layer supersedes this driver: with the designator parked at
+        // the centre of a head-locked screen and the markers projected through
+        // the head, "under your gaze" is true by construction — the flat
+        // game's own arrangement, which this driver only ever approximated.
         var projection = FlightHudCaptureBackend.ActiveDesignProjection;
-        var want = projection != null && (CapturedHmd.GazeDesignator?.Value ?? true);
+        var want = projection != null &&
+                   !ViewLayerBackend.IsActive &&
+                   (CapturedHmd.GazeDesignator?.Value ?? true);
 
         if (!want)
         {

@@ -19,6 +19,7 @@ public static class CapturedHmd
     public static ConfigEntry<bool> Visor;
     public static ConfigEntry<float> VisorFieldOfView;
     public static ConfigEntry<bool> GazeDesignator;
+    public static ConfigEntry<bool> ViewIcons;
 
     public static void Bind(ConfigFile config)
     {
@@ -53,5 +54,18 @@ public static class CapturedHmd
             + "is only handed where you are actually looking instead of a fixed screen centre. "
             + "Only active while Captured Flight HUD is on with Conformal. Takes effect "
             + "immediately.");
+
+        ViewIcons = config.Bind(
+            "Experimental",
+            "View Icons",
+            true,
+            "Put the game's screen-space icons — unit markers, the target designator, the "
+            + "selected-target edge arrow, radar warnings, missile notch cues and the objective "
+            + "pointer — on a head-locked virtual screen, the way the flat game spreads them "
+            + "across the whole screen and the screen follows the view. Icons appear wherever "
+            + "you look, the designator sits fixed at the centre of your view (Select picks the "
+            + "marker under it), and an off-view selected target becomes the game's own edge "
+            + "arrow pinned to the virtual screen's edge. The screen spans Captured HMD Field Of "
+            + "View. Only active while Captured Flight HUD is on. Takes effect immediately.");
     }
 }
