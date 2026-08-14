@@ -5,14 +5,15 @@
     tools/capture.py --mission "Free"    # pick a mission by name
     tools/capture.py --dumps 5
     tools/capture.py --keep-running      # leave the game up for poking at
-    tools/capture.py --no-renderdoc      # buffer dumps only
+    tools/capture.py --renderdoc         # also try a GPU capture (see README)
 
 What it does, and why each step exists, is documented in vr_harness/game.py and
 vr_harness/mockxr.py. The short version: the OpenXR mock runtime supplies stereo
-with no headset, explorer.exe launches the game so Doorstop actually loads,
-RenderDoc is injected before the D3D device exists, and NOVR's AutoStartMission
-flies a mission and fires the dumps. Output lands in the mod's dumps/ folder and
-the harness work_dir.
+with no headset, the game is launched and BepInEx is *proved* to have loaded
+before anything is measured (retrying with the other launcher if it did not),
+and NOVR's AutoStartMission flies a mission and fires the dumps. Output lands in
+the mod's dumps/ folder and the harness work_dir. RenderDoc is opt-in and cannot
+currently coexist with the mod — see tools/README.md.
 
 Everything machine-specific comes from ~/.vr-harness.toml — see
 tools/vr-harness.example.toml.
@@ -68,7 +69,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw", default="", metavar="DEG[,DEG,...]",
                         help="dump at these head yaw angles instead of straight ahead, e.g. "
                              "--yaw=-75,0,75 (negative looks left); one dump per angle, replacing --dumps")
-    parser.add_argument("--no-renderdoc", action="store_true", help="skip the GPU capture, buffer dumps only")
+    # Off by default since 2026-08-14: RenderDoc has to be injected before the
+    # D3D device is created, and everything that early stops Doorstop from
+    # loading BepInEx at all. A default-on capture therefore bought nothing and
+    # risked a mod-less run. See vr_harness/game.py for the measurements.
+    parser.add_argument("--renderdoc", action="store_true",
+                        help="also inject RenderDoc for a GPU capture (see the note in "
+                             "tools/README.md — currently produces no frames)")
+    parser.add_argument("--no-renderdoc", action="store_true",
+                        help=argparse.SUPPRESS)  # accepted and ignored; it is the default now
     parser.add_argument("--keep-running", action="store_true", help="do not close the game at the end")
     parser.add_argument("--config", default=None, help="override the harness config path")
     return parser.parse_args()
@@ -138,9 +147,9 @@ def explain_failure(project) -> None:
     lines = harness_log(project)
     if not lines:
         print(
-            "\nThe mod logged nothing. Either BepInEx did not load (see the "
-            "launch table in tools/README.md) or [Debug] Auto Start Mission "
-            "never took effect.",
+            "\nThe mod logged nothing. BepInEx did load (the run would have "
+            "stopped at the launch check otherwise), so the likely cause is "
+            "[Debug] Auto Start Mission never taking effect.",
             file=sys.stderr,
         )
         return
@@ -176,6 +185,61 @@ def explain_failure(project) -> None:
                 return
 
 
+def launch_until_modded(project, env: dict[str, str], on_preloader=None):
+    """Launch, prove the mod loaded, and try the other launcher if it did not.
+
+    Which launcher loads BepInEx has changed under this harness twice without
+    anything on the machine visibly changing (see vr_harness/game.py), and a
+    mod-less run is not a slow failure — it is a run that produces plausible
+    output about an unmodded game. Rather than pick a winner, take the first
+    launcher that demonstrably worked. A failed attempt costs ~30s; a mod-less
+    run that gets believed costs an afternoon.
+
+    `on_preloader` is called the moment BepInEx starts writing — the one instant
+    that is both late enough not to disturb Doorstop and early enough to matter
+    to RenderDoc. It runs inside the retry loop, so a relaunch gets the same
+    treatment as the first attempt.
+    """
+    last = None
+    for attempt, launcher in enumerate(game.LAUNCHERS, start=1):
+        launch = game.launch(project, env, launcher=launcher)
+        print(f"launched pid={launch.pid} via {launcher} "
+              f"(appeared t+{launch.appeared_after_s:.2f}s)")
+        if game.wait_for_preloader(project, launch) and on_preloader is not None:
+            on_preloader(launch)
+        game.wait_for_bepinex(project, launch)
+        status = game.verify_hook(project, launch)
+        print(f"hooks: {status.describe(renderdoc=on_preloader is not None)}")
+        if status.ok:
+            if attempt > 1:
+                print(f"  note: '{game.LAUNCHERS[0]}' produced a mod-less game; "
+                      f"'{launcher}' worked. Worth a journal line.")
+            return launch, status
+        last = status
+        print(f"  {launcher} gave a mod-less game; killing it and trying the next launcher")
+        game.kill(project)
+
+    # Two very different failures reach here, and the fix for one is no help
+    # against the other: a loader that never ran, and a loader that ran and did
+    # not load our plugin.
+    if last is not None and last.preloader:
+        hint = (
+            f"BepInEx ran but loaded no plugin. Check that NOVR.dll is in "
+            f"{project.plugin_dir} and read {project.bepinex_log} for the load error."
+        )
+    else:
+        hint = (
+            f"BepInEx never ran: {project.bepinex_log} was untouched by these launches.\n"
+            "Check that [General] enabled = true in doorstop_config.ini and that "
+            "DOORSTOP_DISABLE is not set, then see tools/vr_harness/game.py."
+        )
+    raise HarnessError(
+        "the mod never loaded, with any launcher — every result from this game "
+        f"would be an unmodded one.\n"
+        f"Last check: {last.describe() if last else '(no status)'}\n{hint}"
+    )
+
+
 def wait_for_captures_to_settle(captures_dir: Path, deadline: float) -> None:
     """Wait until RenderDoc has finished writing its .rdc files.
 
@@ -187,9 +251,15 @@ def wait_for_captures_to_settle(captures_dir: Path, deadline: float) -> None:
     """
     stable_rounds = 0
     previous: dict[Path, int] = {}
+    # A run that produced no capture at all has nothing to settle, and waiting
+    # the full window for it turns "RenderDoc captured nothing" into a minute
+    # and a half of silence followed by a warning about truncation.
+    empty_deadline = time.monotonic() + 15
 
     while time.monotonic() < deadline:
         current = {p: p.stat().st_size for p in captures_dir.glob("*.rdc")}
+        if not current and time.monotonic() > empty_deadline:
+            return
         if current and current == previous:
             stable_rounds += 1
             # Three quiet rounds: one can happen mid-write between buffers.
@@ -242,7 +312,7 @@ def main() -> int:
 
     # One directory per run rather than a wiped shared one. Comparing a run
     # against an earlier run is the main thing this harness is for, and a run
-    # that deletes its predecessor's evidence — including a --no-renderdoc run
+    # that deletes its predecessor's evidence — including a buffer-dump-only run
     # that produces none of its own — makes that impossible.
     stamp = datetime.now().strftime("%H%M%S")
     captures_dir = project.work_dir_wsl / "captures" / stamp
@@ -260,7 +330,7 @@ def main() -> int:
         ("Debug", "Auto Start Mission Name"): args.mission,
         ("Debug", "Auto Dump Count"): str(args.dumps),
         ("Debug", "Auto Dump Delay"): str(args.delay),
-        ("Debug", "RenderDoc Capture On Dump"): "false" if args.no_renderdoc else "true",
+        ("Debug", "RenderDoc Capture On Dump"): "true" if args.renderdoc else "false",
         # The auto-dump path does not go through the F1/trigger gate, but
         # --keep-running exists so a human can poke at a live game, and the
         # trigger file is how they ask for a dump. bepinex_cfg forces this back
@@ -290,28 +360,21 @@ def main() -> int:
     game.kill(project)
 
     with bepinex_cfg.temporarily(project.config_file_wsl, updates):
-        launch = game.launch_with_renderdoc(project, capture_prefix, env)
-        print(
-            f"launched pid={launch.pid} (appeared t+{launch.appeared_after_s:.2f}s, "
-            f"injected t+{launch.injected_after_s:.2f}s)"
-        )
-        if launch.hooked_late:
-            print(
-                f"  WARNING: {launch.gfx_modules_at_inject} graphics module(s) were already "
-                "loaded at injection — the capture may be incomplete"
-            )
+        # RenderDoc goes in the moment Doorstop is finished with the process and
+        # not one poll earlier: injecting into a fresh process stops BepInEx
+        # loading entirely (measured, see vr_harness/game.py), and injecting
+        # after the mod is up is too late for RenderDoc to hook the device —
+        # the mod triggers a capture and no .rdc is ever written.
+        inject = (
+            lambda launch: game.inject_renderdoc(project, launch, capture_prefix)
+        ) if args.renderdoc else None
+        launch, status = launch_until_modded(project, env, on_preloader=inject)
+        if launch.injected_after_s is not None:
+            print(f"renderdoc injected at the preloader "
+                  f"({'in the process' if status.renderdoc else 'NOT in the process'})")
 
         try:
-            # Give BepInEx a moment to come up before judging whether it did.
-            time.sleep(8)
-            status = game.verify_hook(project)
-            print(f"hooks: {status.describe()}")
-            if not status.doorstop:
-                raise HarnessError(
-                    "BepInEx/Doorstop did not load — the mod is not in the process.\n"
-                    "This is the WSL-parent launch failure; see tools/vr_harness/game.py."
-                )
-            if not args.no_renderdoc and not status.renderdoc:
+            if args.renderdoc and not status.renderdoc:
                 print("  warning: renderdoc.dll not present; continuing with buffer dumps only")
 
             wait_deadline = min(deadline, time.monotonic() + args.timeout)
@@ -322,7 +385,7 @@ def main() -> int:
         finally:
             # Must happen before the kill: RenderDoc writes the capture from
             # inside the game process.
-            if not args.no_renderdoc:
+            if args.renderdoc:
                 # Allow a little past the ceiling: aborting mid-write is
                 # what produces a corrupt capture in the first place.
                 wait_for_captures_to_settle(captures_dir, min(deadline + 60, time.monotonic() + 90))
@@ -336,7 +399,16 @@ def main() -> int:
 
     print("\n== results ==")
     print(f"buffer dump:  {dump_dir if dump_dir else '(none)'}")
-    print(f"gpu captures: {len(captures)} in {captures_dir}")
+    if args.renderdoc:
+        print(f"gpu captures: {len(captures)} in {captures_dir}")
+        if not captures:
+            print(
+                "  RenderDoc was in the process and the mod triggered a capture, but no\n"
+                "  frame was written: the hooks went in after Unity had already created\n"
+                "  the D3D device. Injecting early enough to beat it is what stops BepInEx\n"
+                "  loading at all (see vr_harness/game.py), so there is no window today —\n"
+                "  use the buffer dumps, or capture by hand from a launch with no harness."
+            )
     for rdc in captures:
         print(f"  {rdc.name}")
     print(f"thumbnails:   {len(thumbs)}")
