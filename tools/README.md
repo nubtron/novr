@@ -81,34 +81,35 @@ every mod-less run on 2026-08-14 was reported as `hooks: doorstop/BepInEx: yes`
 and the harness went on to measure an unmodded game. The verdict now comes from
 `BepInEx/LogOutput.log` growing after launch and naming the plugin it loaded.
 
-**No launcher has stayed reliable, so the driver tries both.** On 2026-08-09 a
-WSL-spawned `powershell.exe Start-Process` resolved `WINHTTP.dll` from System32
-and never loaded Doorstop, while `explorer.exe` worked every time. On 08-14 the
-opposite, then both worked, with nothing on the machine visibly changing.
-`capture.py` takes the first launcher that demonstrably loaded the mod.
+**`tools.renderdoc.dir` must be an official RenderDoc build.** This is the one
+setting that can silently cost you the mod. A locally source-built
+`renderdoc.dll` injected into a fresh process stopped Doorstop dead — 0 of 8
+launches loaded BepInEx, on both launchers — while the official 1.45 release
+injected at the same instant gave 3 of 3 and a 536 MB capture. Between 08-09 and
+08-14 the harness pointed at a source build (made for replay, where it is still
+needed), and in that window every run was mod-less and every capture empty. A
+source build is fine for `replay_python`/`replay_pymodules`; it is not fine for
+injection.
 
 | Launcher | game-dir `WINHTTP.dll` | BepInEx |
 |---|---|---|
 | Steam | yes | yes |
 | `explorer.exe <exe>` | yes | yes |
-| `explorer.exe <launcher.cmd>` | yes | yes (08-09: yes, 08-14: both seen) |
+| `explorer.exe <launcher.cmd>` | yes | yes |
 | WSL → powershell `Start-Process <exe>` | yes | 08-09: **no**, 08-14: yes |
-| either, with RenderDoc injected at t+1.4s | yes | **no** (0 of 8) |
+| either, source-built renderdoc injected at t+1.4s | yes | **no** (0 of 8) |
+| either, release renderdoc injected at t+1.4s | yes | yes (3 of 3) |
 | explorer → cmd → `renderdoccmd capture <exe>` | yes | **no** |
 
-**RenderDoc and the mod currently cannot both be in the process**, which is why
-`--renderdoc` is opt-in and off by default. Injecting into a fresh process — the
-only point early enough to beat Unity's D3D device — stops Doorstop dead: 0 of 8
-launches loaded BepInEx with RenderDoc injected at ~t+1.4 s, 6 of 6 loaded it
-with none. The plain reading is a hook collision, since RenderDoc re-patches
-import tables for `LoadLibrary`/`GetProcAddress` and Doorstop's hook on those is
-how it catches Unity loading Mono, at ~t+3.3 s. Injecting later, when Doorstop
-is done, leaves the mod alone but arrives after the device exists: RenderDoc
-registers its hooks, the mod triggers a capture, and no `.rdc` is ever written
-(confirmed in RenderDoc's own log). The measured timeline leaves no window —
-`d3d11.dll` at t+2.5 s, preloader at t+3.3 s, chainloader done at t+5.3 s. This
-worked on 08-09; what changed since is unknown. Until it is, GPU captures need a
-launch with no harness, and buffer dumps carry the load.
+**Injection timing is fixed by the engine, not by preference.** `--inject early`
+(the default) goes in right after the process appears; `--inject preloader`
+waits until Doorstop has handed over, which cannot disturb the mod and also
+cannot capture. Measured timeline: `d3d11.dll` at t+2.5 s, preloader writes at
+t+3.3 s, chainloader done at t+5.3 s — so anything later than "early" is after
+the device, and RenderDoc then registers its hooks, the mod triggers a capture,
+and no `.rdc` is written. `--renderdoc` stays opt-in because early injection is
+the one moment a bad build can cost you the mod; the launch check catches it,
+but a routine dump run has no reason to take the risk.
 
 Because the harness owns an intermediate `.cmd`, it can set environment
 variables for the game — which is how the mock OpenXR runtime is selected.
