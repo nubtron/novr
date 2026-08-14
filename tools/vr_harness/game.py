@@ -7,12 +7,13 @@ Three things shape this, all established by experiment:
    WINHTTP.dll out of the game directory (UnityPlayer.dll imports it for real).
    On 2026-08-09 a powershell.exe launched from WSL resolved WINHTTP.dll from
    System32 instead, so Doorstop never loaded and the mod was simply absent;
-   routing through explorer.exe fixed it, every time. On 2026-08-14 that
-   reversed: every explorer.exe launch came up mod-less while `Start-Process`
-   from WSL worked — and later the same day *both* worked, unchanged. Nobody has
-   found the variable. So the launcher is no longer trusted: `launch()` takes
-   one, `verify_hook()` proves whether it worked, and capture.py retries with
-   the other. Steam launch also works, for whatever the reason turns out to be.
+   routing through explorer.exe fixed it, every time. That does not reproduce
+   now — on 08-14 both launchers loaded the mod, repeatedly, and both failed
+   under a bad RenderDoc injection (case 3), which is what the "explorer.exe
+   stopped working" panic that morning actually was. Since a launcher has
+   silently stopped working once, none is trusted: `launch()` takes one,
+   `verify_hook()` proves whether it worked, and capture.py retries with the
+   other. Steam launch works too; Steam is not special, it just isn't WSL.
 
 2. **A loaded Doorstop proxy is not a loaded mod.** WINHTTP.dll from the game
    directory appears in the module list whether or not Doorstop runs the
@@ -22,15 +23,22 @@ Three things shape this, all established by experiment:
    08-14 failures, and it is why the only accepted proof that the mod is in the
    process is BepInEx's own log growing after we launched. See `verify_hook`.
 
-3. **RenderDoc must be injected, not used as the launcher.** `renderdoccmd
-   capture <exe>` creates the process itself and breaks Doorstop the way case 1
-   does (measured: RenderDoc hooks fine, BepInEx never appears). So we launch
-   first and inject after. The usual objection — that the D3D device already
-   exists by then — does not apply: the process appears ~1.4s after launch and
-   d3d11.dll/dxgi.dll are not loaded for a good while after that, so a 100ms
-   poll wins comfortably. `LaunchResult.hooked_late` asserts that rather than
-   trusting it. Injection is orthogonal to case 1: with RenderDoc injected at
-   t+1.7s, both launchers produced a fully loaded BepInEx on 08-14.
+3. **RenderDoc must be injected, not used as the launcher — and it must be an
+   official build.** `renderdoccmd capture <exe>` creates the process itself and
+   breaks Doorstop the way case 1 does (measured: RenderDoc hooks fine, BepInEx
+   never appears). So we launch first and inject after, as early as possible,
+   because Unity has d3d11.dll up by t+2.5s and RenderDoc that arrives after the
+   device exists hooks nothing — it registers, the mod triggers a capture, and
+   no .rdc is written.
+
+   Which build is doing the injecting matters as much as when. A locally source-
+   built renderdoc.dll injected at t+1.4s stopped Doorstop dead — 0 of 8 launches
+   loaded the mod, on both launchers, with the game-directory WINHTTP.dll present
+   every time — while the official 1.45 release injected at the same instant gave
+   3 of 3 and a 536 MB capture. That was the whole of the 08-14 "the harness
+   stopped loading the mod" mystery: the release install had been removed on
+   08-09 and `tools.renderdoc.dir` repointed at a source build made for replay.
+   Every harness capture since had been silently empty, and every run mod-less.
 
 Either launcher can set environment variables for the game — which is how the
 OpenXR mock runtime gets selected (see mockxr.py). A per-user registry override
@@ -233,20 +241,19 @@ Write-Output ("OK|" + $p.Id + "|" + $sw.Elapsed.TotalSeconds)
 def inject_renderdoc(project: Project, launch: LaunchResult, capture_prefix: str) -> None:
     """Inject RenderDoc into a running game, and record what it cost.
 
-    **This must not happen before BepInEx has loaded.** Injecting into a
-    freshly created process is what the harness used to do — as early as
-    possible, to beat D3D device creation — and on 2026-08-14 that was measured
-    to stop Doorstop dead: 0 of 8 launches loaded the mod with RenderDoc
-    injected at ~t+1.4s, 6 of 6 loaded it with no injection, both launchers
-    alike, with the game-directory WINHTTP.dll present either way. The
-    plain reading is a hook collision: RenderDoc re-patches the import tables of
-    every loaded module for LoadLibrary/GetProcAddress, and Doorstop's hook on
-    those is how it catches Unity loading Mono — which it does at ~t+3.3s, well
-    after the injection.
+    Callers choose the moment, and the two choices are not equivalent:
 
-    The cost of injecting late is real and is not hidden: d3d11.dll is loaded by
-    t+2.5s and the chainloader only finishes at ~t+5.3s, so a late injection is
-    always a late hook. `LaunchResult.hooked_late` stays true and callers say so.
+    - **Early**, straight after the process appears (~t+0.5s). The only point
+      that beats Unity's D3D device, so the only one that captures anything.
+      Also the point where a broken renderdoc.dll costs you the mod — see the
+      module docstring — which is why the driver proves BepInEx loaded after.
+    - **At the preloader** (~t+3.3s), once Doorstop has handed over. Cannot
+      disturb the mod, and cannot capture: measured with both an official and a
+      source-built RenderDoc, the hooks register, the mod triggers a capture,
+      and no .rdc is ever written.
+
+    `LaunchResult.hooked_late` reports which side of the device the hook landed
+    on rather than leaving it to be assumed.
     """
     prefix_dir = PureWindowsPath(capture_prefix).parent
     script = f"""

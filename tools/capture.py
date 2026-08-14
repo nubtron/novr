@@ -5,15 +5,15 @@
     tools/capture.py --mission "Free"    # pick a mission by name
     tools/capture.py --dumps 5
     tools/capture.py --keep-running      # leave the game up for poking at
-    tools/capture.py --renderdoc         # also try a GPU capture (see README)
+    tools/capture.py --renderdoc         # also take a GPU capture
 
 What it does, and why each step exists, is documented in vr_harness/game.py and
 vr_harness/mockxr.py. The short version: the OpenXR mock runtime supplies stereo
 with no headset, the game is launched and BepInEx is *proved* to have loaded
 before anything is measured (retrying with the other launcher if it did not),
 and NOVR's AutoStartMission flies a mission and fires the dumps. Output lands in
-the mod's dumps/ folder and the harness work_dir. RenderDoc is opt-in and cannot
-currently coexist with the mod — see tools/README.md.
+the mod's dumps/ folder and the harness work_dir. RenderDoc is opt-in, injected
+early, and needs an official build in tools.renderdoc.dir — see tools/README.md.
 
 Everything machine-specific comes from ~/.vr-harness.toml — see
 tools/vr-harness.example.toml.
@@ -69,13 +69,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw", default="", metavar="DEG[,DEG,...]",
                         help="dump at these head yaw angles instead of straight ahead, e.g. "
                              "--yaw=-75,0,75 (negative looks left); one dump per angle, replacing --dumps")
-    # Off by default since 2026-08-14: RenderDoc has to be injected before the
-    # D3D device is created, and everything that early stops Doorstop from
-    # loading BepInEx at all. A default-on capture therefore bought nothing and
-    # risked a mod-less run. See vr_harness/game.py for the measurements.
+    # Opt-in since 2026-08-14. A GPU capture needs RenderDoc hooked before Unity
+    # creates the D3D device, i.e. injected into a process that is seconds from
+    # loading the mod, and a bad renderdoc.dll injected there stops Doorstop
+    # loading BepInEx at all. That is survivable now that the run proves the mod
+    # loaded, but it is not something to do on every routine dump run.
     parser.add_argument("--renderdoc", action="store_true",
-                        help="also inject RenderDoc for a GPU capture (see the note in "
-                             "tools/README.md — currently produces no frames)")
+                        help="also inject RenderDoc for a GPU capture")
+    parser.add_argument("--inject", choices=("early", "preloader"), default="early",
+                        help="when to inject RenderDoc: 'early' (default) beats the D3D "
+                             "device and is the only one that captures anything; "
+                             "'preloader' waits until Doorstop is done, which is safe for "
+                             "the mod but too late to hook the device")
     parser.add_argument("--no-renderdoc", action="store_true",
                         help=argparse.SUPPRESS)  # accepted and ignored; it is the default now
     parser.add_argument("--keep-running", action="store_true", help="do not close the game at the end")
@@ -185,7 +190,7 @@ def explain_failure(project) -> None:
                 return
 
 
-def launch_until_modded(project, env: dict[str, str], on_preloader=None):
+def launch_until_modded(project, env: dict[str, str], inject=None, inject_at: str = "early"):
     """Launch, prove the mod loaded, and try the other launcher if it did not.
 
     Which launcher loads BepInEx has changed under this harness twice without
@@ -195,21 +200,23 @@ def launch_until_modded(project, env: dict[str, str], on_preloader=None):
     launcher that demonstrably worked. A failed attempt costs ~30s; a mod-less
     run that gets believed costs an afternoon.
 
-    `on_preloader` is called the moment BepInEx starts writing — the one instant
-    that is both late enough not to disturb Doorstop and early enough to matter
-    to RenderDoc. It runs inside the retry loop, so a relaunch gets the same
-    treatment as the first attempt.
+    `inject` runs inside the retry loop, so a relaunch gets the same treatment as
+    the first attempt. `inject_at` picks the moment: 'early' (straight after the
+    process appears, the only point that beats the D3D device) or 'preloader'
+    (once Doorstop has handed over, which cannot disturb it).
     """
     last = None
     for attempt, launcher in enumerate(game.LAUNCHERS, start=1):
         launch = game.launch(project, env, launcher=launcher)
         print(f"launched pid={launch.pid} via {launcher} "
               f"(appeared t+{launch.appeared_after_s:.2f}s)")
-        if game.wait_for_preloader(project, launch) and on_preloader is not None:
-            on_preloader(launch)
+        if inject is not None and inject_at == "early":
+            inject(launch)
+        if game.wait_for_preloader(project, launch) and inject is not None and inject_at == "preloader":
+            inject(launch)
         game.wait_for_bepinex(project, launch)
         status = game.verify_hook(project, launch)
-        print(f"hooks: {status.describe(renderdoc=on_preloader is not None)}")
+        print(f"hooks: {status.describe(renderdoc=inject is not None)}")
         if status.ok:
             if attempt > 1:
                 print(f"  note: '{game.LAUNCHERS[0]}' produced a mod-less game; "
@@ -226,6 +233,19 @@ def launch_until_modded(project, env: dict[str, str], on_preloader=None):
         hint = (
             f"BepInEx ran but loaded no plugin. Check that NOVR.dll is in "
             f"{project.plugin_dir} and read {project.bepinex_log} for the load error."
+        )
+    elif inject is not None and inject_at == "early":
+        # The measured cause of exactly this, on 2026-08-14: a locally built
+        # renderdoc.dll injected before Doorstop finished gave 0 of 8 launches
+        # with the mod, while the official 1.45 release gave 3 of 3 at the same
+        # instant. The build in use is the first thing to suspect, not the timing.
+        hint = (
+            "BepInEx never ran, and RenderDoc was injected before Doorstop had "
+            "finished — which is what stops it.\n"
+            f"RenderDoc in use: {project.renderdoccmd}\n"
+            "A locally built renderdoc.dll was measured doing this while the official "
+            "release was not; point tools.renderdoc.dir at an official install, or run "
+            "--inject preloader (mod-safe, captures nothing)."
         )
     else:
         hint = (
@@ -360,17 +380,16 @@ def main() -> int:
     game.kill(project)
 
     with bepinex_cfg.temporarily(project.config_file_wsl, updates):
-        # RenderDoc goes in the moment Doorstop is finished with the process and
-        # not one poll earlier: injecting into a fresh process stops BepInEx
-        # loading entirely (measured, see vr_harness/game.py), and injecting
-        # after the mod is up is too late for RenderDoc to hook the device —
-        # the mod triggers a capture and no .rdc is ever written.
+        # Injection timing is a real trade and the run says which side it took:
+        # 'early' is the only point that beats Unity's D3D device, and also the
+        # point where a bad renderdoc.dll can stop Doorstop loading the mod. The
+        # launch check catches that either way — see launch_until_modded.
         inject = (
             lambda launch: game.inject_renderdoc(project, launch, capture_prefix)
         ) if args.renderdoc else None
-        launch, status = launch_until_modded(project, env, on_preloader=inject)
+        launch, status = launch_until_modded(project, env, inject, args.inject)
         if launch.injected_after_s is not None:
-            print(f"renderdoc injected at the preloader "
+            print(f"renderdoc injected {args.inject} "
                   f"({'in the process' if status.renderdoc else 'NOT in the process'})")
 
         try:
@@ -404,10 +423,11 @@ def main() -> int:
         if not captures:
             print(
                 "  RenderDoc was in the process and the mod triggered a capture, but no\n"
-                "  frame was written: the hooks went in after Unity had already created\n"
-                "  the D3D device. Injecting early enough to beat it is what stops BepInEx\n"
-                "  loading at all (see vr_harness/game.py), so there is no window today —\n"
-                "  use the buffer dumps, or capture by hand from a launch with no harness."
+                "  frame was written."
+                + ("\n  --inject preloader is after Unity created the D3D device, so RenderDoc\n"
+                   "  has nothing hooked. Use the default (early) to capture anything."
+                   if args.inject == "preloader" else
+                   "\n  Check RenderDoc's own log in %TEMP%\\RenderDoc for what it hooked.")
             )
     for rdc in captures:
         print(f"  {rdc.name}")
