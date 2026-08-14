@@ -124,7 +124,29 @@ public class MissionEditorProbe : NOVRBehaviour
 
         sb.AppendLine($"[VPROBE-ED] menuCapture active={MenuCaptureBackend.IsActive} " +
                       $"enabled={MenuCaptureBackend.Enabled} " +
-                      $"suppressOverlay={MenuCaptureBackend.SuppressesScreenOverlayUi}");
+                      $"suppressOverlay={MenuCaptureBackend.SuppressesScreenOverlayUi} " +
+                      $"| flightHud active={FlightHudCaptureBackend.IsActive} " +
+                      $"| viewLayer active={ViewLayerBackend.IsActive}");
+
+        // The editor's UI is instantiated as a child of GameplayUI.menuCanvas,
+        // so what is under MenuCanvas — and whether anything of it actually
+        // draws — is the whole question.
+        foreach (var canvas in Resources.FindObjectsOfTypeAll<Canvas>())
+        {
+            if (canvas == null || canvas.name != "MenuCanvas") continue;
+            if (!canvas.gameObject.scene.IsValid()) continue;
+
+            var graphics = canvas.GetComponentsInChildren<Graphic>(true);
+            var activeGraphics = graphics.Count(g => g.isActiveAndEnabled);
+            sb.AppendLine($"[VPROBE-ED] MenuCanvas subtree: {canvas.transform.childCount} children, " +
+                          $"{graphics.Length} graphics ({activeGraphics} active), " +
+                          $"canvasEnabled={canvas.enabled} goActive={canvas.gameObject.activeInHierarchy}");
+            for (var i = 0; i < canvas.transform.childCount && i < 15; i++)
+            {
+                var child = canvas.transform.GetChild(i);
+                sb.AppendLine($"[VPROBE-ED]   child[{i}] {child.name,-34} active={child.gameObject.activeSelf}");
+            }
+        }
 
         // Every canvas in the scene, active or not: the question is which ones
         // exist while the editor is up and how they are rendered.
@@ -152,7 +174,9 @@ public class MissionEditorProbe : NOVRBehaviour
             .ToArray();
 
         sb.AppendLine($"[VPROBE-ED] editor components ({editorComponents.Length}):");
-        foreach (var component in editorComponents.Take(25))
+        // UI components sort last in the enumeration, so a low cap hides
+        // exactly the ones this probe exists to see.
+        foreach (var component in editorComponents.Where(c => c is Graphic || c.GetComponent<Graphic>() != null).Take(20))
         {
             sb.AppendLine($"[VPROBE-ED]   {component.GetType().FullName,-60} " +
                           $"active={component.gameObject.activeInHierarchy} path={PathOf(component.gameObject)}");
