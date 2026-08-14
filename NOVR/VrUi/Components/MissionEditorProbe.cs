@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Cysharp.Threading.Tasks;
 using NOVR.VrUi.Capture;
-using TMPro;
+using NuclearOption.MissionEditorScripts;
+using NuclearOption.SavedMission;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
@@ -66,37 +68,44 @@ public class MissionEditorProbe : NOVRBehaviour
         }
     }
 
+    /// <summary>
+    /// Open the editor the way the game's own New/Load menu does — the real
+    /// API, not synthesised menu clicks, for the same reason
+    /// <see cref="AutoStartMission"/> does it that way: it does not break when
+    /// the menu layout changes. An existing mission is loaded rather than a
+    /// blank one, so the editor comes up with units to select.
+    /// </summary>
     private void OpenMissionEditor()
     {
-        Report("before-click");
+        Report("before-open");
 
-        var buttons = Resources.FindObjectsOfTypeAll<Button>()
-            .Where(b => b != null && b.gameObject.scene.IsValid() && b.gameObject.activeInHierarchy)
-            .ToArray();
-
-        foreach (var button in buttons)
+        try
         {
-            var label = LabelOf(button);
-            var normalized = label.Replace(" ", string.Empty).ToUpperInvariant();
-            if (normalized != "MISSIONEDITOR") continue;
+            MissionGroup.Init();
+            var missions = MissionSaveLoad.QuickLoadMany(MissionGroup.All.GetMissions()).ToList();
+            if (missions.Count == 0)
+            {
+                Debug.LogWarning("[VPROBE-ED] no missions available to open in the editor.");
+                return;
+            }
 
-            Debug.Log($"[VPROBE-ED] clicking '{PathOf(button.gameObject)}' (label '{label}')");
-            button.onClick.Invoke();
+            var chosen = missions[0];
+            if (!chosen.key.TryLoad(out var mission, out var error))
+            {
+                Debug.LogWarning($"[VPROBE-ED] failed to load mission '{chosen.key}': {error}");
+                return;
+            }
+
+            Debug.Log($"[VPROBE-ED] opening editor with mission '{chosen.key}' (map {mission.MapKey}).");
+            MissionEditor.LoadEditor(mission).Forget();
+
             _autoReportsLeft = MaxAutoReports;
             _nextReport = Time.unscaledTime + ReportInterval;
-            return;
         }
-
-        Debug.LogWarning("[VPROBE-ED] no MISSION EDITOR button found. Active buttons: " +
-                         string.Join(" | ", buttons.Take(30).Select(b => $"{LabelOf(b)}@{PathOf(b.gameObject)}")));
-    }
-
-    private static string LabelOf(Component button)
-    {
-        var tmp = button.GetComponentInChildren<TMP_Text>(true);
-        if (tmp != null && !string.IsNullOrWhiteSpace(tmp.text)) return tmp.text.Trim();
-        var text = button.GetComponentInChildren<Text>(true);
-        return text != null ? text.text.Trim() : button.name;
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[VPROBE-ED] opening the editor threw: {e}");
+        }
     }
 
     private void Report(string tag)
