@@ -51,6 +51,7 @@ public class NOUIManager : NOVRBehaviour
         Create<HmdVisorBackend>(transform);
         Create<ViewLayerBackend>(transform);
         Create<Components.GazeDesignatorDriver>(transform);
+        Create<Components.MissionEditorProbe>(transform);
         Create<NativeVrUiRoot>(transform);
         ConfigureUiCameras();
     }
