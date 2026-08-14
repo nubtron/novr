@@ -26,7 +26,7 @@ side. The OpenXR mock runtime needs no install — it is vendored in the repo at
 tools/capture.py                    # full run: 3 dumps from a built-in mission
 tools/capture.py --mission "05. Furball"   # pick a mission by name
 tools/capture.py --dumps 5 --delay 12
-tools/capture.py --no-renderdoc     # buffer dumps only
+tools/capture.py --renderdoc        # also inject RenderDoc (off by default)
 tools/capture.py --keep-running     # leave the game up to poke at
 tools/capture.py --set 'General:HUD Opacity=0'   # A/B any config key
 ```
@@ -70,33 +70,45 @@ lines and a likely fix — read that before opening Player.log.
 
 ## Why the launch path looks strange
 
-Two constraints, both established by experiment rather than documentation. Full
-detail is in the module docstrings of `vr_harness/game.py` and
-`vr_harness/mockxr.py`; the summary:
+All of this is experiment, not documentation. Full detail is in the module
+docstrings of `vr_harness/game.py` and `vr_harness/mockxr.py`; the summary:
 
-**The game must not be created directly by a WSL-spawned process.** BepInEx is
-loaded by Doorstop 4.5, which proxies `WINHTTP.dll` out of the game directory.
-When `powershell.exe` launched from WSL creates the process, `WINHTTP.dll`
-resolves from System32 instead, Doorstop never loads, and the mod is silently
-absent — no error anywhere, the game just looks fine and has no VR. Routing
-through `explorer.exe` fixes it. Steam launch also works; Steam is not special,
-it just isn't WSL.
+**Whether the mod loads is proved, never assumed.** Doorstop's `WINHTTP.dll`
+proxy sits in the module list whether or not Doorstop does anything — measured
+by setting `enabled = false` in `doorstop_config.ini`, which yields a module
+list identical to a good run. The old check looked only at that module, so
+every mod-less run on 2026-08-14 was reported as `hooks: doorstop/BepInEx: yes`
+and the harness went on to measure an unmodded game. The verdict now comes from
+`BepInEx/LogOutput.log` growing after launch and naming the plugin it loaded.
+
+**No launcher has stayed reliable, so the driver tries both.** On 2026-08-09 a
+WSL-spawned `powershell.exe Start-Process` resolved `WINHTTP.dll` from System32
+and never loaded Doorstop, while `explorer.exe` worked every time. On 08-14 the
+opposite, then both worked, with nothing on the machine visibly changing.
+`capture.py` takes the first launcher that demonstrably loaded the mod.
 
 | Launcher | game-dir `WINHTTP.dll` | BepInEx |
 |---|---|---|
 | Steam | yes | yes |
 | `explorer.exe <exe>` | yes | yes |
-| `explorer.exe <launcher.cmd>` | yes | yes |
-| WSL → powershell `Start-Process <exe>` | no | **no** |
+| `explorer.exe <launcher.cmd>` | yes | yes (08-09: yes, 08-14: both seen) |
+| WSL → powershell `Start-Process <exe>` | yes | 08-09: **no**, 08-14: yes |
+| either, with RenderDoc injected at t+1.4s | yes | **no** (0 of 8) |
 | explorer → cmd → `renderdoccmd capture <exe>` | yes | **no** |
 
-**RenderDoc must be injected, not used as the launcher.** That last row is why:
-`renderdoccmd capture` creates the process itself and hits the same failure. So
-the harness launches first and injects after. The usual objection to late
-injection — that the D3D device already exists — does not apply here: the
-process appears ~1.4s after launch and has no `d3d11.dll`/`dxgi.dll` loaded for
-a good while after, so a 100 ms poll wins comfortably. The driver checks this
-rather than assuming it, and warns if graphics modules were already loaded.
+**RenderDoc and the mod currently cannot both be in the process**, which is why
+`--renderdoc` is opt-in and off by default. Injecting into a fresh process — the
+only point early enough to beat Unity's D3D device — stops Doorstop dead: 0 of 8
+launches loaded BepInEx with RenderDoc injected at ~t+1.4 s, 6 of 6 loaded it
+with none. The plain reading is a hook collision, since RenderDoc re-patches
+import tables for `LoadLibrary`/`GetProcAddress` and Doorstop's hook on those is
+how it catches Unity loading Mono, at ~t+3.3 s. Injecting later, when Doorstop
+is done, leaves the mod alone but arrives after the device exists: RenderDoc
+registers its hooks, the mod triggers a capture, and no `.rdc` is ever written
+(confirmed in RenderDoc's own log). The measured timeline leaves no window —
+`d3d11.dll` at t+2.5 s, preloader at t+3.3 s, chainloader done at t+5.3 s. This
+worked on 08-09; what changed since is unknown. Until it is, GPU captures need a
+launch with no harness, and buffer dumps carry the load.
 
 Because the harness owns an intermediate `.cmd`, it can set environment
 variables for the game — which is how the mock OpenXR runtime is selected.

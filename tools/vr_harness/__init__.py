@@ -144,6 +144,10 @@ class Project:
     plugin_dir: str  # Windows form
     config_file: str  # Windows form
     player_log: str  # Windows form
+    #: BepInEx's own log, Windows form. Separate from player_log on purpose: the
+    #: mod's runtime output goes to Unity's log, but only this one proves the
+    #: loader ran at all, which is what the launch check turns on.
+    bepinex_log: str  # Windows form
     renderdoc_dir: str  # Windows form
     work_dir: str  # Windows form
     source: str  # which config file this came from
@@ -169,6 +173,10 @@ class Project:
     @property
     def player_log_wsl(self) -> Path:
         return to_wsl(self.player_log)
+
+    @property
+    def bepinex_log_wsl(self) -> Path:
+        return to_wsl(self.bepinex_log)
 
     @property
     def work_dir_wsl(self) -> Path:
@@ -259,6 +267,7 @@ def load_project(name: str, path: str | os.PathLike[str] | None = None) -> Proje
         plugin_dir=under_game(entry.get("plugin_dir", "BepInEx/plugins")),
         config_file=under_game(entry.get("config_file", "")) if entry.get("config_file") else "",
         player_log=entry.get("player_log", ""),
+        bepinex_log=under_game(entry.get("bepinex_log", "BepInEx/LogOutput.log")),
         renderdoc_dir=_require(
             tools.get("renderdoc", {}), "dir", "tools.renderdoc", source
         ),

@@ -1,30 +1,40 @@
 """Launching the game headless with RenderDoc hooked, and tearing it down again.
 
-Two non-obvious constraints shape this, both established by experiment:
+Three things shape this, all established by experiment:
 
-1. **The game must not be created directly by a WSL-spawned process.** BepInEx
-   is loaded by Doorstop 4.5, which proxies WINHTTP.dll out of the game
-   directory (UnityPlayer.dll imports it for real). When powershell.exe launched
-   from WSL creates the process, WINHTTP.dll resolves from System32 instead, so
-   Doorstop never loads and the mod is simply absent — with no error anywhere.
-   Routing the launch through explorer.exe (a normal Windows shell parent) makes
-   the game-directory copy load and BepInEx come up in ~5s. Verified by
-   comparing loaded modules; the precise loader reason is not pinned down, but
-   it reproduces every time. Steam launch also works, for the same reason —
-   Steam is not special, it just isn't WSL.
+1. **How the process is created decides whether BepInEx loads — and no launch
+   method has been reliable.** BepInEx is loaded by Doorstop 4.5, which proxies
+   WINHTTP.dll out of the game directory (UnityPlayer.dll imports it for real).
+   On 2026-08-09 a powershell.exe launched from WSL resolved WINHTTP.dll from
+   System32 instead, so Doorstop never loaded and the mod was simply absent;
+   routing through explorer.exe fixed it, every time. On 2026-08-14 that
+   reversed: every explorer.exe launch came up mod-less while `Start-Process`
+   from WSL worked — and later the same day *both* worked, unchanged. Nobody has
+   found the variable. So the launcher is no longer trusted: `launch()` takes
+   one, `verify_hook()` proves whether it worked, and capture.py retries with
+   the other. Steam launch also works, for whatever the reason turns out to be.
 
-2. **RenderDoc must be injected, not used as the launcher.** `renderdoccmd
-   capture <exe>` creates the process itself and re-breaks Doorstop exactly like
-   case 1 (measured: RenderDoc hooks fine, BepInEx never appears). So we launch
+2. **A loaded Doorstop proxy is not a loaded mod.** WINHTTP.dll from the game
+   directory appears in the module list whether or not Doorstop runs the
+   preloader — measured directly, by setting `enabled = false` in
+   doorstop_config.ini: the module list is identical to a good run, and
+   BepInEx/LogOutput.log is never written. That is exactly the signature of the
+   08-14 failures, and it is why the only accepted proof that the mod is in the
+   process is BepInEx's own log growing after we launched. See `verify_hook`.
+
+3. **RenderDoc must be injected, not used as the launcher.** `renderdoccmd
+   capture <exe>` creates the process itself and breaks Doorstop the way case 1
+   does (measured: RenderDoc hooks fine, BepInEx never appears). So we launch
    first and inject after. The usual objection — that the D3D device already
    exists by then — does not apply: the process appears ~1.4s after launch and
    d3d11.dll/dxgi.dll are not loaded for a good while after that, so a 100ms
    poll wins comfortably. `LaunchResult.hooked_late` asserts that rather than
-   trusting it.
+   trusting it. Injection is orthogonal to case 1: with RenderDoc injected at
+   t+1.7s, both launchers produced a fully loaded BepInEx on 08-14.
 
-Because we own the intermediate .cmd, we can also set environment variables for
-the game — which is how the OpenXR mock runtime gets selected (see mockxr.py).
-A per-user registry override does not work: this loader ignores HKCU.
+Either launcher can set environment variables for the game — which is how the
+OpenXR mock runtime gets selected (see mockxr.py). A per-user registry override
+does not work: this loader ignores HKCU.
 """
 
 from __future__ import annotations
@@ -42,17 +52,39 @@ _APPEAR_TIMEOUT_S = 90
 
 _LAUNCHER_NAME = "vr-harness-launch.cmd"
 
+#: How the game process gets created. Neither has stayed reliable (see the
+#: module docstring), so both are kept and capture.py falls back to the other.
+LAUNCHERS = ("explorer", "start-process")
+
+#: How long BepInEx gets to finish loading plugins before we call the launch
+#: mod-less. Measured: the preloader's banner lands a few seconds after the
+#: process appears and the chainloader finishes a few seconds after that. The
+#: ceiling is slack for a cold start, not a typical wait — a good launch is
+#: detected as soon as it is done.
+_BEPINEX_TIMEOUT_S = 60
+
+#: BepInEx 5's "every plugin that is going to load has loaded" line.
+_CHAINLOADER_DONE = "Chainloader startup complete"
+
 
 @dataclass
 class LaunchResult:
     pid: int
     appeared_after_s: float
-    injected_after_s: float
-    #: d3d11/dxgi module count at injection time. Non-zero means we lost the
-    #: race and the capture may be missing early resources.
-    gfx_modules_at_inject: int
-    capture_prefix: str
     launcher: str
+    #: Seconds from the injection call to RenderDoc being in, or None if
+    #: RenderDoc was never injected.
+    injected_after_s: float | None = None
+    #: d3d11/dxgi module count at injection time. Non-zero means the graphics
+    #: modules were already up and the capture may be missing early resources —
+    #: which is now the normal case, see `inject_renderdoc`.
+    gfx_modules_at_inject: int = 0
+    capture_prefix: str = ""
+    #: (mtime, size) of BepInEx/LogOutput.log immediately before launch, or None
+    #: if it did not exist. The baseline `verify_hook` compares against — a
+    #: before/after comparison rather than a timestamp so it cannot be fooled by
+    #: clock skew between WSL and the Windows filesystem.
+    log_before: tuple[float, int] | None = None
 
     @property
     def hooked_late(self) -> bool:
@@ -128,27 +160,49 @@ def _write_launcher(project: Project, env: dict[str, str]) -> str:
     return str(PureWindowsPath(project.work_dir) / _LAUNCHER_NAME)
 
 
-def launch_with_renderdoc(
-    project: Project,
-    capture_prefix: str,
-    env: dict[str, str] | None = None,
-) -> LaunchResult:
-    """Launch headless via explorer.exe and inject RenderDoc before D3D init.
+def _create_process_ps(project: Project, launcher: str, env: dict[str, str]) -> tuple[str, str]:
+    """PowerShell that creates the game process. Returns (snippet, description).
 
-    `capture_prefix` is a Windows path prefix; RenderDoc appends
-    `_frameNNNN.rdc`. `env` is set inside the launcher .cmd, so it reaches the
-    game even though we cannot set it on the process ourselves.
+    The two differ only in who becomes the parent — which is the whole variable
+    under suspicion, so they are kept side by side rather than one being "the"
+    launcher with the other as a comment about history.
     """
-    launcher = _write_launcher(project, env or {})
-    prefix_dir = PureWindowsPath(capture_prefix).parent
+    if launcher == "explorer":
+        cmd = _write_launcher(project, env)
+        return f"Start-Process explorer.exe -ArgumentList '{cmd}'", cmd
+    if launcher == "start-process":
+        exe = str(PureWindowsPath(project.game_dir) / project.exe)
+        # Set on this PowerShell process; Start-Process passes its environment
+        # to the child, which is how the mock runtime reaches the game without
+        # an intermediate .cmd.
+        sets = "".join(f"$env:{name} = '{value}'\n" for name, value in env.items())
+        return (
+            f"{sets}Start-Process -FilePath '{exe}' -WorkingDirectory '{project.game_dir}'",
+            exe,
+        )
+    raise HarnessError(f"unknown launcher {launcher!r} — expected one of {LAUNCHERS}")
 
-    # Launch, poll and inject inside one PowerShell invocation: one
-    # powershell.exe round trip per poll would blow the injection window.
+
+def launch(
+    project: Project,
+    env: dict[str, str] | None = None,
+    launcher: str = LAUNCHERS[0],
+) -> LaunchResult:
+    """Launch headless and return as soon as the process exists.
+
+    `env` reaches the game either through the launcher .cmd or through this
+    PowerShell process, depending on `launcher`. Nothing is injected here, and
+    whether the mod loaded is not decided here — see `verify_hook`.
+    """
+    create, described = _create_process_ps(project, launcher, env or {})
+    log_before = bepinex_log_state(project)
+
+    # Launch and poll inside one PowerShell invocation: a powershell.exe round
+    # trip per poll would cost more than the thing being measured.
     script = f"""
 $ErrorActionPreference = 'Stop'
-New-Item -ItemType Directory -Force -Path '{prefix_dir}' | Out-Null
 $sw = [Diagnostics.Stopwatch]::StartNew()
-Start-Process explorer.exe -ArgumentList '{launcher}'
+{create}
 $p = $null
 while ($sw.Elapsed.TotalSeconds -lt {_APPEAR_TIMEOUT_S}) {{
     $p = Get-Process -Name '{project.process_name}' -ErrorAction SilentlyContinue
@@ -156,11 +210,7 @@ while ($sw.Elapsed.TotalSeconds -lt {_APPEAR_TIMEOUT_S}) {{
     Start-Sleep -Milliseconds {_POLL_MS}
 }}
 if (-not $p) {{ Write-Output 'ERROR|process never appeared'; exit 1 }}
-$appeared = $sw.Elapsed.TotalSeconds
-$p.Refresh()
-$gfx = ($p.Modules | Where-Object {{ $_.ModuleName -match 'd3d11|d3d12|dxgi|vulkan' }} | Measure-Object).Count
-& '{project.renderdoccmd}' inject --PID $p.Id --capture-file '{capture_prefix}' | Out-Null
-Write-Output ("OK|" + $p.Id + "|" + $appeared + "|" + $sw.Elapsed.TotalSeconds + "|" + $gfx)
+Write-Output ("OK|" + $p.Id + "|" + $sw.Elapsed.TotalSeconds)
 """
     result = powershell(script, timeout=_APPEAR_TIMEOUT_S + 60)
     line = next(
@@ -171,15 +221,58 @@ Write-Output ("OK|" + $p.Id + "|" + $appeared + "|" + $sw.Elapsed.TotalSeconds +
         detail = line[len("ERROR|"):] if line else (result.stderr.strip() or "no output")
         raise HarnessError(f"launch failed: {detail}")
 
-    _, pid, appeared, injected, gfx = line.split("|")
+    _, pid, appeared = line.split("|")
     return LaunchResult(
         pid=int(pid),
         appeared_after_s=float(appeared),
-        injected_after_s=float(injected),
-        gfx_modules_at_inject=int(gfx),
-        capture_prefix=capture_prefix,
-        launcher=launcher,
+        launcher=described,
+        log_before=log_before,
     )
+
+
+def inject_renderdoc(project: Project, launch: LaunchResult, capture_prefix: str) -> None:
+    """Inject RenderDoc into a running game, and record what it cost.
+
+    **This must not happen before BepInEx has loaded.** Injecting into a
+    freshly created process is what the harness used to do — as early as
+    possible, to beat D3D device creation — and on 2026-08-14 that was measured
+    to stop Doorstop dead: 0 of 8 launches loaded the mod with RenderDoc
+    injected at ~t+1.4s, 6 of 6 loaded it with no injection, both launchers
+    alike, with the game-directory WINHTTP.dll present either way. The
+    plain reading is a hook collision: RenderDoc re-patches the import tables of
+    every loaded module for LoadLibrary/GetProcAddress, and Doorstop's hook on
+    those is how it catches Unity loading Mono — which it does at ~t+3.3s, well
+    after the injection.
+
+    The cost of injecting late is real and is not hidden: d3d11.dll is loaded by
+    t+2.5s and the chainloader only finishes at ~t+5.3s, so a late injection is
+    always a late hook. `LaunchResult.hooked_late` stays true and callers say so.
+    """
+    prefix_dir = PureWindowsPath(capture_prefix).parent
+    script = f"""
+$ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force -Path '{prefix_dir}' | Out-Null
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$p = Get-Process -Id {launch.pid} -ErrorAction SilentlyContinue
+if (-not $p) {{ Write-Output 'ERROR|process is gone'; exit 1 }}
+$p.Refresh()
+$gfx = ($p.Modules | Where-Object {{ $_.ModuleName -match 'd3d11|d3d12|dxgi|vulkan' }} | Measure-Object).Count
+& '{project.renderdoccmd}' inject --PID {launch.pid} --capture-file '{capture_prefix}' | Out-Null
+Write-Output ("OK|" + $sw.Elapsed.TotalSeconds + "|" + $gfx)
+"""
+    result = powershell(script, timeout=120)
+    line = next(
+        (l for l in result.stdout.splitlines() if l.startswith(("OK|", "ERROR|"))),
+        "",
+    )
+    if not line.startswith("OK|"):
+        detail = line[len("ERROR|"):] if line else (result.stderr.strip() or "no output")
+        raise HarnessError(f"renderdoc injection failed: {detail}")
+
+    _, took, gfx = line.split("|")
+    launch.injected_after_s = float(took)
+    launch.gfx_modules_at_inject = int(gfx)
+    launch.capture_prefix = capture_prefix
 
 
 def loaded_modules(project: Project, pattern: str = "renderdoc|d3d11|dxgi|winhttp") -> list[str]:
@@ -192,37 +285,134 @@ def loaded_modules(project: Project, pattern: str = "renderdoc|d3d11|dxgi|winhtt
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def bepinex_log_state(project: Project) -> tuple[float, int] | None:
+    """(mtime, size) of BepInEx/LogOutput.log, or None if it is not there."""
+    try:
+        stat = project.bepinex_log_wsl.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime, stat.st_size)
+
+
+def read_bepinex_log(project: Project) -> str:
+    try:
+        return project.bepinex_log_wsl.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def wait_for_preloader(project: Project, launch: LaunchResult,
+                       timeout_s: float = _BEPINEX_TIMEOUT_S) -> bool:
+    """Wait for BepInEx's first byte of log — i.e. Doorstop having done its job.
+
+    This is the moment RenderDoc becomes safe to inject: Doorstop has already
+    caught Unity loading Mono and handed control to the preloader, so nothing is
+    left for a second hook engine to trample. It is also the earliest such
+    moment, which matters in the other direction — see `inject_renderdoc`.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if bepinex_log_state(project) != launch.log_before:
+            return True
+        if not is_running(project, launch.pid):
+            return False
+        time.sleep(0.05)
+    return False
+
+
+def wait_for_bepinex(project: Project, launch: LaunchResult,
+                     timeout_s: float = _BEPINEX_TIMEOUT_S) -> bool:
+    """Wait until BepInEx has finished loading plugins, and say whether it did.
+
+    Waiting for the log to merely *grow* is not enough, and the difference is
+    not academic: the preloader's banner lands seconds before the chainloader
+    loads anything, so a check on first growth sees a BepInEx with no plugins
+    and reads a healthy launch as a failure (measured — it killed a good game
+    and relaunched it). The startup marker is the point where "which plugins
+    loaded" becomes a settled answer.
+
+    Replaces a fixed sleep: a good launch is confirmed as soon as it is done
+    instead of always costing the worst case, and a mod-less one is not handed a
+    green light because the sleep happened to be long enough.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if bepinex_log_state(project) != launch.log_before:
+            if _CHAINLOADER_DONE in read_bepinex_log(project):
+                return True
+        if not is_running(project, launch.pid):
+            return False
+        time.sleep(0.5)
+    return False
+
+
 @dataclass
 class HookStatus:
     renderdoc: bool
     doorstop: bool
+    #: BepInEx's own log grew after we launched — the only proof that the
+    #: preloader ran in *this* process rather than some earlier one.
+    preloader: bool
+    #: Plugin names BepInEx reported loading this run, e.g. ["NOVR 0.4.3"].
+    plugins: list[str] = field(default_factory=list)
     modules: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return self.renderdoc and self.doorstop
+        return self.preloader and bool(self.plugins)
 
-    def describe(self) -> str:
-        parts = [
-            f"doorstop/BepInEx: {'yes' if self.doorstop else 'NO'}",
-            f"renderdoc: {'yes' if self.renderdoc else 'NO'}",
-        ]
-        return ", ".join(parts)
+    def describe(self, renderdoc: bool = True) -> str:
+        """One line for the console. `renderdoc=False` when nobody asked for it —
+        a run that never wanted a GPU capture should not be told it lacks one."""
+        if self.preloader:
+            loaded = ", ".join(self.plugins) if self.plugins else "no plugins!"
+            bepinex = f"yes ({loaded})"
+        elif self.doorstop:
+            bepinex = "NO — doorstop proxy loaded but the preloader never ran"
+        else:
+            bepinex = "NO — doorstop proxy not even loaded"
+        line = f"BepInEx: {bepinex}"
+        return f"{line}, renderdoc: {'yes' if self.renderdoc else 'NO'}" if renderdoc else line
 
 
-def verify_hook(project: Project) -> HookStatus:
-    """Check that both hooks actually took, before waiting on any output.
+def verify_hook(project: Project, launch: LaunchResult) -> HookStatus:
+    """Did the mod actually load into the process we launched?
 
-    Doorstop counts as loaded only when WINHTTP.dll resolved out of the game
-    directory rather than System32 alone — that is the exact symptom separating
-    a working launch from a silently mod-less one, and it is invisible in every
-    other signal until the run times out with no dumps.
+    The module list alone cannot answer that. Doorstop's WINHTTP.dll proxy is
+    loaded out of the game directory whether or not Doorstop does anything —
+    measured by disabling Doorstop in its own .ini, which produces a module list
+    identical to a good run and a mod that is simply not there. Every mod-less
+    run on 2026-08-14 passed the old module-only check, and the harness went on
+    to report measurements of an unmodded game as if they meant something.
+
+    So the module list is kept as *diagnosis* — it separates "the proxy never
+    loaded" from "it loaded and stood down" — while the verdict comes from
+    BepInEx's own log growing since `launch`, and from the plugin lines in it.
     """
     modules = loaded_modules(project)
     lowered = [m.lower() for m in modules]
     game_dir = project.game_dir.lower()
+    grew = bepinex_log_state(project) != launch.log_before
     return HookStatus(
         renderdoc=any("renderdoc.dll" in m for m in lowered),
         doorstop=any("winhttp.dll" in m and m.startswith(game_dir) for m in lowered),
+        preloader=grew,
+        plugins=loaded_plugins(project) if grew else [],
         modules=modules,
     )
+
+
+def loaded_plugins(project: Project) -> list[str]:
+    """Plugin names from BepInEx's `Loading [NOVR 0.4.3]` lines.
+
+    Names the mod as well as the loader: a BepInEx that came up and then failed
+    to load our plugin (a bad DLL, a missing dependency) is a different failure
+    from one that never ran, and it reads identically in every other signal.
+    """
+    text = read_bepinex_log(project)
+    names = []
+    for line in text.splitlines():
+        marker = "] Loading ["
+        if marker in line and line.rstrip().endswith("]"):
+            names.append(line.rstrip()[line.index(marker) + len(marker):-1])
+    return names
