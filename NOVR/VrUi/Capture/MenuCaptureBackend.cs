@@ -28,6 +28,9 @@ namespace NOVR.VrUi.Capture;
 public class MenuCaptureBackend : NOVRBehaviour
 {
     private const string MenuCanvasName = "MainCanvas";
+    // The mission editor's UI is parented under the map scene's MenuCanvas,
+    // not a MainCanvas — see FindMenuCanvas.
+    private const string EditorCanvasName = "MenuCanvas";
     private const float PanelCanvasReferenceWidth = 1000f;
     private const float RebindInterval = 0.5f;
     // The menu canvas is deactivated for a frame at a time by the behaviour
@@ -233,17 +236,47 @@ public class MenuCaptureBackend : NOVRBehaviour
         return mapper.GetComponentInChildren<Canvas>(true) ?? mapper.GetComponentInParent<Canvas>();
     }
 
+    /// <summary>
+    /// The canvas whose presence means "a menu is up". Normally the menu
+    /// scenes' <c>MainCanvas</c>; in the mission editor the game has no
+    /// MainCanvas at all, because the editor runs inside the map scene and
+    /// <c>GameplayUI.OpenMissionEditor</c> instantiates the whole editor
+    /// prefab as a child of <c>GameplayUI.menuCanvas</c> — measured: 964
+    /// graphics under a <c>MenuCanvas</c> that no backend was claiming, which
+    /// is a ScreenSpaceOverlay canvas nothing draws into the eye buffers.
+    ///
+    /// Only in the editor. <c>MenuCanvas</c> also carries the in-flight pause
+    /// and leaderboard menus, and during flight the captured flight HUD
+    /// already owns the overlay pass; taking it there would change what the
+    /// pause menu does, which is a separate question from this one.
+    /// </summary>
     private static Canvas? FindMenuCanvas()
     {
+        var wanted = IsMissionEditorOpen() ? EditorCanvasName : MenuCanvasName;
+
         foreach (var canvas in Resources.FindObjectsOfTypeAll<Canvas>())
         {
             if (canvas == null) continue;
-            if (canvas.name != MenuCanvasName) continue;
+            if (canvas.name != wanted) continue;
             if (!canvas.gameObject.scene.IsValid()) continue;
             return canvas;
         }
 
         return null;
+    }
+
+    private static bool IsMissionEditorOpen()
+    {
+        try
+        {
+            return GameManager.gameState == GameState.Editor;
+        }
+        catch
+        {
+            // Asked every rebind, including while the game state machine is
+            // still coming up; "not the editor" is the safe answer.
+            return false;
+        }
     }
 
     private void SetupCapture()
@@ -255,9 +288,9 @@ public class MenuCaptureBackend : NOVRBehaviour
         RecenterPanel();
 
         _capturing = true;
-        Debug.Log($"[NOVR] Captured-menu backend active for {_reason ?? "'" + MenuCanvasName + "'"}: " +
-                  "rendering the overlay path into a " +
-                  $"{_targetWidth}x{_targetHeight} texture.");
+        var canvas = _menuCanvas != null ? $"'{_menuCanvas.name}'" : "no menu canvas";
+        Debug.Log($"[NOVR] Captured-menu backend active for {_reason ?? "a menu"} ({canvas}): " +
+                  $"rendering through the overlay path into a {_targetWidth}x{_targetHeight} texture.");
     }
 
     private void TeardownCapture()
