@@ -20,6 +20,12 @@
 [tools.renderdoc]
 # Must contain renderdoccmd.exe. qrenderdoc.exe is only needed if you use the
 # GUI; the harness drives the `rdc` CLI and renderdoccmd instead.
+#
+# Point this at an OFFICIAL build, not one you compiled. The harness injects
+# renderdoc.dll into a process that is a second away from loading BepInEx, and a
+# locally built one was measured stopping Doorstop dead there: 0 of 8 launches
+# had the mod, against 3 of 3 with the 1.45 release. A source build is still the
+# right answer for replay_python/replay_pymodules below.
 dir = 'C:\Program Files\RenderDoc'
 
 # Optional — only needed for tools/rd_run.py (replaying a capture from a script
