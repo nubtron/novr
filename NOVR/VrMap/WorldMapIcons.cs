@@ -232,7 +232,7 @@ internal sealed class WorldMapIcons
             var at = _placedAt.TryGetValue(placed.Key, out var where) ? where : Vector3.zero;
             _inventory.Add($"{placed.Key.name} ({kind}, sprite '{sprite}', " +
                            $"{placed.Value.transform.localScale.x * IconRectSize:F2}m, " +
-                           $"map {at.x:F0},{at.y:F0},{at.z:F0})");
+                           $"map {at.x:F0},{at.y:F0},{at.z:F0}, {Coverage(placed.Value.sprite)})");
         }
 
         var mount = APIBus.MainCamera != null ? APIBus.MainCamera.transform : null;
@@ -241,6 +241,87 @@ internal sealed class WorldMapIcons
                   string.Join(", ", _inventory));
         _inventory.Clear();
         _placedAt.Clear();
+
+        // What the symbols are actually being drawn with, which is the half of
+        // "why is it opaque" that is not about the sprite.
+        foreach (var placed in _icons)
+        {
+            if (placed.Key == null || placed.Value == null || placed.Key.iconImage == null) continue;
+            var mine = placed.Value.material;
+            var theirs = placed.Key.iconImage.material;
+            Debug.Log($"[NOVR] World map icon material: {placed.Key.name} — " +
+                      $"mine '{(mine != null ? mine.name : "<none>")}' " +
+                      $"shader '{(mine != null && mine.shader != null ? mine.shader.name : "<none>")}' " +
+                      $"ZTest {(mine != null ? mine.GetInt("unity_GUIZTestMode") : -1)}, " +
+                      $"flat map's '{(theirs != null ? theirs.name : "<none>")}' " +
+                      $"shader '{(theirs != null && theirs.shader != null ? theirs.shader.name : "<none>")}', " +
+                      $"colour {placed.Value.color}, canvas alpha " +
+                      $"{placed.Value.canvasRenderer.GetAlpha():F2}, type {placed.Value.type}.");
+            break;
+        }
+    }
+
+    /// <summary>
+    /// How much of a symbol's sprite is actually solid — the question behind "the
+    /// parts inside that should be transparent are not".
+    ///
+    /// <para>A map symbol drawn on a flat map sits on a picture of the ground, so a
+    /// filled interior costs nothing and reads fine. On a solid model it hides the
+    /// terrain it is annotating, and there is no way to tell by looking whether
+    /// that is the sprite being filled or the blend being wrong. So this reads the
+    /// sprite back off the GPU — via a blit, because the icon textures are not
+    /// import-readable — and reports the split.</para>
+    /// </summary>
+    private static string Coverage(Sprite? sprite)
+    {
+        if (sprite == null) return "no sprite: a plain filled rectangle";
+        var texture = sprite.texture;
+        if (texture == null) return "sprite has no texture";
+
+        var rect = sprite.textureRect;
+        var width = Mathf.Clamp(Mathf.RoundToInt(rect.width), 1, 512);
+        var height = Mathf.Clamp(Mathf.RoundToInt(rect.height), 1, 512);
+
+        RenderTexture? target = null;
+        Texture2D? readable = null;
+        var previous = RenderTexture.active;
+        try
+        {
+            target = RenderTexture.GetTemporary(
+                texture.width, texture.height, 0,
+                RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Graphics.Blit(texture, target);
+            RenderTexture.active = target;
+
+            readable = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            readable.ReadPixels(new Rect(rect.x, rect.y, width, height), 0, 0);
+            readable.Apply(false);
+
+            var pixels = readable.GetPixels32();
+            int clear = 0, partial = 0, solid = 0;
+            foreach (var pixel in pixels)
+            {
+                if (pixel.a < 16) clear++;
+                else if (pixel.a > 240) solid++;
+                else partial++;
+            }
+
+            var centre = pixels[(height / 2) * width + (width / 2)];
+            var total = Mathf.Max(1, pixels.Length);
+            return $"sprite {width}x{height} alpha: {clear * 100f / total:F0}% clear, " +
+                   $"{partial * 100f / total:F0}% partial, {solid * 100f / total:F0}% solid, " +
+                   $"centre a={centre.a}";
+        }
+        catch (System.Exception error)
+        {
+            return $"sprite unreadable ({error.GetType().Name})";
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+            if (target != null) RenderTexture.ReleaseTemporary(target);
+            if (readable != null) Object.Destroy(readable);
+        }
     }
 
     /// <summary>
