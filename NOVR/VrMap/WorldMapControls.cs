@@ -4,31 +4,41 @@ using UnityEngine;
 namespace NOVR.VrMap;
 
 /// <summary>
-/// While the map is up, the stick moves the map instead of the aeroplane.
+/// Moving the map: the thumbsticks first, and the flight controls as well.
 ///
-/// <para><b>Why this is safer than not doing it, which is not obvious.</b>
-/// Handing the flight controls to a map sounds like walking away from a flying
+/// <para><b>Two sources, because there are two kinds of pilot.</b> The
+/// thumbsticks are the right gesture for a map you are looking down at, and they
+/// are free — the game has no VR bindings at all, so nothing is being taken from
+/// anyone. The flight axes are here as well because they cost nothing to read and
+/// they cover everyone: whatever you have Pitch, Roll and Yaw bound to moves the
+/// map too, HOTAS, gamepad or keyboard, without being told about. Both are summed,
+/// which needs no arbitration because you only have one pair of hands.</para>
+///
+/// <para><b>Why taking the flight controls is safer than not, which is not
+/// obvious.</b> Handing the stick to a map sounds like walking away from a flying
 /// aircraft, and it is the opposite: what the aircraft receives while the map is
 /// open is <i>zero</i> pitch, roll and yaw, and zero through the flight assist is
 /// wings level. Leaving the controls connected is the dangerous option, because
 /// the map is drawn with the cockpit and the outside world hidden — you are
 /// already not flying, and every input you make to move the map is an input the
-/// aeroplane also takes, blind. The throttle is deliberately left alone: it is
-/// not a movement control, and cutting or firewalling it is not something a map
-/// should do.</para>
+/// aeroplane also takes, blind. The throttle is deliberately left alone: it is not
+/// a movement control, and cutting or firewalling it is not something a map should
+/// do.</para>
 ///
 /// <para><b>Where the interception happens.</b> <c>PilotPlayerState</c> reads
 /// Pitch, Roll and Yaw in its fixed step and writes them into the aircraft's
 /// <c>ControlInputs</c>. A postfix there is the one place where the values are
 /// known to have just been written and nothing downstream has read them yet — so
-/// the game's own reading of the player's bindings is what drives the map, HOTAS,
-/// keyboard, gamepad or anything else the player has set up, and the aircraft is
-/// zeroed in the same breath. Nothing has to guess at devices.</para>
+/// the game's own reading of the player's bindings is what drives the map and the
+/// aircraft is zeroed in the same breath, with nothing having to guess at
+/// devices.</para>
 ///
 /// <para><b>The map is moved in map metres.</b> Panning shifts which point of the
 /// theatre sits under your head; turning spins the model about that same point,
-/// because that is the pivot you are actually looking down. Both are cleared when
-/// the map closes, which makes close-and-reopen the recentre gesture.</para>
+/// because that is the pivot you are actually looking down; zooming changes how
+/// much world a metre of room is worth, about the same point. All three are
+/// cleared when the map closes, which makes close-and-reopen the recentre
+/// gesture.</para>
 /// </summary>
 internal static class WorldMapControls
 {
@@ -37,6 +47,23 @@ internal static class WorldMapControls
 
     /// <summary>How far the model is spun about the point under the head, in degrees.</summary>
     public static float Spin { get; private set; }
+
+    /// <summary>
+    /// How much closer the model has been pulled than the configured scale, as a
+    /// multiplier: 2 means twice the size and half the theatre in view.
+    /// </summary>
+    public static float Zoom { get; private set; } = 1f;
+
+    /// <summary>
+    /// Bounds on <see cref="Zoom"/>. Wide enough to go from the whole theatre on a
+    /// table to a single airfield at arm's length, and closed enough that a stick
+    /// left leaning cannot put you inside the terrain or lose the model entirely.
+    /// </summary>
+    private const float MinZoom = 0.25f;
+    private const float MaxZoom = 8f;
+
+    /// <summary>Doublings of the model's size per second at full stick.</summary>
+    private const float ZoomRate = 1.2f;
 
     private static bool _capturing;
 
@@ -49,43 +76,79 @@ internal static class WorldMapControls
         VrMapConfig.CaptureControls != null && VrMapConfig.CaptureControls.Value;
 
     /// <summary>
-    /// Called every frame the map is open, before the model is placed. Reads the
-    /// axes the game has already resolved from the player's own bindings.
+    /// The scale the model is actually drawn at: what the pilot configured,
+    /// divided by however far they have zoomed in since.
     /// </summary>
-    public static void Refresh(float mapScale)
+    public static float MapScale
+    {
+        get
+        {
+            var configured = VrMapConfig.Scale != null ? VrMapConfig.Scale.Value : 1200f;
+            return Mathf.Max(1f, configured / Mathf.Clamp(Zoom, MinZoom, MaxZoom));
+        }
+    }
+
+    /// <summary>
+    /// Called every frame the map is open, before the model is placed.
+    /// </summary>
+    public static void Refresh()
     {
         _capturing = true;
-        if (!Capturing) return;
 
-        var input = GameManager.playerInput;
-        if (input == null) return;
+        // The sticks work whether or not the map has the flight controls — they
+        // are not the aeroplane's and there is nothing to hand back.
+        var left = WorldMapStick.Left;
+        var right = WorldMapStick.Right;
 
-        var pitch = input.GetAxis("Pitch");
-        var roll = input.GetAxis("Roll");
-        var yaw = input.GetAxis("Yaw");
+        var pitch = -left.y;
+        var roll = left.x;
+        var yaw = right.x;
+        var zoom = right.y;
+
+        if (Capturing)
+        {
+            var input = GameManager.playerInput;
+            if (input != null)
+            {
+                pitch += input.GetAxis("Pitch");
+                roll += input.GetAxis("Roll");
+                yaw += input.GetAxis("Yaw");
+            }
+        }
+
+        var scale = MapScale;
 
         // Room metres per second times the scale is map metres per second, so the
         // map moves at the same apparent speed whatever it is shrunk by: at 1:1200
         // and 3 m/s the model slides past you at 3 m/s no matter how much theatre
         // that is.
         var pan = (VrMapConfig.PanSpeed != null ? VrMapConfig.PanSpeed.Value : 3f)
-                  * mapScale * Time.unscaledDeltaTime;
+                  * scale * Time.unscaledDeltaTime;
         var turn = (VrMapConfig.TurnSpeed != null ? VrMapConfig.TurnSpeed.Value : 45f)
                    * Time.unscaledDeltaTime;
 
-        // Pushing the stick forward sends the map away from you, which is the same
+        // Pushing forward sends the map away from you, which is the same
         // relationship a paper map has with your hands. Pitch reads positive when
-        // pulled, so it is negated.
+        // pulled, so it is negated on the way in.
         var forward = -pitch * pan;
-        var right = roll * pan;
+        var right2 = roll * pan;
 
         // Panning happens along the model's own axes, so "away" stays away after
         // the model has been spun.
         var spun = Quaternion.Euler(0f, -Spin, 0f);
-        var moved = spun * new Vector3(right, 0f, forward);
+        var moved = spun * new Vector3(right2, 0f, forward);
 
         Pan += new Vector2(moved.x, moved.z);
         Spin += yaw * turn;
+
+        // Geometric, not linear: a fixed number of doublings a second, so pulling
+        // the model in from the whole theatre and pushing it back out take the
+        // same time and neither end crawls.
+        if (Mathf.Abs(zoom) > 0f)
+        {
+            Zoom = Mathf.Clamp(
+                Zoom * Mathf.Pow(2f, ZoomRate * zoom * Time.unscaledDeltaTime), MinZoom, MaxZoom);
+        }
     }
 
     /// <summary>Give the controls back, and forget where the map was pushed to.</summary>
@@ -94,6 +157,7 @@ internal static class WorldMapControls
         _capturing = false;
         Pan = Vector2.zero;
         Spin = 0f;
+        Zoom = 1f;
     }
 
     /// <summary>

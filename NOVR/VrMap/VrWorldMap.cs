@@ -57,7 +57,7 @@ public class VrWorldMap : NOVRBehaviour
     private WorldMapPointer? _pointer;
 
     private WorldMapHaze? _haze;
-    private Transform? _room;
+    private bool _menuWasUp;
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
@@ -144,7 +144,8 @@ public class VrWorldMap : NOVRBehaviour
         }
 
         var open = VrMapConfig.Enabled != null && VrMapConfig.Enabled.Value &&
-                   VrMapConfig.Open != null && VrMapConfig.Open.Value;
+                   VrMapConfig.Open != null && VrMapConfig.Open.Value &&
+                   !MenuIsUp();
 
         // Before the early return, so the closed phase is timed too — the whole
         // point of the self test is the comparison between the two.
@@ -171,8 +172,9 @@ public class VrWorldMap : NOVRBehaviour
         var model = EnsureModel();
         if (model == null) return;
 
-        // Before the model is placed, because it is what decides where.
-        WorldMapControls.Refresh(Mathf.Max(1f, VrMapConfig.Scale.Value));
+        // Before the model is placed, because it is what decides where — and how
+        // big, since the sticks zoom as well as pan.
+        WorldMapControls.Refresh();
 
         Place(model);
         model.Root.SetActive(true);
@@ -182,23 +184,57 @@ public class VrWorldMap : NOVRBehaviour
         ReportOnce(model);
     }
 
+    /// <summary>
+    /// Whether the game is showing a menu, in which case the map stands down
+    /// until it goes away.
+    ///
+    /// <para><b>Why it yields rather than sharing the view.</b> The map wants the
+    /// whole world around you and takes what it needs to get it: the cursor is
+    /// driven from the middle of your view so you can point anywhere, the helmet
+    /// panels are hidden, the cockpit and the outside are culled and the stick is
+    /// taken off the aeroplane. A menu wants the opposite of all four — a cursor
+    /// amplified against a panel pinned in front of you, and everything else left
+    /// alone. Both at once is what a flight ran into after a crash: the spawn
+    /// screen came up with the map still open behind it, and the report was two
+    /// cursors, one of which would select map symbols and neither of which would
+    /// press "select airbase".</para>
+    ///
+    /// <para>This is a suspend and not a close: <c>Open</c> is left alone, so the
+    /// map is exactly where it was the moment the menu goes away, and the pilot
+    /// does not have to notice that anything happened. Everything the map holds is
+    /// given back through the ordinary <see cref="Hide"/> path, which is the same
+    /// one the toggle uses, so there is no second teardown to keep correct.</para>
+    /// </summary>
+    private bool MenuIsUp()
+    {
+        var up = NOVR.VrUi.Capture.MenuCaptureBackend.IsActive;
+        if (up == _menuWasUp) return up;
+
+        _menuWasUp = up;
+        if (VrMapConfig.Open != null && VrMapConfig.Open.Value)
+        {
+            Debug.Log(up
+                ? "[NOVR] World map: a menu is up — standing down until it closes."
+                : "[NOVR] World map: the menu has closed — back up.");
+        }
+
+        return up;
+    }
+
     private void RefreshIcons(WorldMapModel model)
     {
         var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
         var head = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
         if (room == null || head == null) return;
 
+        ApplyHaze(model, head.transform);
+
         if (VrMapConfig.Icons == null || !VrMapConfig.Icons.Value)
         {
-            _room = room;
-            ApplyHaze(head.transform);
             _iconLayer?.Clear();
             _iconLayer = null;
             return;
         }
-
-        _room = room;
-        ApplyHaze(head.transform);
 
         _iconLayer ??= new WorldMapIcons(room);
         _iconLayer.Refresh(
@@ -603,10 +639,15 @@ public class VrWorldMap : NOVRBehaviour
     /// the range set to 5 km and to 40 km, an eightfold change that should have
     /// been a white-out against a clear day, returned frames identical to a tenth
     /// of a grey level. So the air is geometry instead; see
-    /// <see cref="WorldMapHaze"/> for what it is made of and why the depth buffer
-    /// is the only thing it needs.</para>
+    /// <see cref="WorldMapHaze"/> for what it is made of, why it lies in flat
+    /// layers rather than wrapping round your head, and why the depth buffer is
+    /// the only thing it needs.</para>
+    ///
+    /// <para>Everything is handed over in map metres, because that is the frame
+    /// the layers live in: they are children of the model, so the scale, the
+    /// panning and the spin are already applied to them.</para>
     /// </summary>
-    private void ApplyHaze(Transform head)
+    private void ApplyHaze(WorldMapModel model, Transform head)
     {
         if (VrMapConfig.Haze == null || !VrMapConfig.Haze.Value)
         {
@@ -614,12 +655,13 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
-        var scale = Mathf.Max(1f, VrMapConfig.Scale.Value);
         var rangeKm = VrMapConfig.HazeRange != null ? VrMapConfig.HazeRange.Value : 40f;
         var strength = VrMapConfig.HazeStrength != null ? VrMapConfig.HazeStrength.Value : 0.85f;
+        var ceiling = VrMapConfig.HazeCeiling != null ? VrMapConfig.HazeCeiling.Value : 2500f;
 
-        _haze ??= new WorldMapHaze(_room ?? head.parent ?? head);
-        _haze.Refresh(head, rangeKm * 1000f / scale, HazeColour(), strength);
+        _haze ??= new WorldMapHaze();
+        _haze.Refresh(
+            model.Root.transform, head, model.MapSize, ceiling, rangeKm * 1000f, HazeColour(), strength);
     }
 
     /// <summary>
@@ -652,7 +694,7 @@ public class VrWorldMap : NOVRBehaviour
         var mount = Mount();
         if (room == null || head == null || mount == null) return;
 
-        var scale = 1f / Mathf.Max(1f, VrMapConfig.Scale.Value);
+        var scale = 1f / WorldMapControls.MapScale;
         var exaggeration = Mathf.Max(1f, VrMapConfig.ReliefExaggeration.Value);
         var modelScale = new Vector3(scale, scale * exaggeration, scale);
 
