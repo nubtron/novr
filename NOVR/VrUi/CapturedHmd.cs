@@ -18,6 +18,7 @@ public static class CapturedHmd
 {
     public static ConfigEntry<bool> Visor;
     public static ConfigEntry<float> VisorFieldOfView;
+    public static ConfigEntry<float> PanelShading;
     public static ConfigEntry<bool> GazeDesignator;
     public static ConfigEntry<bool> ViewIcons;
 
@@ -43,6 +44,22 @@ public static class CapturedHmd
                 + "spreads the HMD readouts across the whole screen; this is how much of your "
                 + "view that screen maps to.",
                 new AcceptableValueRange<float>(30f, 110f)));
+
+        PanelShading = config.Bind(
+            "Experimental",
+            "Captured HMD Panel Shading",
+            0.65f,
+            new ConfigDescription(
+                "How dark the backing behind the weapon readout, the tactical map and the HMD "
+                + "number boxes is — the flat game draws them over a translucent black panel with "
+                + "a soft edge, which the pilot needs to read green symbols against bright cloud. "
+                + "0 turns it off (symbols only, like a HUD combiner, which cannot darken "
+                + "anything); 0.65 is the flat game measured, which passes about a third of what "
+                + "is behind it. The number is in the flat game's units and is converted for the "
+                + "colour space this panel is composited in, so it means the same thing here as "
+                + "it does there. Only the helmet visor is shaded — the airframe HUD panel is "
+                + "combiner glass and stays purely additive. Takes effect immediately.",
+                new AcceptableValueRange<float>(0f, 1f)));
 
         GazeDesignator = config.Bind(
             "Experimental",
