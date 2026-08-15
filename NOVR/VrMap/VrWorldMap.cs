@@ -421,6 +421,7 @@ public class VrWorldMap : NOVRBehaviour
         var camera = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
         var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
         var mount = Mount();
+        ReportOrientations();
 
         Debug.Log(
             $"[NOVR] World map placed: root local={root.localPosition} scale={root.localScale.x:E3} " +
@@ -509,26 +510,64 @@ public class VrWorldMap : NOVRBehaviour
     /// attitude; <c>TrackUp</c> keeps only its heading; <c>NorthUp</c> is nothing
     /// at all, which is what makes it immovable.
     /// </summary>
-    private static Quaternion Turn(Transform mount)
+    /// <summary>
+    /// What each orientation would do to a handful of attitudes, including ones
+    /// the harness cannot fly. The interesting cases are all about roll: an
+    /// aircraft in a 60° bank on a heading of 090 must still give Track Up a clean
+    /// 090, and <c>eulerAngles.y</c> does not — which is why the heading comes off
+    /// the flattened nose instead. Inverted flight and a vertical climb are the
+    /// two that break naive versions of both.
+    /// </summary>
+    private static void ReportOrientations()
     {
-        var orientation = VrMapConfig.Orientation != null
-            ? VrMapConfig.Orientation.Value
-            : WorldMapOrientation.NorthUp;
+        if (VrMapConfig.SelfTest == null || !VrMapConfig.SelfTest.Value) return;
 
+        var cases = new (string Name, Quaternion Attitude)[]
+        {
+            ("level, heading 090", Quaternion.Euler(0f, 90f, 0f)),
+            ("60 deg bank, heading 090", Quaternion.Euler(0f, 90f, 60f)),
+            ("20 deg climb, 30 deg bank, heading 270", Quaternion.Euler(-20f, 270f, 30f)),
+            ("inverted, heading 180", Quaternion.Euler(0f, 180f, 180f)),
+            ("vertical climb, rolled to heading 045", Quaternion.Euler(-90f, 0f, 0f) * Quaternion.Euler(0f, 0f, 45f))
+        };
+
+        foreach (var (name, attitude) in cases)
+        {
+            // The heading the model ends up showing: undo the map's rotation and
+            // read where the aircraft's nose points on it.
+            var track = Turn(attitude, WorldMapOrientation.TrackUp);
+            var nose = track * (attitude * Vector3.forward);
+            var shown = Mathf.Atan2(nose.x, nose.z) * Mathf.Rad2Deg;
+
+            Debug.Log($"[NOVR] World map orientation, {name}: " +
+                      $"NorthUp {Turn(attitude, WorldMapOrientation.NorthUp).eulerAngles}, " +
+                      $"TrackUp {track.eulerAngles}, " +
+                      $"WorldFixed {Turn(attitude, WorldMapOrientation.WorldFixed).eulerAngles}; " +
+                      $"under TrackUp the nose points {shown:F1}° on the model " +
+                      $"(0 means straight away from you, and is the only right answer).");
+        }
+    }
+
+    private static Quaternion Turn(Transform mount) => Turn(
+        mount.rotation,
+        VrMapConfig.Orientation != null ? VrMapConfig.Orientation.Value : WorldMapOrientation.NorthUp);
+
+    private static Quaternion Turn(Quaternion attitude, WorldMapOrientation orientation)
+    {
         switch (orientation)
         {
             case WorldMapOrientation.WorldFixed:
-                return Quaternion.Inverse(mount.rotation);
+                return Quaternion.Inverse(attitude);
             case WorldMapOrientation.TrackUp:
                 // eulerAngles.y off a rotation with roll in it is not the heading;
                 // the flattened forward is, and it stays right upside down.
-                var forward = mount.forward;
+                var forward = attitude * Vector3.forward;
                 var flat = new Vector3(forward.x, 0f, forward.z);
                 if (flat.sqrMagnitude < 1e-6f)
                 {
                     // Pointing straight up or down: the nose says nothing about
                     // heading, so take it from where the top of the head faces.
-                    var up = -mount.up * Mathf.Sign(forward.y);
+                    var up = -(attitude * Vector3.up) * Mathf.Sign(forward.y);
                     flat = new Vector3(up.x, 0f, up.z);
                     if (flat.sqrMagnitude < 1e-6f) return Quaternion.identity;
                 }
