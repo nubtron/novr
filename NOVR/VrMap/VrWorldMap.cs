@@ -43,26 +43,7 @@ public class VrWorldMap : NOVRBehaviour
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
-    private readonly List<HiddenPanel> _hiddenPanels = new();
-
-    /// <summary>
-    /// A helmet element we faded out, and what it takes to put it back exactly.
-    /// </summary>
-    private readonly struct HiddenPanel
-    {
-        public HiddenPanel(CanvasGroup group, float alpha, bool added)
-        {
-            Group = group;
-            Alpha = alpha;
-            Added = added;
-        }
-
-        public readonly CanvasGroup Group;
-        public readonly float Alpha;
-
-        /// <summary>Whether the CanvasGroup is ours, and so ours to remove.</summary>
-        public readonly bool Added;
-    }
+    private readonly List<GameObject> _hiddenPanels = new();
 
     protected override void OnDisable()
     {
@@ -112,11 +93,14 @@ public class VrWorldMap : NOVRBehaviour
     ///
     /// <para>Found by the components they contain — <c>DynamicMap</c>,
     /// <c>WeaponStatus</c> — as the two direct children of the helmet rect that
-    /// own them, which is the same pair the panel spread moves. Faded with a
-    /// CanvasGroup rather than deactivated: <c>DynamicMap</c> is a scene
-    /// singleton with its own update running unit icons and waypoints, and
-    /// switching it off to hide it would stop work the pilot still wants
-    /// done.</para>
+    /// own them, which is the same pair the panel spread moves.</para>
+    ///
+    /// <para>Deactivated rather than faded. A CanvasGroup at alpha 0 took the
+    /// weapon readout out and left the tactical map drawing, so something under
+    /// the map does not inherit the group. Deactivating is also the state the
+    /// game itself uses for the map — <c>DynamicMap.EnableCanvas(false)</c> does
+    /// exactly this — so it is a supported thing to do to it rather than a trick
+    /// that happens to work.</para>
     /// </summary>
     private void HideHelmetPanels()
     {
@@ -133,15 +117,23 @@ public class VrWorldMap : NOVRBehaviour
 
         foreach (Transform child in hmd.transform)
         {
-            if (child.GetComponentInChildren<global::DynamicMap>(true) == null &&
-                child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
+            var what = child.GetComponentInChildren<global::DynamicMap>(true) != null ? "tactical map"
+                : child.GetComponentInChildren<WeaponStatus>(true) != null ? "weapon readout"
+                : null;
+            if (what == null) continue;
 
-            var group = child.GetComponent<CanvasGroup>();
-            var added = group == null;
-            if (added) group = child.gameObject.AddComponent<CanvasGroup>();
+            _hiddenPanels.Add(child.gameObject);
+            child.gameObject.SetActive(false);
+            Debug.Log($"[NOVR] World map: hid the helmet's {what} ('{child.name}').");
+        }
 
-            _hiddenPanels.Add(new HiddenPanel(group, group.alpha, added));
-            group.alpha = 0f;
+        if (_hiddenPanels.Count < 2)
+        {
+            Debug.LogWarning(
+                $"[NOVR] World map: expected to find the helmet's tactical map and weapon readout, " +
+                $"found {_hiddenPanels.Count}. Children of the helmet rect: " +
+                string.Join(", ", System.Linq.Enumerable.Select(
+                    System.Linq.Enumerable.Cast<Transform>(hmd.transform), c => c.name)));
         }
     }
 
@@ -150,9 +142,7 @@ public class VrWorldMap : NOVRBehaviour
         if (_hiddenPanels.Count == 0) return;
         foreach (var hidden in _hiddenPanels)
         {
-            if (hidden.Group == null) continue;
-            if (hidden.Added) Destroy(hidden.Group);
-            else hidden.Group.alpha = hidden.Alpha;
+            if (hidden != null) hidden.SetActive(true);
         }
 
         _hiddenPanels.Clear();
