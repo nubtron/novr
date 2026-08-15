@@ -30,6 +30,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> HideWorld;
     public static ConfigEntry<bool> HideHelmetPanels;
     public static ConfigEntry<bool> DebugMarker;
+    public static ConfigEntry<bool> SelfTest;
 
     public static void Bind(ConfigFile config)
     {
@@ -186,6 +187,19 @@ public static class VrMapConfig
             + "The rest of the helmet display — speed, altitude, bearing, horizon — stays, "
             + "because you are still flying. Both come back exactly as they were when you close "
             + "the map.");
+
+        SelfTest = config.Bind(
+            "Experimental",
+            "World Map Self Test",
+            false,
+            "Open and close the map on a timer and report what happened, instead of flying it "
+            + "yourself. Two things cannot be seen any other way: what the map costs — it logs "
+            + "mean, median, p95 and worst frame time for each state, so the open and closed "
+            + "numbers come from one flight rather than two — and whether closing it puts "
+            + "everything back, which it checks panel by panel and camera by camera and says so. "
+            + "The frame times are the game's own under whatever runtime is present, which is the "
+            + "cost of drawing the map and not the rate a headset is handed frames at. "
+            + "Diagnostic: it will take the map off you every few seconds.");
 
         DebugMarker = config.Bind(
             "Experimental",
