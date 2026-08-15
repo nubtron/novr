@@ -76,14 +76,26 @@ internal sealed class WorldMapModel
     public MapSettings Settings { get; }
     public WorldMapDetail Detail { get; }
 
+    /// <summary>Whether this model was built with a sea, so a change rebuilds it.</summary>
+    public bool HasSea { get; }
+
+    // Ours to destroy: the renderer's material is an instance, and the quad is
+    // generated. Destroying the GameObject alone leaks both.
+    private readonly Material? _seaMaterial;
+    private readonly Mesh? _seaMesh;
+
     /// <summary>Map extent in metres — the model's size before scaling.</summary>
     public Vector2 MapSize => Settings.MapSize;
 
-    private WorldMapModel(GameObject root, MapSettings settings, WorldMapDetail detail)
+    private WorldMapModel(
+        GameObject root, MapSettings settings, WorldMapDetail detail, Material? seaMaterial, Mesh? seaMesh)
     {
         Root = root;
         Settings = settings;
         Detail = detail;
+        HasSea = seaMaterial != null;
+        _seaMaterial = seaMaterial;
+        _seaMesh = seaMesh;
     }
 
     /// <summary>
@@ -149,6 +161,11 @@ internal sealed class WorldMapModel
             return null;
         }
 
+        Material? seaMaterial = null;
+        Mesh? seaMesh = null;
+        if (VrMapConfig.Sea == null || VrMapConfig.Sea.Value)
+            AddSea(root.transform, settings, out seaMaterial, out seaMesh);
+
         LayerHelper.SetLayerRecursive(root.transform, LayerHelper.GetVrUiLayer());
         root.SetActive(false);
 
@@ -157,7 +174,7 @@ internal sealed class WorldMapModel
             $"({ground} ground, {skippedBuildings} building(s) left out), " +
             $"map {settings.MapSize.x:F0} x {settings.MapSize.y:F0} m.");
 
-        return new WorldMapModel(root, settings, detail);
+        return new WorldMapModel(root, settings, detail, seaMaterial, seaMesh);
     }
 
     /// <summary>
@@ -224,8 +241,89 @@ internal sealed class WorldMapModel
         renderer.lightmapScaleOffset = source.lightmapScaleOffset;
     }
 
+    /// <summary>
+    /// One quad of sea under the whole model.
+    ///
+    /// <para>The game's water is not part of the map prefab and cannot be
+    /// cloned: it is a single plane owned by <c>LevelInfo</c> that is moved to
+    /// sit under the camera every frame, with its shader reading the ocean
+    /// textures by world position. Nothing about that survives being shrunk. So
+    /// the model gets its own sea — the map's own <c>OceanBasecolor</c>, which
+    /// is a picture of the whole map's water, stretched once across it. Without
+    /// this the model has no coastline: the ground simply stops and you see
+    /// whatever is behind the model through the gap.</para>
+    ///
+    /// <para>Drawn in the transparent queue with no depth write, so terrain in
+    /// front of it hides it exactly as it should and it fills only the water.</para>
+    /// </summary>
+    private static void AddSea(Transform root, MapSettings settings, out Material? material, out Mesh? mesh)
+    {
+        material = null;
+        mesh = null;
+
+        var texture = settings.OceanBasecolor;
+        if (texture == null)
+        {
+            Debug.LogWarning($"[NOVR] World map: '{settings.name}' has no ocean texture; the model gets no sea.");
+            return;
+        }
+
+        var shader = FindShader("Sprites/Default", "UI/Default", "Unlit/Texture", "Universal Render Pipeline/Unlit");
+        if (shader == null)
+        {
+            Debug.LogError("[NOVR] World map: found none of the stock textured shaders; the model gets no sea.");
+            return;
+        }
+
+        var halfX = settings.MapSize.x * 0.5f;
+        var halfZ = settings.MapSize.y * 0.5f;
+
+        mesh = new Mesh { name = "NOVR World Map Sea" };
+        mesh.vertices = new[]
+        {
+            new Vector3(-halfX, 0f, -halfZ), new Vector3(halfX, 0f, -halfZ),
+            new Vector3(halfX, 0f, halfZ), new Vector3(-halfX, 0f, halfZ),
+        };
+        mesh.uv = new[] { new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(0f, 1f) };
+        // White, because the stock textured shaders multiply by vertex colour
+        // and a mesh without one is not reliably white.
+        mesh.colors = new[] { Color.white, Color.white, Color.white, Color.white };
+        // Both windings: whichever shader we ended up with may or may not cull.
+        mesh.triangles = new[] { 0, 1, 2, 0, 2, 3, 2, 1, 0, 3, 2, 0 };
+        mesh.RecalculateBounds();
+
+        var go = new GameObject("Sea");
+        go.transform.SetParent(root, false);
+        go.AddComponent<MeshFilter>().sharedMesh = mesh;
+
+        var renderer = go.AddComponent<MeshRenderer>();
+        material = new Material(shader) { mainTexture = texture };
+        renderer.material = material;
+        renderer.shadowCastingMode = ShadowCastingMode.Off;
+        renderer.receiveShadows = false;
+        renderer.lightProbeUsage = LightProbeUsage.Off;
+        renderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
+
+        Debug.Log(
+            $"[NOVR] World map: sea from '{texture.name}' ({texture.width}x{texture.height}) " +
+            $"on shader '{shader.name}'.");
+    }
+
+    private static Shader? FindShader(params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var shader = Shader.Find(name);
+            if (shader != null) return shader;
+        }
+
+        return null;
+    }
+
     public void Destroy()
     {
         if (Root != null) Object.Destroy(Root);
+        if (_seaMaterial != null) Object.Destroy(_seaMaterial);
+        if (_seaMesh != null) Object.Destroy(_seaMesh);
     }
 }

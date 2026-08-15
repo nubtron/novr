@@ -39,7 +39,20 @@ public class VrWorldMap : NOVRBehaviour
     private const int CockpitLayers = (1 << (int)LayerHelper.Layers.Cockpit)
                                       | (1 << (int)LayerHelper.Layers.CockpitAndExternal);
 
+    /// <summary>
+    /// The real world outside the aircraft. Sky, sun and post-processing are
+    /// deliberately not in here — taking those would leave the model floating in
+    /// black, and the point is to be somewhere, just not in two places at once.
+    /// </summary>
+    private const int WorldLayers = (1 << (int)LayerHelper.Layers.Default)
+                                    | (1 << (int)LayerHelper.Layers.Water)
+                                    | (1 << (int)LayerHelper.Layers.Statics)
+                                    | (1 << (int)LayerHelper.Layers.Effects)
+                                    | (1 << (int)LayerHelper.Layers.Ship)
+                                    | (1 << (int)LayerHelper.Layers.ExclusionZones);
+
     private WorldMapModel? _model;
+    private WorldMapIcons? _iconLayer;
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
@@ -99,6 +112,8 @@ public class VrWorldMap : NOVRBehaviour
     {
         ShowCockpit();
         ShowHelmetPanels();
+        _iconLayer?.Clear();
+        _iconLayer = null;
         if (_marker != null) Destroy(_marker);
         _marker = null;
         _model?.Destroy();
@@ -123,9 +138,30 @@ public class VrWorldMap : NOVRBehaviour
 
         Place(model);
         model.Root.SetActive(true);
+        RefreshIcons(model);
         HideCockpit();
         HideHelmetPanels();
         ReportOnce(model);
+    }
+
+    private void RefreshIcons(WorldMapModel model)
+    {
+        var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
+        var head = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
+        if (room == null || head == null) return;
+
+        if (VrMapConfig.Icons == null || !VrMapConfig.Icons.Value)
+        {
+            _iconLayer?.Clear();
+            _iconLayer = null;
+            return;
+        }
+
+        _iconLayer ??= new WorldMapIcons(room);
+        _iconLayer.Refresh(
+            model.Root.transform,
+            head.transform,
+            Mathf.Max(0.01f, VrMapConfig.IconSize.Value));
     }
 
     /// <summary>
@@ -242,6 +278,7 @@ public class VrWorldMap : NOVRBehaviour
         Debug.Log(
             $"[NOVR] World map placed: root local={root.localPosition} scale={root.localScale.x:E3} " +
             $"layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
+            $"icons={(_iconLayer == null ? "off" : _iconLayer.Count + " of " + UnitRegistry.allUnits.Count + " units")} " +
             $"datum={(global::Datum.originPosition)}");
         Debug.Log(
             "[NOVR] World map frames: " +
@@ -268,11 +305,13 @@ public class VrWorldMap : NOVRBehaviour
         }
 
         var detail = VrMapConfig.Detail != null ? VrMapConfig.Detail.Value : WorldMapDetail.Surfaces;
+        var sea = VrMapConfig.Sea == null || VrMapConfig.Sea.Value;
 
         // Rebuild when the mission moves to a different map — the clones hold
         // the old map's meshes, and the old map's prefab has been destroyed —
         // or when the pilot asks for a different amount of it.
-        if (_model != null && (_model.Root == null || _model.Settings != settings || _model.Detail != detail))
+        if (_model != null && (_model.Root == null || _model.Settings != settings ||
+                               _model.Detail != detail || _model.HasSea != sea))
         {
             _model.Destroy();
             _model = null;
@@ -284,6 +323,7 @@ public class VrWorldMap : NOVRBehaviour
     private void Hide()
     {
         if (_model?.Root != null) _model.Root.SetActive(false);
+        _iconLayer?.SetVisible(false);
         ShowCockpit();
         ShowHelmetPanels();
         _reported = false;
@@ -345,14 +385,19 @@ public class VrWorldMap : NOVRBehaviour
     }
 
     /// <summary>
-    /// Take the cockpit out of every camera that draws the aircraft, remembering
-    /// what each had so it can be given back exactly. Culling masks rather than
-    /// disabling the cameras: the cockpit and post-processing passes do other
-    /// work, and a mask is a change that can be undone precisely.
+    /// Take what the map is meant to replace out of every camera that draws the
+    /// aircraft, remembering what each had so it can be given back exactly.
+    /// Culling masks rather than disabling the cameras: the cockpit and
+    /// post-processing passes do other work, and a mask is a change that can be
+    /// undone precisely.
     /// </summary>
     private void HideCockpit()
     {
-        if (VrMapConfig.HideCockpit == null || !VrMapConfig.HideCockpit.Value)
+        var hide = 0;
+        if (VrMapConfig.HideCockpit != null && VrMapConfig.HideCockpit.Value) hide |= CockpitLayers;
+        if (VrMapConfig.HideWorld != null && VrMapConfig.HideWorld.Value) hide |= WorldLayers;
+
+        if (hide == 0)
         {
             ShowCockpit();
             return;
@@ -364,7 +409,7 @@ public class VrWorldMap : NOVRBehaviour
         foreach (var camera in mount.GetComponentsInChildren<Camera>(true))
         {
             if (!_maskedCameras.ContainsKey(camera)) _maskedCameras[camera] = camera.cullingMask;
-            camera.cullingMask &= ~CockpitLayers;
+            camera.cullingMask = _maskedCameras[camera] & ~hide;
         }
     }
 
