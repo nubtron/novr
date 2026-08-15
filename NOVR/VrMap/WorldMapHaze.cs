@@ -318,11 +318,9 @@ internal sealed class WorldMapHaze
     }
 
     /// <summary>
-    /// One horizontal grid the size of the map, wound both ways — whichever
-    /// shader we ended up with may or may not cull, and a layer that vanished
-    /// when you looked at it from below would be worse than a wasted triangle.
-    /// It is a grid rather than a quad only so that the distance falloff has
-    /// somewhere to live; see <see cref="SetGradient"/>.
+    /// One horizontal grid the size of the map. It is a grid rather than a quad
+    /// only so that the distance falloff has somewhere to live; see
+    /// <see cref="SetGradient"/>.
     /// </summary>
     private Mesh BuildGrid(Vector2 mapSize)
     {
@@ -344,7 +342,16 @@ internal sealed class WorldMapHaze
             }
         }
 
-        var triangles = new int[Cells * Cells * 12];
+        // One winding, and this matters more than it looks. Sprites/Default has
+        // `Cull Off` written into the shader, which no material property can
+        // override — so a face is drawn whichever side you are on, and a mesh
+        // wound both ways is drawn *twice*. Every layer's air was being crossed
+        // twice over: measured, the ground 12 km out came back 0.76 lost against
+        // the 0.42 the arithmetic asked for, and the far edge saturated long
+        // before the range. The both-ways winding was defensive — "whichever
+        // shader we ended up with may or may not cull" — and it was the wrong
+        // defence against a shader that culls nothing.
+        var triangles = new int[Cells * Cells * 6];
         var t = 0;
         for (var z = 0; z < Cells; z++)
         {
@@ -356,8 +363,6 @@ internal sealed class WorldMapHaze
                 var d = c + 1;
                 triangles[t++] = a; triangles[t++] = c; triangles[t++] = d;
                 triangles[t++] = a; triangles[t++] = d; triangles[t++] = b;
-                triangles[t++] = d; triangles[t++] = c; triangles[t++] = a;
-                triangles[t++] = b; triangles[t++] = d; triangles[t++] = a;
             }
         }
 
