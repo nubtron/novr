@@ -61,6 +61,7 @@ public class HmdVisorBackend : NOVRBehaviour
 
     private readonly List<SpreadTarget> _spreadTargets = new();
     private bool _loggedSpread;
+    private bool _rollUnshaded;
 
     public static bool IsVisorActive => _instance != null && _instance._active;
 
@@ -365,6 +366,7 @@ public class HmdVisorBackend : NOVRBehaviour
         }
 
         ShadeVisor();
+        UnshadeRollIndicator();
         SpreadPanels(fovDegrees);
 
         var aspect = (float)_targetWidth / _targetHeight;
@@ -467,6 +469,58 @@ public class HmdVisorBackend : NOVRBehaviour
                 : canvasDelta;
             target.Rect.localPosition = target.BasePosition + localDelta;
         }
+    }
+
+    /// <summary>
+    /// Take the roll indicator out of the darkening mask.
+    ///
+    /// <para>The shade quad is masked by the capture's own alpha channel, which is
+    /// exactly right for the two large backings it was built for — they are black
+    /// sprites whose alpha <i>is</i> the mask — and it sweeps up anything else
+    /// that writes alpha. The HMD's readouts do. Measured off the visor capture:
+    /// the speed and altitude boxes write only their border, and the roll box
+    /// (<c>horizon</c>, the one showing bank in degrees) writes a filled
+    /// rectangle. So that one comes out as a dark slab in the middle of the view
+    /// where the others come out as a thin outline.</para>
+    ///
+    /// <para>The fix is to stop it writing alpha rather than to stop it drawing.
+    /// Its fill is black, so it contributes nothing to the colour and all it can
+    /// do is subtract; zeroing the alpha of a black graphic removes the darkening
+    /// and leaves every visible pixel where it was. Anything under it that is not
+    /// black is left alone — that is the symbology, and it is drawn from its
+    /// colour, not its alpha.</para>
+    /// </summary>
+    private void UnshadeRollIndicator()
+    {
+        if (_rollUnshaded) return;
+
+        var hmd = SceneSingleton<HeadMountedDisplay>.i;
+        if (hmd == null) return;
+
+        var horizon = HarmonyLib.AccessTools
+            .Field(typeof(HeadMountedDisplay), "horizon")?.GetValue(hmd) as Component;
+        if (horizon == null) return;
+
+        _rollUnshaded = true;
+
+        var cleared = 0;
+        var kept = 0;
+        foreach (var graphic in horizon.transform.GetComponentsInChildren<Graphic>(true))
+        {
+            var colour = graphic.color;
+            var black = Mathf.Max(colour.r, Mathf.Max(colour.g, colour.b)) < 0.15f;
+            if (!black || colour.a <= 0f)
+            {
+                kept++;
+                continue;
+            }
+
+            graphic.color = new Color(colour.r, colour.g, colour.b, 0f);
+            cleared++;
+        }
+
+        Debug.Log("[NOVR] HMD visor: roll indicator taken out of the darkening mask — " +
+                  $"{cleared} black graphic(s) set to zero alpha, {kept} left alone.");
     }
 
     /// <summary>

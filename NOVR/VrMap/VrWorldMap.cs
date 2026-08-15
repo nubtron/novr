@@ -55,6 +55,14 @@ public class VrWorldMap : NOVRBehaviour
     private WorldMapIcons? _iconLayer;
     private WorldMapSelfTest? _selfTest;
     private WorldMapPointer? _pointer;
+
+    private bool _hazeSaved;
+    private bool _hazeWas;
+    private FogMode _hazeModeWas;
+    private Color _hazeColourWas;
+    private float _hazeStartWas;
+    private float _hazeEndWas;
+    private float _hazeDensityWas;
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
@@ -170,6 +178,7 @@ public class VrWorldMap : NOVRBehaviour
         WorldMapControls.Refresh(Mathf.Max(1f, VrMapConfig.Scale.Value));
 
         Place(model);
+        ApplyHaze();
         model.Root.SetActive(true);
         RefreshIcons(model);
         HideCockpit();
@@ -479,6 +488,7 @@ public class VrWorldMap : NOVRBehaviour
         // back on the frame the map goes away, not on the frame the rest of the
         // teardown happens to finish.
         WorldMapControls.Release();
+        RestoreHaze();
         ShowCockpit();
         ShowHelmetPanels();
         _reported = false;
@@ -582,6 +592,111 @@ public class VrWorldMap : NOVRBehaviour
             default:
                 return Quaternion.identity;
         }
+    }
+
+    /// <summary>
+    /// Air, so that distance on the model looks like distance.
+    ///
+    /// <para><b>Why the map looks flat without it.</b> Everything that tells you
+    /// how far away a hill is on a real view — haze thickening, contrast falling,
+    /// the far ground going blue — is the atmosphere between you and it, and there
+    /// are only tens of metres of it here. The model is the theatre at 1:1200,
+    /// which means 40 km of air has been shrunk to 33, and 33 metres of air does
+    /// nothing. Stereo alone carries the near part of the model and gives up on
+    /// the far part, so the far part reads as a painted backdrop. The relief is
+    /// there; the cue that it is receding is not.</para>
+    ///
+    /// <para><b>So put the air back at the model's scale.</b> The range is set in
+    /// map kilometres, not in metres of room, because that is the quantity with a
+    /// meaning: "the far side of a 40 km view is fully hazed" stays true when the
+    /// map is rescaled, and 33 m of fog does not. The colour is the game's own
+    /// distance haze if it has one, which makes the model recede into the same
+    /// air the real theatre does.</para>
+    ///
+    /// <para><b>Only with the real world hidden.</b> Fog is a global setting, and
+    /// these distances are absurd for a world you can see 40 km across — it would
+    /// be a wall at arm's length. With <c>World Map Hide World</c> off, this stays
+    /// off too, because the alternative is quietly ruining the view outside.</para>
+    ///
+    /// <para>The symbols are unaffected: they are drawn with UI shaders, which do
+    /// not fog. That is right rather than lucky — an annotation is not in the air,
+    /// and a unit marker that faded with distance would be telling you something
+    /// false about how well you can see it.</para>
+    /// </summary>
+    private void ApplyHaze()
+    {
+        var wanted = VrMapConfig.Haze != null && VrMapConfig.Haze.Value &&
+                     VrMapConfig.HideWorld != null && VrMapConfig.HideWorld.Value;
+
+        if (!wanted)
+        {
+            RestoreHaze();
+            return;
+        }
+
+        if (!_hazeSaved)
+        {
+            _hazeSaved = true;
+            _hazeWas = RenderSettings.fog;
+            _hazeModeWas = RenderSettings.fogMode;
+            _hazeColourWas = RenderSettings.fogColor;
+            _hazeStartWas = RenderSettings.fogStartDistance;
+            _hazeEndWas = RenderSettings.fogEndDistance;
+            _hazeDensityWas = RenderSettings.fogDensity;
+
+            Debug.Log($"[NOVR] World map haze: the scene had fog={_hazeWas} mode={_hazeModeWas} " +
+                      $"colour={_hazeColourWas} start={_hazeStartWas:F0} end={_hazeEndWas:F0} " +
+                      $"density={_hazeDensityWas:F5}.");
+        }
+
+        var scale = Mathf.Max(1f, VrMapConfig.Scale.Value);
+        var rangeKm = VrMapConfig.HazeRange != null ? VrMapConfig.HazeRange.Value : 40f;
+        var end = rangeKm * 1000f / scale;
+
+        RenderSettings.fog = true;
+        RenderSettings.fogMode = FogMode.Linear;
+        RenderSettings.fogColor = HazeColour();
+        // Nothing within a fifth of the range is hazed at all, so the ground under
+        // you stays as crisp as it is now and only the distance changes.
+        RenderSettings.fogStartDistance = end * 0.2f;
+        RenderSettings.fogEndDistance = end;
+    }
+
+    /// <summary>
+    /// The game's own distance haze, if it has one worth borrowing. A scene with
+    /// fog off usually still carries the colour its artist set; black is the
+    /// engine default and means nobody set anything, so that one is replaced
+    /// rather than trusted.
+    /// </summary>
+    private static Color HazeColour()
+    {
+        var scene = RenderSettings.fogColor;
+        var brightest = Mathf.Max(scene.r, Mathf.Max(scene.g, scene.b));
+        if (brightest > 0.2f) return scene;
+
+        // Pale, slightly blue, and lighter than the ground: aerial perspective is
+        // the sky getting in the way, so the haze is the sky's colour.
+        return new Color(0.72f, 0.82f, 0.90f, 1f);
+    }
+
+    private void RestoreHaze()
+    {
+        if (!_hazeSaved) return;
+        _hazeSaved = false;
+
+        RenderSettings.fog = _hazeWas;
+        RenderSettings.fogMode = _hazeModeWas;
+        RenderSettings.fogColor = _hazeColourWas;
+        RenderSettings.fogStartDistance = _hazeStartWas;
+        RenderSettings.fogEndDistance = _hazeEndWas;
+        RenderSettings.fogDensity = _hazeDensityWas;
+
+        // Said out loud, like the camera and panel restores, because a setting put
+        // back wrong is invisible until something else looks wrong much later.
+        Debug.Log($"[NOVR] World map haze: scene fog put back to {(_hazeWas ? "on" : "off")} " +
+                  $"({RenderSettings.fogMode}, start {RenderSettings.fogStartDistance:F0}, " +
+                  $"end {RenderSettings.fogEndDistance:F0}) — " +
+                  $"{(RenderSettings.fog == _hazeWas ? "as it was" : "NOT as it was")}.");
     }
 
     private void Place(WorldMapModel model)
