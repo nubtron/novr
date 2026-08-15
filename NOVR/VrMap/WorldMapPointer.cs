@@ -43,12 +43,15 @@ internal sealed class WorldMapPointer
     /// <summary>Extra tolerance on top of a symbol's own size, for a hand that is not a mouse.</summary>
     private const float ExtraReachDegrees = 0.75f;
 
-    private const int RingSegments = 36;
+    private const float RingRectSize = 100f;
     private const float GroundRingRadius = 0.05f;
 
     private readonly Transform _room;
     private GameObject? _ring;
-    private LineRenderer? _ringLine;
+    private UnityEngine.UI.Image? _ringImage;
+    private Sprite? _ringSprite;
+    private Texture2D? _ringTexture;
+    private Material? _ringMaterial;
     private MapIcon? _hovered;
     private bool _triggerDown;
     private bool _sweptOnce;
@@ -225,42 +228,39 @@ internal sealed class WorldMapPointer
         else map.SelectIcon(unitIcon.unit);
     }
 
+    /// <summary>
+    /// Put the reticle on a point and face it at the head.
+    ///
+    /// <para>It is an <c>Image</c> on a world-space canvas rather than a
+    /// <c>LineRenderer</c>, which is the second thing tried. The line was drawn —
+    /// right place, right radius, right layer, right colour, all of it in the log
+    /// — and never appeared, because a built-in UI shader on a plain renderer is
+    /// not a path URP draws. The symbols already prove this path works, depth
+    /// rule included, so the reticle uses it instead of a second one.</para>
+    /// </summary>
     private void DrawRing(Vector3 centre, float radius)
     {
         EnsureRing();
-        if (_ringLine == null || _ring == null) return;
+        if (_ring == null || _ringImage == null) return;
 
         _ring.SetActive(true);
 
         var camera = APIBus.CockpitHudCamera;
         var toHead = camera != null ? camera.transform.position - centre : Vector3.up;
 
-        // Width in angle, not in metres. A fixed 4 mm line is about one pixel at
-        // the far side of a 68 m model — drawn, and invisible, which is exactly
-        // what the first version did.
-        _ringLine.widthMultiplier = Mathf.Clamp(toHead.magnitude * 0.008f, 0.004f, 0.2f);
-
-        var forward = toHead.sqrMagnitude > 1e-6f ? toHead.normalized : Vector3.up;
-        var right = Vector3.Cross(forward, Vector3.up);
-        if (right.sqrMagnitude < 1e-6f) right = Vector3.Cross(forward, Vector3.forward);
-        right.Normalize();
-        var up = Vector3.Cross(right, forward);
-
-        for (var i = 0; i < RingSegments; i++)
-        {
-            var angle = i / (float)(RingSegments - 1) * Mathf.PI * 2f;
-            _ringLine.SetPosition(i, centre + (right * Mathf.Cos(angle) + up * Mathf.Sin(angle)) * radius);
-        }
+        var t = _ringImage.transform;
+        t.position = centre;
+        t.localScale = Vector3.one * (radius * 2f / RingRectSize);
+        if (toHead.sqrMagnitude > 1e-6f) t.rotation = Quaternion.LookRotation(-toHead, Vector3.up);
 
         if (_ringLogged) return;
         _ringLogged = true;
         Debug.Log(
             $"[NOVR] World map pointer ring: centre={centre} radius={radius:F3}m " +
-            $"width={_ringLine.widthMultiplier:F3}m distance={toHead.magnitude:F2}m " +
-            $"layer={_ring.layer} active={_ring.activeInHierarchy} " +
-            $"material={(_ringLine.material == null ? "<none>" : _ringLine.material.shader.name)} " +
-            $"colour={_ringLine.startColor} points={_ringLine.positionCount} " +
-            $"first={_ringLine.GetPosition(0)}");
+            $"distance={toHead.magnitude:F2}m layer={_ringImage.gameObject.layer} " +
+            $"active={_ringImage.gameObject.activeInHierarchy} " +
+            $"material={(_ringImage.material == null ? "<none>" : _ringImage.material.shader.name)} " +
+            $"sprite={(_ringImage.sprite == null ? "<none>" : _ringImage.sprite.name)}");
     }
 
     private void EnsureRing()
@@ -269,35 +269,61 @@ internal sealed class WorldMapPointer
 
         _ring = new GameObject("NOVR World Map Pointer");
         _ring.transform.SetParent(_room, false);
-        _ring.layer = (int)LayerHelper.GetVrUiLayer();
 
-        _ringLine = _ring.AddComponent<LineRenderer>();
-        _ringLine.useWorldSpace = true;
-        _ringLine.positionCount = RingSegments;
-        _ringLine.startWidth = 0.004f;
-        _ringLine.endWidth = 0.004f;
-        _ringLine.startColor = new Color(0.2f, 0.9f, 1f, 0.9f);
-        _ringLine.endColor = new Color(0.2f, 0.9f, 1f, 0.9f);
-        _ringLine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-        _ringLine.receiveShadows = false;
+        var canvas = _ring.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.worldCamera = APIBus.CockpitHudCamera;
+        ((RectTransform)_ring.transform).sizeDelta = new Vector2(RingRectSize, RingRectSize);
+
+        var go = new GameObject("Ring");
+        go.transform.SetParent(_ring.transform, false);
+        _ringImage = go.AddComponent<UnityEngine.UI.Image>();
+        _ringImage.raycastTarget = false;
+        _ringImage.color = new Color(0.2f, 0.9f, 1f, 0.95f);
+        ((RectTransform)go.transform).sizeDelta = new Vector2(RingRectSize, RingRectSize);
+        _ringImage.sprite = RingSprite();
 
         // Over the model, not into it — the same rule the symbols follow, and for
-        // the same reason: a reticle that a ridge can hide is a reticle you
-        // cannot use. Missing this is why the first ring never appeared. The
-        // airbase it was drawn around sits in a valley past a ridge and is itself
-        // only visible because its symbol ignores depth; the ring, which did not,
-        // was behind the hill in every frame.
+        // the same reason: a reticle a ridge can hide is a reticle you cannot use.
         var shader = Shader.Find("UI/Default");
         if (shader != null)
         {
-            var material = new Material(shader) { name = "NOVR World Map Pointer" };
-            material.SetInt("unity_GUIZTestMode", (int)UnityEngine.Rendering.CompareFunction.Always);
-            _ringLine.material = material;
-            return;
+            _ringMaterial = new Material(shader) { name = "NOVR World Map Pointer" };
+            _ringMaterial.SetInt("unity_GUIZTestMode", (int)UnityEngine.Rendering.CompareFunction.Always);
+            _ringImage.material = _ringMaterial;
         }
 
-        var fallback = Shader.Find("Sprites/Default");
-        if (fallback != null) _ringLine.material = new Material(fallback);
+        LayerHelper.SetLayerRecursive(_ring.transform, LayerHelper.GetVrUiLayer());
+    }
+
+    /// <summary>An annulus, drawn once, because nothing in the game ships one.</summary>
+    private Sprite RingSprite()
+    {
+        if (_ringSprite != null) return _ringSprite;
+
+        const int size = 128;
+        const float outer = 62f;
+        const float inner = 52f;
+        _ringTexture = new Texture2D(size, size, TextureFormat.RGBA32, false) { name = "NOVR Ring" };
+        var pixels = new Color32[size * size];
+        var centre = (size - 1) * 0.5f;
+
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var distance = Mathf.Sqrt((x - centre) * (x - centre) + (y - centre) * (y - centre));
+                // One texel of feather on each edge, so the ring does not crawl.
+                var alpha = Mathf.Clamp01(Mathf.Min(outer - distance, distance - inner));
+                pixels[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255f));
+            }
+        }
+
+        _ringTexture.SetPixels32(pixels);
+        _ringTexture.Apply();
+        _ringSprite = Sprite.Create(_ringTexture, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f));
+        _ringSprite.name = "NOVR Ring";
+        return _ringSprite;
     }
 
     public void Hide()
@@ -309,8 +335,14 @@ internal sealed class WorldMapPointer
     public void Destroy()
     {
         if (_ring != null) Object.Destroy(_ring);
+        if (_ringMaterial != null) Object.Destroy(_ringMaterial);
+        if (_ringSprite != null) Object.Destroy(_ringSprite);
+        if (_ringTexture != null) Object.Destroy(_ringTexture);
         _ring = null;
-        _ringLine = null;
+        _ringImage = null;
+        _ringMaterial = null;
+        _ringSprite = null;
+        _ringTexture = null;
     }
 
     /// <summary>
