@@ -241,7 +241,7 @@ internal sealed class WorldMapIcons
             _inventory.Add($"{placed.Key.name} ({kind}, sprite '{sprite}', " +
                            $"{placed.Value.transform.localScale.x * IconRectSize:F2}m, " +
                            $"map {at.x:F0},{at.y:F0},{at.z:F0}, {OnScreen(placed.Value.transform)}" +
-                           $", {Coverage(placed.Value.sprite)})");
+                           $", drawn {placed.Value.color}, {Coverage(placed.Value.sprite)})");
         }
 
         var mount = APIBus.MainCamera != null ? APIBus.MainCamera.transform : null;
