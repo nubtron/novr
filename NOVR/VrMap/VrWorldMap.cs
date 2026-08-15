@@ -53,6 +53,7 @@ public class VrWorldMap : NOVRBehaviour
 
     private WorldMapModel? _model;
     private WorldMapIcons? _iconLayer;
+    private WorldMapSelfTest? _selfTest;
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
@@ -133,7 +134,17 @@ public class VrWorldMap : NOVRBehaviour
             VrMapConfig.Open.Value = !VrMapConfig.Open.Value;
         }
 
-        if (VrMapConfig.Enabled == null || !VrMapConfig.Enabled.Value || !VrMapConfig.Open.Value)
+        var open = VrMapConfig.Enabled != null && VrMapConfig.Enabled.Value &&
+                   VrMapConfig.Open != null && VrMapConfig.Open.Value;
+
+        // Before the early return, so the closed phase is timed too — the whole
+        // point of the self test is the comparison between the two.
+        if (VrMapConfig.SelfTest != null && VrMapConfig.SelfTest.Value)
+        {
+            (_selfTest ??= new WorldMapSelfTest()).Tick(open);
+        }
+
+        if (!open)
         {
             Hide();
             return;
@@ -298,7 +309,58 @@ public class VrWorldMap : NOVRBehaviour
         _helmetTaken = false;
         if (_hiddenPanels.Count == 0) return;
         foreach (var panel in _hiddenPanels) panel.Restore();
+        VerifyRestored();
         _hiddenPanels.Clear();
+    }
+
+    /// <summary>
+    /// Say, on the frame the map closes, whether everything it took is actually
+    /// back — each panel in the state it was found in, and each camera drawing
+    /// the layers it was drawing.
+    ///
+    /// <para>The restore path is symmetric in code, which is exactly the kind of
+    /// thing that is believed rather than checked. It is checked here because
+    /// the failure is silent and permanent: a mask left masked means the world
+    /// never comes back, and nothing in the frame says why.</para>
+    /// </summary>
+    private void VerifyRestored()
+    {
+        if (VrMapConfig.SelfTest == null || !VrMapConfig.SelfTest.Value) return;
+
+        var wrong = 0;
+        foreach (var panel in _hiddenPanels)
+        {
+            var back = panel.Component != null
+                ? panel.Component.enabled == panel.WasEnabled
+                : panel.Go != null && panel.Go.activeSelf == panel.WasActive;
+            if (back) continue;
+            wrong++;
+            Debug.LogWarning($"[NOVR] World map self test: '{panel.Go?.name}' did not come back.");
+        }
+
+        Debug.Log($"[NOVR] World map self test: closed — {_hiddenPanels.Count - wrong} of " +
+                  $"{_hiddenPanels.Count} panel(s) back, icon layer " +
+                  $"{(_iconLayer == null ? "gone" : "hidden")}.");
+    }
+
+    /// <summary>
+    /// The same check for the cameras, run before their masks are forgotten:
+    /// every layer this map took away is being drawn again.
+    /// </summary>
+    private void VerifyCameras()
+    {
+        if (VrMapConfig.SelfTest == null || !VrMapConfig.SelfTest.Value) return;
+
+        var wrong = 0;
+        var taken = CockpitLayers | WorldLayers;
+        foreach (var camera in _maskedCameras)
+        {
+            if (camera.Key == null) continue;
+            if ((camera.Key.cullingMask & taken) != (camera.Value & taken)) wrong++;
+        }
+
+        Debug.Log($"[NOVR] World map self test: {_maskedCameras.Count - wrong} of " +
+                  $"{_maskedCameras.Count} camera(s) drawing the layers they were.");
     }
 
     /// <summary>
@@ -466,6 +528,7 @@ public class VrWorldMap : NOVRBehaviour
             if (masked.Key != null) masked.Key.cullingMask = masked.Value;
         }
 
+        VerifyCameras();
         _maskedCameras.Clear();
     }
 
