@@ -27,6 +27,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Sea;
     public static ConfigEntry<bool> Haze;
     public static ConfigEntry<float> HazeRange;
+    public static ConfigEntry<float> HazeCeiling;
     public static ConfigEntry<float> HazeStrength;
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
@@ -171,27 +172,41 @@ public static class VrMapConfig
             + "air becomes 33 metres of it, which does nothing. Stereo carries the near part of "
             + "the model and gives up on the far part, so the far part reads as a painted "
             + "backdrop and the whole thing looks flat. This puts the air back at the model's own "
-            + "scale, in the game's own haze colour. "
-            + "the model\'s own scale, in the game\'s own haze colour. The unit symbols are not "
-            + "affected — they are annotations, not things in the air, and one that faded with "
-            + "distance would be lying about how well you can see it. The air is built out of "
-            + "nested transparent shells around your head rather than out of fog, because the "
-            + "game\'s terrain shader ignores the engine\'s fog settings entirely: measured, an "
-            + "eightfold change in fog distance produced frames identical to a tenth of a grey "
-            + "level. Only the model is affected — the real world outside is drawn by a different "
-            + "camera and cannot see them.");
+            + "scale, in the game's own haze colour. The unit symbols are not affected — they are "
+            + "annotations, not things in the air, and one that faded with distance would be lying "
+            + "about how well you can see it. It is built out of flat layers of air lying on the "
+            + "map rather than out of fog, because the game's terrain shader ignores the engine's "
+            + "fog settings entirely: measured, an eightfold change in fog distance produced frames "
+            + "identical to a tenth of a grey level. Flat layers are also what makes it thin with "
+            + "height instead of only with distance — a peak stands out of the haze the valley "
+            + "beside it is buried in. Only the model is affected: the real world outside is drawn "
+            + "by a different camera and cannot see them.");
+
+        HazeCeiling = config.Bind(
+            "Experimental",
+            "World Map Haze Ceiling",
+            2500f,
+            new ConfigDescription(
+                "How high the model's air goes, in map metres. Below this the haze thickens "
+                + "towards sea level the way real air does, so low ground goes soft first and "
+                + "summits keep their edges; above it the sky is clear. 2500 m is about where the "
+                + "haze of a real day gives out, and it leaves the map's higher ground standing "
+                + "out of the murk rather than sitting under it. Raise it for a hazy day that goes "
+                + "all the way up; lower it for a shallow layer with the peaks in clear air.",
+                new AcceptableValueRange<float>(200f, 10000f)));
 
         HazeRange = config.Bind(
             "Experimental",
             "World Map Haze Range",
             40f,
             new ConfigDescription(
-                "How far you can see through the model's air, in map kilometres — the distance at "
-                + "which ground is lost in haze completely, with nothing inside a fifth of it "
-                + "touched at all. Set in map kilometres rather than metres of room because that "
-                + "is the quantity that means something: '40 km of visibility' stays true when "
-                + "the map is rescaled, and a fog distance in metres does not. Lower for a hazy "
-                + "day and more sense of depth; higher for a clear one and a flatter model.",
+                "How far you can see through the model's air, in map kilometres — the horizontal "
+                + "distance from the point under your head at which sea-level ground is as lost as "
+                + "Haze Strength says, thickening smoothly the whole way out and leaving the ground "
+                + "directly beneath you untouched. Set in map kilometres rather than metres of room "
+                + "because that is the quantity that means something: '40 km of visibility' stays "
+                + "true when the map is rescaled, and a fog distance in metres does not. Lower for "
+                + "a hazy day and more sense of depth; higher for a clear one and a flatter model.",
                 new AcceptableValueRange<float>(5f, 300f)));
 
         HazeStrength = config.Bind(
@@ -277,8 +292,12 @@ public static class VrMapConfig
             true,
             "While the map is up, pitch, roll and yaw move the map instead of the aeroplane: push "
             + "to send the model away from you, roll to slide it sideways, yaw to spin it about "
-            + "the point under your head. Both are cleared when the map closes, so closing and "
-            + "reopening recentres it on the aircraft. This is safer than the alternative rather "
+            + "the point under your head. This is on top of the controller thumbsticks, which "
+            + "always move the map and are not affected by this setting — left stick to slide, "
+            + "right stick left and right to spin, right stick forward and back to zoom — because "
+            + "they are nobody else's: the game has no VR bindings at all. All of it is cleared "
+            + "when the map closes, so closing and reopening recentres it on the aircraft. Taking "
+            + "the flight controls is safer than the alternative rather "
             + "than braver: what the aircraft gets while the map is up is zero stick, and zero "
             + "through the flight assist is wings level — whereas leaving the controls connected "
             + "means every input you make to move the map is one the aeroplane also takes while "

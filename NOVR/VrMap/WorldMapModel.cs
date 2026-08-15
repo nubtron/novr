@@ -72,6 +72,12 @@ internal sealed class WorldMapModel
     /// </summary>
     private const string TerrainShaderName = "Shader Graphs/TerrainShader";
 
+    /// <summary>
+    /// Where the sea is drawn: after the opaque terrain, before the air.
+    /// See <see cref="WorldMapHaze"/> for the rest of the model's order.
+    /// </summary>
+    private const int SeaQueue = 2450;
+
     public GameObject Root { get; }
     public MapSettings Settings { get; }
     public WorldMapDetail Detail { get; }
@@ -298,6 +304,14 @@ internal sealed class WorldMapModel
 
         var renderer = go.AddComponent<MeshRenderer>();
         material = new Material(shader) { mainTexture = texture };
+        // Before the haze, which is at 2500, and after the terrain. The stock
+        // sprite shader comes out of the box at 3000 — the transparent queue —
+        // which drew the sea *over* the air and left every stretch of water on
+        // the model perfectly clear while the land beside it faded. Reported from
+        // a flight as the haze "not handling the water correctly", and it was
+        // exactly this: the ocean is the largest and flattest thing on the map, so
+        // an unhazed sea is most of what you see at the far end of it.
+        material.renderQueue = SeaQueue;
         renderer.material = material;
         renderer.shadowCastingMode = ShadowCastingMode.Off;
         renderer.receiveShadows = false;
