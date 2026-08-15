@@ -233,6 +233,12 @@ internal sealed class WorldMapPointer
 
         var camera = APIBus.CockpitHudCamera;
         var toHead = camera != null ? camera.transform.position - centre : Vector3.up;
+
+        // Width in angle, not in metres. A fixed 4 mm line is about one pixel at
+        // the far side of a 68 m model — drawn, and invisible, which is exactly
+        // what the first version did.
+        _ringLine.widthMultiplier = Mathf.Clamp(toHead.magnitude * 0.008f, 0.004f, 0.2f);
+
         var forward = toHead.sqrMagnitude > 1e-6f ? toHead.normalized : Vector3.up;
         var right = Vector3.Cross(forward, Vector3.up);
         if (right.sqrMagnitude < 1e-6f) right = Vector3.Cross(forward, Vector3.forward);
