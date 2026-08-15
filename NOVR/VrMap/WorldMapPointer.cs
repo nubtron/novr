@@ -94,7 +94,9 @@ internal sealed class WorldMapPointer
         }
         else if (onGround)
         {
-            DrawRing(ray.GetPoint(distance), GroundRingRadius);
+            // Constant angular size, so the reticle stays the same thing to look
+            // at whether it is on the near edge of the model or the far one.
+            DrawRing(ray.GetPoint(distance), Mathf.Max(GroundRingRadius, distance * 0.02f));
         }
         else
         {
@@ -188,9 +190,19 @@ internal sealed class WorldMapPointer
             biggestInView = inView;
         }
 
-        if (biggest.Transform == null) return ray;
-        var direction = biggest.Transform.position - ray.origin;
-        return direction.sqrMagnitude > 1e-6f ? new Ray(ray.origin, direction.normalized) : ray;
+        if (biggestInView && biggest.Transform != null)
+        {
+            var direction = biggest.Transform.position - ray.origin;
+            if (direction.sqrMagnitude > 1e-6f) return new Ray(ray.origin, direction.normalized);
+        }
+
+        // Nothing in view to aim at — which is the usual case, because the
+        // symbols cluster around the aircraft and the aircraft is straight down.
+        // Look 20 degrees below the horizon instead, where the model is, so the
+        // ground reticle at least lands in the picture.
+        return camera != null
+            ? new Ray(ray.origin, camera.transform.rotation * (Quaternion.Euler(20f, 0f, 0f) * Vector3.forward))
+            : ray;
     }
 
     /// <summary>
