@@ -72,6 +72,7 @@ internal sealed class WorldMapIcons
     private AirbaseMapIcon[]? _airbases;
     private float _airbasesFound;
     private bool _inventoried;
+    private float _firstIcons;
     private readonly List<string> _inventory = new();
     private readonly Dictionary<MapIcon, Vector3> _placedAt = new();
 
@@ -180,6 +181,16 @@ internal sealed class WorldMapIcons
     private void Inventory()
     {
         if (_inventoried || _icons.Count == 0) return;
+
+        // Not on the frame the map opens. DynamicMap refreshes a fifth of its
+        // icons per frame and only starts once the mission is running, so a
+        // symbol read immediately is still sitting wherever its prefab put it —
+        // which is how seven units came back sharing one position off the edge of
+        // the map. This is the third measurement on this feature taken in the
+        // frame something was switched on, and the third to be worthless.
+        if (_firstIcons == 0f) _firstIcons = Time.unscaledTime;
+        if (Time.unscaledTime - _firstIcons < 2f) return;
+
         _inventoried = true;
 
         _inventory.Clear();
@@ -317,6 +328,8 @@ internal sealed class WorldMapIcons
         _seen.Clear();
         _airbases = null;
         _inventoried = false;
+        _firstIcons = 0f;
+        _placedAt.Clear();
         if (_container != null) Object.Destroy(_container);
         if (_overlay != null) Object.Destroy(_overlay);
         _container = null;
