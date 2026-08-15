@@ -149,15 +149,43 @@ internal sealed class WorldMapPointer
         return true;
     }
 
-    /// <summary>The ray from where we are to the largest symbol on the model.</summary>
+    /// <summary>
+    /// The ray from where we are to the largest symbol on the model that is
+    /// actually in the picture.
+    ///
+    /// <para>In view matters, and not for cosmetic reasons: the first version
+    /// aimed at the largest symbol anywhere, which was the airbase at 59 degrees
+    /// below the horizon — correct, on a frame that only reaches 31. The reticle
+    /// was drawn exactly where it should be and off the bottom of every dump,
+    /// which from outside is indistinguishable from not drawing at all.</para>
+    /// </summary>
     private static Ray AtBiggest(WorldMapIcons icons, Ray ray)
     {
+        var camera = APIBus.CockpitHudCamera;
         var biggest = default(WorldMapIcons.Placed);
+        var biggestInView = false;
+
         foreach (var symbol in icons.Symbols())
         {
             if (symbol.Transform == null) continue;
-            if (biggest.Transform != null && symbol.Radius <= biggest.Radius) continue;
+
+            var inView = false;
+            if (camera != null)
+            {
+                var viewport = camera.WorldToViewportPoint(symbol.Transform.position);
+                inView = viewport.z > 0f &&
+                         viewport.x > 0.08f && viewport.x < 0.92f &&
+                         viewport.y > 0.08f && viewport.y < 0.92f;
+            }
+
+            if (biggest.Transform != null)
+            {
+                if (biggestInView && !inView) continue;
+                if (biggestInView == inView && symbol.Radius <= biggest.Radius) continue;
+            }
+
             biggest = symbol;
+            biggestInView = inView;
         }
 
         if (biggest.Transform == null) return ray;
