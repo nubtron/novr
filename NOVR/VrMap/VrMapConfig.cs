@@ -26,6 +26,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
     public static ConfigEntry<bool> IconOverlay;
+    public static ConfigEntry<bool> Pointer;
     public static ConfigEntry<bool> HideCockpit;
     public static ConfigEntry<bool> HideWorld;
     public static ConfigEntry<bool> HideHelmetPanels;
@@ -187,6 +188,18 @@ public static class VrMapConfig
             + "The rest of the helmet display — speed, altitude, bearing, horizon — stays, "
             + "because you are still flying. Both come back exactly as they were when you close "
             + "the map.");
+
+        Pointer = config.Bind(
+            "Experimental",
+            "World Map Pointer",
+            true,
+            "Point at the model with the controller and select what you are pointing at. A ring "
+            + "runs over the ground where you are aiming and closes around a symbol when you are "
+            + "on one; the trigger then means what a click means on the flat map — a target "
+            + "designated or dropped while you are flying, an airbase chosen when you are not. It "
+            + "uses whichever hand already drives the cursor, and head gaze if that is what you "
+            + "have set. Picking is by angle rather than by hitting the rectangle exactly, so a "
+            + "big symbol is easy and a small one is still reachable.");
 
         SelfTest = config.Bind(
             "Experimental",
