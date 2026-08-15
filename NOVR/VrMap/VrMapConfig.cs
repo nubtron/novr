@@ -25,6 +25,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Sea;
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
+    public static ConfigEntry<bool> IconMask;
     public static ConfigEntry<float> IconOpacity;
     public static ConfigEntry<bool> IconOverlay;
     public static ConfigEntry<bool> Pointer;
@@ -150,6 +151,19 @@ public static class VrMapConfig
                 + "room rather than on the map, so zooming the model in and out does not change "
                 + "how readable they are.",
                 new AcceptableValueRange<float>(0.05f, 2f)));
+
+        IconMask = config.Bind(
+            "Experimental",
+            "World Map Icon Mask",
+            true,
+            "Move each symbol's transparency out of its brightness and into its alpha channel. "
+            + "The game's icon sprites do not hold their shape in alpha: an airbase's is a white "
+            + "disc with a black aircraft and black runway bars painted on it, opaque throughout, "
+            + "and the black is where you are meant to see the ground. That is coherent because "
+            + "the game draws every icon additively, where black adds nothing — but drawn over a "
+            + "solid model with ordinary blending the same sprite is a disc with a solid black "
+            + "aircraft on it. Converting keeps the symbol the game intended without depending on "
+            + "a blend that disappears against snow or sky. Turn it off to see the sprites raw.");
 
         IconOpacity = config.Bind(
             "Experimental",

@@ -634,6 +634,7 @@ internal sealed class WorldMapIcons
     private Sprite? Mask(Sprite? source)
     {
         if (source == null) return null;
+        if (VrMapConfig.IconMask != null && !VrMapConfig.IconMask.Value) return source;
         if (_masks.TryGetValue(source, out var cached)) return cached != null ? cached : source;
         if (_maskedThisFrame) return source;
         _maskedThisFrame = true;
@@ -686,6 +687,19 @@ internal sealed class WorldMapIcons
         _maskTextures.Add(texture);
         _maskSprites.Add(masked);
         _masks[source] = masked;
+
+        int opaque = 0, clear = 0;
+        foreach (var pixel in pixels)
+        {
+            if (pixel.a > 240) opaque++;
+            else if (pixel.a < 16) clear++;
+        }
+
+        Debug.Log($"[NOVR] World map: masked '{source.name}' {width}x{height} — " +
+                  $"{opaque * 100f / Mathf.Max(1, pixels.Length):F0}% opaque, " +
+                  $"{clear * 100f / Mathf.Max(1, pixels.Length):F0}% clear; " +
+                  $"source rect {source.rect}, pivot {source.pivot}, ppu {source.pixelsPerUnit}, " +
+                  $"new pivot {pivot}.");
         return masked;
     }
 
