@@ -21,7 +21,9 @@ public static class VrMapConfig
     public static ConfigEntry<float> Scale;
     public static ConfigEntry<float> EyeHeight;
     public static ConfigEntry<float> ReliefExaggeration;
+    public static ConfigEntry<WorldMapDetail> Detail;
     public static ConfigEntry<bool> HideCockpit;
+    public static ConfigEntry<bool> HideHelmetPanels;
     public static ConfigEntry<bool> DebugMarker;
 
     public static void Bind(ConfigFile config)
@@ -88,6 +90,18 @@ public static class VrMapConfig
                 + "them: at 1:1200 and 2x, a 2 km summit reaches 3.3 m against an 8 m eye.",
                 new AcceptableValueRange<float>(1f, 10f)));
 
+        Detail = config.Bind(
+            "Experimental",
+            "World Map Detail",
+            WorldMapDetail.Surfaces,
+            "How much of the map the model is made of. Terrain is the ground tiles alone, which "
+            + "is cheapest but leaves the map see-through wherever there is asphalt: roads, city "
+            + "surfaces and fields are separate meshes filling cut-outs in the tiles, and only "
+            + "256 of the map's ~2700 renderers are tiles. Surfaces adds everything lying on the "
+            + "ground and nothing standing on it, which is the one that looks like a map. "
+            + "Everything adds the buildings too, at thousands of renderers — try it if you have "
+            + "the frames for it. Changing this rebuilds the model.");
+
         HideCockpit = config.Bind(
             "Experimental",
             "World Map Hide Cockpit",
@@ -96,6 +110,17 @@ public static class VrMapConfig
             + "are over the landscape, and a canopy rail across it says otherwise. The aircraft "
             + "keeps flying, and everything that is not the airframe — sky, weather, the real "
             + "world past the model — stays where it was.");
+
+        HideHelmetPanels = config.Bind(
+            "Experimental",
+            "World Map Hide Helmet Panels",
+            true,
+            "Take the tactical map and the weapon/countermeasure readout off the helmet while the "
+            + "3D map is up. Both are stacked in front of the same view the model fills, and the "
+            + "small flat map of the ground is the one thing the big solid one makes redundant. "
+            + "The rest of the helmet display — speed, altitude, bearing, horizon — stays, "
+            + "because you are still flying. They are hidden rather than switched off, so the "
+            + "game's own map keeps running underneath and comes back exactly as it was.");
 
         DebugMarker = config.Bind(
             "Experimental",
