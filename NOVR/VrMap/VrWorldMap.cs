@@ -107,13 +107,18 @@ public class VrWorldMap : NOVRBehaviour
         var root = model.Root.transform;
         var first = model.Root.GetComponentInChildren<MeshRenderer>();
         var camera = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
-        var mount = AnchorPosition();
+        var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
+        var mount = Mount();
 
         Debug.Log(
-            $"[NOVR] World map placed: root={root.position} scale={root.localScale} " +
-            $"layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
-            $"mount={(mount.HasValue ? mount.Value.ToString() : "<none>")} " +
+            $"[NOVR] World map placed: root local={root.localPosition} world={root.position} " +
+            $"scale={root.localScale.x:E3} layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
             $"datum={(global::Datum.originPosition)}");
+        Debug.Log(
+            "[NOVR] World map frames: " +
+            $"room={(room == null ? "<none>" : $"{room.position} rot={room.rotation.eulerAngles}")} " +
+            $"head={(camera == null ? "<none>" : $"{camera.transform.position} rot={camera.transform.rotation.eulerAngles}")} " +
+            $"mount={(mount == null ? "<none>" : $"{mount.position} rot={mount.rotation.eulerAngles}")}");
         Debug.Log(
             $"[NOVR] World map first renderer: " +
             (first == null
@@ -148,33 +153,60 @@ public class VrWorldMap : NOVRBehaviour
     private void Hide()
     {
         if (_model?.Root != null) _model.Root.SetActive(false);
+        _reported = false;
     }
 
     /// <summary>
     /// Put the model under the aircraft, at scale, with the piece of map you are
     /// actually over directly below you — so the model slides beneath you as you
     /// fly, the way the ground does.
+    ///
+    /// <para><b>The frame this happens in is not the world's.</b> Everything on
+    /// the VR UI layer is drawn by <c>VrCockpitHudCamera</c>, which is not in the
+    /// aircraft at all: it hangs off the mod's own root near the world origin and
+    /// is driven by the raw headset pose. The layer is a private room with the
+    /// head at its centre, composited over the world afterwards. Measured: with
+    /// the aircraft at (24.0, 18.8, -13.3) that camera was at (0.0, 0.0, 0.05).
+    /// A model placed in world coordinates is therefore placed in the wrong room
+    /// and simply is not there — which is exactly what the first build did.</para>
+    ///
+    /// <para>So the model goes into the room, and the aircraft's attitude has to
+    /// be put back by hand: the room does not have it (the same thing the view
+    /// icons were caught by on 08-13), so a model left at identity would be
+    /// welded to the airframe and would roll with it. Countering the mount's
+    /// rotation is what makes it behave like ground you are flying over.</para>
     /// </summary>
     private void Place(WorldMapModel model)
     {
-        var mount = AnchorPosition();
-        if (mount == null) return;
+        var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
+        var head = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
+        var mount = Mount();
+        if (room == null || head == null || mount == null) return;
 
         var scale = 1f / Mathf.Max(1f, VrMapConfig.Scale.Value);
         var exaggeration = Mathf.Max(1f, VrMapConfig.ReliefExaggeration.Value);
         var modelScale = new Vector3(scale, scale * exaggeration, scale);
 
+        // World orientation as seen from inside the room. Local scale is applied
+        // before this rotation, so the vertical exaggeration still runs along the
+        // map's own up rather than the aircraft's.
+        var toWorld = Quaternion.Inverse(mount.rotation);
+
         var root = model.Root.transform;
+        if (root.parent != room) root.SetParent(room, false);
         root.localScale = modelScale;
-        root.rotation = Quaternion.identity;
+        root.localRotation = toWorld;
 
         // Where we are on the map, in map metres: world position less the
         // floating origin, flattened to sea level.
-        var here = mount.Value - global::Datum.originPosition;
+        var here = mount.position - global::Datum.originPosition;
         var beneathUs = new Vector3(here.x, 0f, here.z);
 
-        var seaLevel = mount.Value + Vector3.down * VrMapConfig.EyeHeight.Value;
-        root.position = seaLevel - Vector3.Scale(beneathUs, modelScale);
+        var headInRoom = room.InverseTransformPoint(head.transform.position);
+        var down = toWorld * Vector3.down;
+        root.localPosition = headInRoom
+                             + down * VrMapConfig.EyeHeight.Value
+                             - toWorld * Vector3.Scale(beneathUs, modelScale);
 
         PlaceMarker(root, beneathUs, modelScale);
     }
@@ -215,15 +247,14 @@ public class VrWorldMap : NOVRBehaviour
 
     /// <summary>
     /// The airframe-fixed mount — the same one the captured flight HUD hangs its
-    /// panel from. Its position moves with the aircraft; its rotation is not
-    /// used, deliberately.
+    /// panel from. Its position says where on the map we are; its rotation is
+    /// the aircraft's attitude, which the model has to undo.
     /// </summary>
-    private static Vector3? AnchorPosition()
+    private static Transform? Mount()
     {
         var mainCamera = APIBus.MainCamera;
         if (mainCamera == null) return null;
-        var mount = mainCamera.transform.parent;
-        return mount != null ? mount.position : mainCamera.transform.position;
+        return mainCamera.transform.parent != null ? mainCamera.transform.parent : mainCamera.transform;
     }
 
     private void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
