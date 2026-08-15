@@ -43,16 +43,38 @@ public class VrWorldMap : NOVRBehaviour
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
+    private readonly List<HiddenPanel> _hiddenPanels = new();
+
+    /// <summary>
+    /// A helmet element we faded out, and what it takes to put it back exactly.
+    /// </summary>
+    private readonly struct HiddenPanel
+    {
+        public HiddenPanel(CanvasGroup group, float alpha, bool added)
+        {
+            Group = group;
+            Alpha = alpha;
+            Added = added;
+        }
+
+        public readonly CanvasGroup Group;
+        public readonly float Alpha;
+
+        /// <summary>Whether the CanvasGroup is ours, and so ours to remove.</summary>
+        public readonly bool Added;
+    }
 
     protected override void OnDisable()
     {
         base.OnDisable();
         ShowCockpit();
+        ShowHelmetPanels();
     }
 
     private void OnDestroy()
     {
         ShowCockpit();
+        ShowHelmetPanels();
         if (_marker != null) Destroy(_marker);
         _marker = null;
         _model?.Destroy();
@@ -78,7 +100,62 @@ public class VrWorldMap : NOVRBehaviour
         Place(model);
         model.Root.SetActive(true);
         HideCockpit();
+        HideHelmetPanels();
         ReportOnce(model);
+    }
+
+    /// <summary>
+    /// Fade the tactical map and the weapon/countermeasure readout off the
+    /// helmet while the model is up. Both sit in front of the same view the
+    /// model fills, and a small flat map of the ground is the one thing a big
+    /// solid one makes redundant.
+    ///
+    /// <para>Found by the components they contain — <c>DynamicMap</c>,
+    /// <c>WeaponStatus</c> — as the two direct children of the helmet rect that
+    /// own them, which is the same pair the panel spread moves. Faded with a
+    /// CanvasGroup rather than deactivated: <c>DynamicMap</c> is a scene
+    /// singleton with its own update running unit icons and waypoints, and
+    /// switching it off to hide it would stop work the pilot still wants
+    /// done.</para>
+    /// </summary>
+    private void HideHelmetPanels()
+    {
+        if (VrMapConfig.HideHelmetPanels == null || !VrMapConfig.HideHelmetPanels.Value)
+        {
+            ShowHelmetPanels();
+            return;
+        }
+
+        if (_hiddenPanels.Count > 0) return;
+
+        var hmd = SceneSingleton<HeadMountedDisplay>.i;
+        if (hmd == null) return;
+
+        foreach (Transform child in hmd.transform)
+        {
+            if (child.GetComponentInChildren<global::DynamicMap>(true) == null &&
+                child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
+
+            var group = child.GetComponent<CanvasGroup>();
+            var added = group == null;
+            if (added) group = child.gameObject.AddComponent<CanvasGroup>();
+
+            _hiddenPanels.Add(new HiddenPanel(group, group.alpha, added));
+            group.alpha = 0f;
+        }
+    }
+
+    private void ShowHelmetPanels()
+    {
+        if (_hiddenPanels.Count == 0) return;
+        foreach (var hidden in _hiddenPanels)
+        {
+            if (hidden.Group == null) continue;
+            if (hidden.Added) Destroy(hidden.Group);
+            else hidden.Group.alpha = hidden.Alpha;
+        }
+
+        _hiddenPanels.Clear();
     }
 
     /// <summary>
@@ -128,21 +205,25 @@ public class VrWorldMap : NOVRBehaviour
             return null;
         }
 
+        var detail = VrMapConfig.Detail != null ? VrMapConfig.Detail.Value : WorldMapDetail.Surfaces;
+
         // Rebuild when the mission moves to a different map — the clones hold
-        // the old map's meshes, and the old map's prefab has been destroyed.
-        if (_model != null && (_model.Root == null || _model.Settings != settings))
+        // the old map's meshes, and the old map's prefab has been destroyed —
+        // or when the pilot asks for a different amount of it.
+        if (_model != null && (_model.Root == null || _model.Settings != settings || _model.Detail != detail))
         {
             _model.Destroy();
             _model = null;
         }
 
-        return _model ??= WorldMapModel.Build();
+        return _model ??= WorldMapModel.Build(detail);
     }
 
     private void Hide()
     {
         if (_model?.Root != null) _model.Root.SetActive(false);
         ShowCockpit();
+        ShowHelmetPanels();
         _reported = false;
     }
 

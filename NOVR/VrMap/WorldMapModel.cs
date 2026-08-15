@@ -6,6 +6,33 @@ using UnityEngine.Rendering;
 namespace NOVR.VrMap;
 
 /// <summary>
+/// How much of the map's own geometry the model is made of.
+/// </summary>
+public enum WorldMapDetail
+{
+    /// <summary>
+    /// The ground tiles alone — every renderer drawn by the terrain shader.
+    /// Cheapest, and the map has holes in it: roads, city surfaces and fields
+    /// are separate meshes filling cut-outs in the tiles, so leaving them out
+    /// leaves you able to see through the map where they are.
+    /// </summary>
+    Terrain,
+
+    /// <summary>
+    /// Everything laid on the ground — tiles, roads, city surfaces, fields —
+    /// but nothing standing on it. Buildings are excluded by what they are
+    /// (<c>MapBuilding</c>, or a <c>Unit</c>), not by where they sit.
+    /// </summary>
+    Surfaces,
+
+    /// <summary>
+    /// The whole map, buildings and all. Thousands of renderers; the model
+    /// stops being cheap.
+    /// </summary>
+    Everything,
+}
+
+/// <summary>
 /// A miniature of the whole map, built by cloning the game's own terrain
 /// renderers into one root and shrinking that root.
 ///
@@ -16,11 +43,21 @@ namespace NOVR.VrMap;
 /// every tile is already resident whenever a mission is loaded — there is no
 /// point at which half the world is missing.</para>
 ///
-/// <para>Ground is identified by <em>the shader its material uses</em>, not by
-/// name or by path. Names are the game's to change and say nothing about what a
-/// thing is; every piece of ground on every map is drawn by one shader, and
-/// nothing else in the map uses it. If a game update renames that shader this
-/// finds nothing, which is why it says so loudly and lists what it did find.</para>
+/// <para>Nothing here is found by name. Ground tiles are identified by <em>the
+/// shader their material uses</em> — every piece of ground on every map is drawn
+/// by one shader and nothing else uses it — and buildings are excluded by <em>the
+/// components they carry</em> (<c>MapBuilding</c>, or a <c>Unit</c>). Names are
+/// the game's to change and say nothing about what a thing is; the grouping in
+/// the prefab is worse still, because the node called <c>terrain2_roads</c> holds
+/// roughly 98 roads and about 1150 city blocks. If a game update renames the
+/// shader this finds nothing, which is why it says so loudly and lists what it
+/// did find.</para>
+///
+/// <para>Only the tiles carry that shader — 256 of roughly 2700 renderers under
+/// the map. Roads, city surfaces and fields are separate meshes that <em>fill
+/// cut-outs in the tiles</em>, so a model made of tiles alone has holes you can
+/// see through wherever asphalt is. That is what <see cref="WorldMapDetail"/>
+/// is for.</para>
 ///
 /// <para>The clones are placed in map coordinates — world position minus the
 /// floating origin — so the model is self-contained the moment it is built. The
@@ -37,21 +74,23 @@ internal sealed class WorldMapModel
 
     public GameObject Root { get; }
     public MapSettings Settings { get; }
+    public WorldMapDetail Detail { get; }
 
     /// <summary>Map extent in metres — the model's size before scaling.</summary>
     public Vector2 MapSize => Settings.MapSize;
 
-    private WorldMapModel(GameObject root, MapSettings settings)
+    private WorldMapModel(GameObject root, MapSettings settings, WorldMapDetail detail)
     {
         Root = root;
         Settings = settings;
+        Detail = detail;
     }
 
     /// <summary>
     /// Build the model for whatever map is loaded, or return null (having said
     /// why) if there isn't one yet.
     /// </summary>
-    public static WorldMapModel? Build()
+    public static WorldMapModel? Build(WorldMapDetail detail)
     {
         var levelInfo = NetworkSceneSingleton<LevelInfo>.i;
         var settings = levelInfo != null ? levelInfo.LoadedMapSettings : null;
@@ -71,6 +110,8 @@ internal sealed class WorldMapModel
         var root = new GameObject("NOVR World Map");
         var shadersSeen = new HashSet<string>();
         var cloned = 0;
+        var ground = 0;
+        var skippedBuildings = 0;
 
         // Include inactive: a tile switched off by distance culling is still
         // part of the ground, and the model is meant to be the whole map rather
@@ -82,7 +123,10 @@ internal sealed class WorldMapModel
             if (shader == null) continue;
 
             shadersSeen.Add(shader.name);
-            if (shader.name != TerrainShaderName) continue;
+            var isGround = shader.name == TerrainShaderName;
+            if (isGround) ground++;
+
+            if (!Wanted(source, detail, isGround, ref skippedBuildings)) continue;
 
             var filter = source.GetComponent<MeshFilter>();
             if (filter == null || filter.sharedMesh == null) continue;
@@ -91,7 +135,7 @@ internal sealed class WorldMapModel
             cloned++;
         }
 
-        if (cloned == 0)
+        if (ground == 0)
         {
             // Loud on purpose. The failure this guards against is a game update
             // renaming the shader, and its symptom without this line is "the map
@@ -109,10 +153,39 @@ internal sealed class WorldMapModel
         root.SetActive(false);
 
         Debug.Log(
-            $"[NOVR] World map: modelled '{settings.name}' from {cloned} terrain renderer(s), " +
+            $"[NOVR] World map: modelled '{settings.name}' at detail {detail} from {cloned} renderer(s) " +
+            $"({ground} ground, {skippedBuildings} building(s) left out), " +
             $"map {settings.MapSize.x:F0} x {settings.MapSize.y:F0} m.");
 
-        return new WorldMapModel(root, settings);
+        return new WorldMapModel(root, settings, detail);
+    }
+
+    /// <summary>
+    /// Whether this renderer belongs in the model at the chosen detail.
+    ///
+    /// <para>A building is anything carrying a <c>MapBuilding</c> (the city
+    /// blocks and props laid out with the map) or a <c>Unit</c> (airbase
+    /// structures, which are network objects). Both are asked for up the parent
+    /// chain, because a building is a small hierarchy and the renderers are its
+    /// leaves.</para>
+    /// </summary>
+    private static bool Wanted(MeshRenderer source, WorldMapDetail detail, bool isGround, ref int skippedBuildings)
+    {
+        switch (detail)
+        {
+            case WorldMapDetail.Terrain:
+                return isGround;
+
+            case WorldMapDetail.Everything:
+                return true;
+
+            default:
+                if (isGround) return true;
+                if (source.GetComponentInParent<MapBuilding>(true) == null &&
+                    source.GetComponentInParent<Unit>(true) == null) return true;
+                skippedBuildings++;
+                return false;
+        }
     }
 
     /// <summary>
