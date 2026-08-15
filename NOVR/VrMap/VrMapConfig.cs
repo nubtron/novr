@@ -25,6 +25,8 @@ public static class VrMapConfig
     public static ConfigEntry<float> ReliefExaggeration;
     public static ConfigEntry<WorldMapDetail> Detail;
     public static ConfigEntry<bool> Sea;
+    public static ConfigEntry<bool> Haze;
+    public static ConfigEntry<float> HazeRange;
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
     public static ConfigEntry<bool> IconMask;
@@ -157,6 +159,34 @@ public static class VrMapConfig
             + "position, and none of that survives being shrunk — so the model gets its own, "
             + "painted with the map's ocean texture. Without it the ground simply stops at the "
             + "coast and you see through the gap. Changing this rebuilds the model.");
+
+        Haze = config.Bind(
+            "Experimental",
+            "World Map Haze",
+            true,
+            "Put air between you and the far side of the model. Everything that tells you how far "
+            + "away a hill is — haze thickening, contrast falling, the distance going blue — is "
+            + "the atmosphere in the way, and shrinking the theatre shrinks that too: 40 km of "
+            + "air becomes 33 metres of it, which does nothing. Stereo carries the near part of "
+            + "the model and gives up on the far part, so the far part reads as a painted "
+            + "backdrop and the whole thing looks flat. This puts the air back at the model's own "
+            + "scale, in the game's own haze colour. Only while Hide World is on, because fog is "
+            + "a global setting and these distances would be a wall at arm's length outside. The "
+            + "unit symbols are not affected — they are annotations, not things in the air, and "
+            + "one that faded with distance would be lying about how well you can see it.");
+
+        HazeRange = config.Bind(
+            "Experimental",
+            "World Map Haze Range",
+            40f,
+            new ConfigDescription(
+                "How far you can see through the model's air, in map kilometres — the distance at "
+                + "which ground is lost in haze completely, with nothing inside a fifth of it "
+                + "touched at all. Set in map kilometres rather than metres of room because that "
+                + "is the quantity that means something: '40 km of visibility' stays true when "
+                + "the map is rescaled, and a fog distance in metres does not. Lower for a hazy "
+                + "day and more sense of depth; higher for a clear one and a flatter model.",
+                new AcceptableValueRange<float>(5f, 300f)));
 
         Icons = config.Bind(
             "Experimental",
