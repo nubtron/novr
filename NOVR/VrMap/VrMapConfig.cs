@@ -25,6 +25,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Sea;
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
+    public static ConfigEntry<bool> IconOverlay;
     public static ConfigEntry<bool> HideCockpit;
     public static ConfigEntry<bool> HideWorld;
     public static ConfigEntry<bool> HideHelmetPanels;
@@ -143,6 +144,17 @@ public static class VrMapConfig
                 + "room rather than on the map, so zooming the model in and out does not change "
                 + "how readable they are.",
                 new AcceptableValueRange<float>(0.05f, 2f)));
+
+        IconOverlay = config.Bind(
+            "Experimental",
+            "World Map Icon Overlay",
+            true,
+            "Draw the unit symbols over the model instead of into it. A symbol is an annotation, "
+            + "and an annotation is not occluded by the thing it annotates: left to depth-test "
+            + "normally, one standing behind a ridge is sawn in half by it and one at ground level "
+            + "is half-buried, which reads as a solid object embedded in the terrain rather than a "
+            + "marker on a map. Turn it off to see the difference, or if you would rather a symbol "
+            + "behind a mountain stayed behind it.");
 
         HideCockpit = config.Bind(
             "Experimental",
