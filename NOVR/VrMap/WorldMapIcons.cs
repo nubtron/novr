@@ -244,21 +244,41 @@ internal sealed class WorldMapIcons
 
         // What the symbols are actually being drawn with, which is the half of
         // "why is it opaque" that is not about the sprite.
+        var described = new HashSet<string>();
         foreach (var placed in _icons)
         {
             if (placed.Key == null || placed.Value == null || placed.Key.iconImage == null) continue;
-            var mine = placed.Value.material;
             var theirs = placed.Key.iconImage.material;
-            Debug.Log($"[NOVR] World map icon material: {placed.Key.name} — " +
-                      $"mine '{(mine != null ? mine.name : "<none>")}' " +
-                      $"shader '{(mine != null && mine.shader != null ? mine.shader.name : "<none>")}' " +
-                      $"ZTest {(mine != null ? mine.GetInt("unity_GUIZTestMode") : -1)}, " +
-                      $"flat map's '{(theirs != null ? theirs.name : "<none>")}' " +
-                      $"shader '{(theirs != null && theirs.shader != null ? theirs.shader.name : "<none>")}', " +
-                      $"colour {placed.Value.color}, canvas alpha " +
-                      $"{placed.Value.canvasRenderer.GetAlpha():F2}, type {placed.Value.type}.");
-            break;
+            var name = theirs != null ? theirs.name : "<none>";
+            if (!described.Add(name)) continue;
+            Debug.Log($"[NOVR] World map icon material: {placed.Key.name} — flat map draws with " +
+                      $"'{name}', {Describe(theirs)}; the model draws with " +
+                      $"'{(placed.Value.material != null ? placed.Value.material.name : "<none>")}', " +
+                      $"{Describe(placed.Value.material)}.");
         }
+    }
+
+    /// <summary>
+    /// A material as its shader and the knobs that shader exposes. The question
+    /// this answers is whether a blend or a depth test can be set on it at all:
+    /// a fixed-function <c>Blend</c> line in the shader is not something a
+    /// material can override, and there is no way to tell from the outside except
+    /// by asking the shader what properties it has.
+    /// </summary>
+    private static string Describe(Material? material)
+    {
+        if (material == null) return "no material";
+        var shader = material.shader;
+        if (shader == null) return "no shader";
+
+        var properties = new List<string>();
+        for (var i = 0; i < shader.GetPropertyCount(); i++)
+        {
+            properties.Add($"{shader.GetPropertyName(i)}:{shader.GetPropertyType(i)}");
+        }
+
+        return $"shader '{shader.name}' queue {material.renderQueue} " +
+               $"[{string.Join(" ", properties)}]";
     }
 
     /// <summary>
