@@ -22,7 +22,11 @@ public static class VrMapConfig
     public static ConfigEntry<float> EyeHeight;
     public static ConfigEntry<float> ReliefExaggeration;
     public static ConfigEntry<WorldMapDetail> Detail;
+    public static ConfigEntry<bool> Sea;
+    public static ConfigEntry<bool> Icons;
+    public static ConfigEntry<float> IconSize;
     public static ConfigEntry<bool> HideCockpit;
+    public static ConfigEntry<bool> HideWorld;
     public static ConfigEntry<bool> HideHelmetPanels;
     public static ConfigEntry<bool> DebugMarker;
 
@@ -102,6 +106,37 @@ public static class VrMapConfig
             + "Everything adds the buildings too, at thousands of renderers — try it if you have "
             + "the frames for it. Changing this rebuilds the model.");
 
+        Sea = config.Bind(
+            "Experimental",
+            "World Map Sea",
+            true,
+            "Put water under the model. The game's own sea cannot come across — it is a single "
+            + "plane that follows the camera, with a shader that reads its textures by world "
+            + "position, and none of that survives being shrunk — so the model gets its own, "
+            + "painted with the map's ocean texture. Without it the ground simply stops at the "
+            + "coast and you see through the gap. Changing this rebuilds the model.");
+
+        Icons = config.Bind(
+            "Experimental",
+            "World Map Icons",
+            true,
+            "Stand the units on the model. Which units appear, what symbol each gets and what "
+            + "colour it is are not decided here: they are read off the game's own map icon for "
+            + "that unit, so tracking, spotting, radar returns and the last-known position of a "
+            + "contact that has gone cold all behave exactly as they do on the flat map. What is "
+            + "added is height — a symbol sits at its unit's actual altitude, which is the one "
+            + "thing a flat map cannot show and the reason to have a solid one.");
+
+        IconSize = config.Bind(
+            "Experimental",
+            "World Map Icon Size",
+            0.35f,
+            new ConfigDescription(
+                "How big the unit symbols are, in real metres. They are a fixed size in the room "
+                + "rather than on the map, so zooming the model in and out does not change how "
+                + "readable they are.",
+                new AcceptableValueRange<float>(0.05f, 2f)));
+
         HideCockpit = config.Bind(
             "Experimental",
             "World Map Hide Cockpit",
@@ -110,6 +145,17 @@ public static class VrMapConfig
             + "are over the landscape, and a canopy rail across it says otherwise. The aircraft "
             + "keeps flying, and everything that is not the airframe — sky, weather, the real "
             + "world past the model — stays where it was.");
+
+        HideWorld = config.Bind(
+            "Experimental",
+            "World Map Hide World",
+            true,
+            "Take the real world out of view while the map is up, leaving the sky and the model. "
+            + "The model is a disc of ground a few tens of metres across, and with the real "
+            + "terrain still drawn past its edge you are looking at the same country twice at two "
+            + "different scales, with a hard cut where one stops. Sky, sun and weather stay, so "
+            + "you are still somewhere — just not in two places at once. Turn it off to keep the "
+            + "world and accept the seam.");
 
         HideHelmetPanels = config.Bind(
             "Experimental",
