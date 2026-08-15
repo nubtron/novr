@@ -27,6 +27,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Sea;
     public static ConfigEntry<bool> Haze;
     public static ConfigEntry<float> HazeRange;
+    public static ConfigEntry<float> HazeStrength;
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
     public static ConfigEntry<bool> IconMask;
@@ -170,10 +171,15 @@ public static class VrMapConfig
             + "air becomes 33 metres of it, which does nothing. Stereo carries the near part of "
             + "the model and gives up on the far part, so the far part reads as a painted "
             + "backdrop and the whole thing looks flat. This puts the air back at the model's own "
-            + "scale, in the game's own haze colour. Only while Hide World is on, because fog is "
-            + "a global setting and these distances would be a wall at arm's length outside. The "
-            + "unit symbols are not affected — they are annotations, not things in the air, and "
-            + "one that faded with distance would be lying about how well you can see it.");
+            + "scale, in the game's own haze colour. "
+            + "the model\'s own scale, in the game\'s own haze colour. The unit symbols are not "
+            + "affected — they are annotations, not things in the air, and one that faded with "
+            + "distance would be lying about how well you can see it. The air is built out of "
+            + "nested transparent shells around your head rather than out of fog, because the "
+            + "game\'s terrain shader ignores the engine\'s fog settings entirely: measured, an "
+            + "eightfold change in fog distance produced frames identical to a tenth of a grey "
+            + "level. Only the model is affected — the real world outside is drawn by a different "
+            + "camera and cannot see them.");
 
         HazeRange = config.Bind(
             "Experimental",
@@ -187,6 +193,16 @@ public static class VrMapConfig
                 + "the map is rescaled, and a fog distance in metres does not. Lower for a hazy "
                 + "day and more sense of depth; higher for a clear one and a flatter model.",
                 new AcceptableValueRange<float>(5f, 300f)));
+
+        HazeStrength = config.Bind(
+            "Experimental",
+            "World Map Haze Strength",
+            0.85f,
+            new ConfigDescription(
+                "How much of the ground is lost at the far end of the range: 0.85 means the "
+                + "furthest terrain shows through at 15%, which is heavy enough to read as "
+                + "distance without hiding what is there. 1 would fade it out entirely.",
+                new AcceptableValueRange<float>(0.1f, 1f)));
 
         Icons = config.Bind(
             "Experimental",
