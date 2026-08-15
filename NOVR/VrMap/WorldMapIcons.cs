@@ -75,6 +75,10 @@ internal sealed class WorldMapIcons
     private float _firstIcons;
     private readonly List<string> _inventory = new();
     private readonly Dictionary<MapIcon, Vector3> _placedAt = new();
+    private readonly Dictionary<Sprite, Sprite?> _masks = new();
+    private readonly List<Texture2D> _maskTextures = new();
+    private readonly List<Sprite> _maskSprites = new();
+    private bool _maskedThisFrame;
 
     public WorldMapIcons(Transform room) => _room = room;
 
@@ -136,6 +140,7 @@ internal sealed class WorldMapIcons
         Overlay();
         SetVisible(true);
         _seen.Clear();
+        _maskedThisFrame = false;
 
         // The flat map's own zoom, divided back out so a symbol's size on the
         // model does not change when the pilot zooms the flat map.
@@ -302,61 +307,33 @@ internal sealed class WorldMapIcons
         // pay for a hundred of them in the frame the map opens. The question it
         // answers is asked once per change, not once per flight.
         if (VrMapConfig.SelfTest == null || !VrMapConfig.SelfTest.Value) return "sprite not read";
-        var texture = sprite.texture;
-        if (texture == null) return "sprite has no texture";
 
-        var rect = sprite.textureRect;
-        var width = Mathf.Clamp(Mathf.RoundToInt(rect.width), 1, 512);
-        var height = Mathf.Clamp(Mathf.RoundToInt(rect.height), 1, 512);
+        var pixels = Read(sprite, out var width, out var height);
+        if (pixels == null) return "sprite unreadable";
 
-        RenderTexture? target = null;
-        Texture2D? readable = null;
-        var previous = RenderTexture.active;
-        try
+        int clear = 0, partial = 0, solid = 0;
+        long dark = 0;
+        foreach (var pixel in pixels)
         {
-            target = RenderTexture.GetTemporary(
-                texture.width, texture.height, 0,
-                RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
-            Graphics.Blit(texture, target);
-            RenderTexture.active = target;
+            if (pixel.a < 16) clear++;
+            else if (pixel.a > 240) solid++;
+            else partial++;
 
-            readable = new Texture2D(width, height, TextureFormat.RGBA32, false);
-            readable.ReadPixels(new Rect(rect.x, rect.y, width, height), 0, 0);
-            readable.Apply(false);
-
-            var pixels = readable.GetPixels32();
-            int clear = 0, partial = 0, solid = 0;
-            foreach (var pixel in pixels)
-            {
-                if (pixel.a < 16) clear++;
-                else if (pixel.a > 240) solid++;
-                else partial++;
-            }
-
-            var centre = pixels[(height / 2) * width + (width / 2)];
-            var total = Mathf.Max(1, pixels.Length);
-
-            // And the sprite itself, on disk, because "it has a black background"
-            // is a claim about the picture and every number above is a summary of
-            // one. A summary cannot show a black halo around a glyph, or colour
-            // that was never bled into the transparent texels, and both of those
-            // look like a black background once something magnifies them.
-            Dump(sprite, readable);
-
-            return $"sprite {width}x{height} alpha: {clear * 100f / total:F0}% clear, " +
-                   $"{partial * 100f / total:F0}% partial, {solid * 100f / total:F0}% solid, " +
-                   $"centre a={centre.a}";
+            // The number that mattered: opaque *and* black is a texel the sprite
+            // means you to see through and only an additive blend obeys.
+            if (pixel.a > 240 && Mathf.Max(pixel.r, Mathf.Max(pixel.g, pixel.b)) < 32) dark++;
         }
-        catch (System.Exception error)
-        {
-            return $"sprite unreadable ({error.GetType().Name})";
-        }
-        finally
-        {
-            RenderTexture.active = previous;
-            if (target != null) RenderTexture.ReleaseTemporary(target);
-            if (readable != null) Object.Destroy(readable);
-        }
+
+        var centre = pixels[(height / 2) * width + (width / 2)];
+        var total = Mathf.Max(1, pixels.Length);
+
+        // And the sprite itself, on disk, because "it has a black background" is a
+        // claim about a picture and every number here is a summary of one.
+        Dump(sprite, pixels, width, height);
+
+        return $"sprite {width}x{height} alpha: {clear * 100f / total:F0}% clear, " +
+               $"{partial * 100f / total:F0}% partial, {solid * 100f / total:F0}% solid, " +
+               $"centre a={centre.a}, opaque-and-black {dark * 100f / total:F0}%";
     }
 
     /// <summary>
@@ -445,7 +422,7 @@ internal sealed class WorldMapIcons
         // building — a footprint, not a symbol. Copying the sprite across
         // reproduces that for free, and disabling the image for want of one
         // would drop from the model something the flat map is showing.
-        icon.sprite = source.iconImage.sprite;
+        icon.sprite = Mask(source.iconImage.sprite);
         // The colour is the game's; the opacity is not. A map symbol is an
         // annotation, and the ground it annotates has to stay readable through it —
         // which on a flat map comes free, because the sprite sits on a picture,
@@ -494,6 +471,11 @@ internal sealed class WorldMapIcons
         _inventoried = false;
         _firstIcons = 0f;
         _placedAt.Clear();
+        foreach (var sprite in _maskSprites) Object.Destroy(sprite);
+        foreach (var texture in _maskTextures) Object.Destroy(texture);
+        _maskSprites.Clear();
+        _maskTextures.Clear();
+        _masks.Clear();
         if (_container != null) Object.Destroy(_container);
         if (_overlay != null) Object.Destroy(_overlay);
         _container = null;
@@ -588,11 +570,142 @@ internal sealed class WorldMapIcons
     }
 
     /// <summary>
+    /// The same symbol with its transparency moved from luminance into alpha.
+    ///
+    /// <para><b>The game's icon sprites do not keep their shape in the alpha
+    /// channel.</b> <c>baseIcon</c> is a white disc with a black aircraft and
+    /// black runway bars painted on it, fully opaque throughout: the alpha channel
+    /// says "all of this is the symbol" and the black is where you are meant to
+    /// see the ground. That works because every icon in the game is drawn with
+    /// <c>Text_additive</c>, and black adds nothing — the dark parts of the sprite
+    /// are the see-through parts, and the alpha channel is barely used. Drawn with
+    /// ordinary alpha blending the same sprite is a solid disc with a solid black
+    /// aircraft on it, which is exactly the "black background" a flight
+    /// reported.</para>
+    ///
+    /// <para><b>So convert rather than pick a blend.</b> Additive reproduces the
+    /// sprite's intent and fails against a bright background — an aircraft symbol
+    /// against the sky came out as almost nothing, measured — because it has
+    /// nowhere left to go. Moving the same information into alpha keeps the
+    /// intent and loses the failure: alpha is taken from the brightest channel,
+    /// the colour is divided back up so it stays at full strength, and the result
+    /// composites the same way over dark ground and light. The game's own tint
+    /// then does what it always did.</para>
+    ///
+    /// <para>One sprite per frame, because each costs a GPU readback and a mission
+    /// can hold twenty distinct symbols. Until its turn comes a symbol wears the
+    /// original, so the layer is never empty — it is briefly the old look.</para>
+    /// </summary>
+    private Sprite? Mask(Sprite? source)
+    {
+        if (source == null) return null;
+        if (_masks.TryGetValue(source, out var cached)) return cached != null ? cached : source;
+        if (_maskedThisFrame) return source;
+        _maskedThisFrame = true;
+
+        var pixels = Read(source, out var width, out var height);
+        if (pixels == null)
+        {
+            // Remember the failure: a sprite that cannot be read this frame will
+            // not become readable later, and retrying costs a readback a frame.
+            _masks[source] = null;
+            return source;
+        }
+
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            var pixel = pixels[i];
+            var brightest = Mathf.Max(pixel.r, Mathf.Max(pixel.g, pixel.b));
+            if (brightest == 0)
+            {
+                pixels[i] = new Color32(255, 255, 255, 0);
+                continue;
+            }
+
+            var scale = 255f / brightest;
+            pixels[i] = new Color32(
+                (byte)Mathf.Min(255f, pixel.r * scale),
+                (byte)Mathf.Min(255f, pixel.g * scale),
+                (byte)Mathf.Min(255f, pixel.b * scale),
+                (byte)(pixel.a * brightest / 255));
+        }
+
+        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false)
+        {
+            name = "NOVR " + source.name,
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        texture.SetPixels32(pixels);
+        texture.Apply(false);
+
+        var size = source.rect.size;
+        var pivot = size.x > 0f && size.y > 0f
+            ? new Vector2(source.pivot.x / size.x, source.pivot.y / size.y)
+            : new Vector2(0.5f, 0.5f);
+
+        var masked = Sprite.Create(texture, new Rect(0f, 0f, width, height), pivot,
+                                   source.pixelsPerUnit > 0f ? source.pixelsPerUnit : 100f);
+        masked.name = "NOVR " + source.name;
+
+        _maskTextures.Add(texture);
+        _maskSprites.Add(masked);
+        _masks[source] = masked;
+        return masked;
+    }
+
+    /// <summary>
+    /// A sprite's pixels, through a blit, because the icon textures are not
+    /// import-readable and <c>GetPixels32</c> on them throws.
+    /// </summary>
+    private static Color32[]? Read(Sprite sprite, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+
+        var texture = sprite.texture;
+        if (texture == null) return null;
+
+        var rect = sprite.textureRect;
+        width = Mathf.Clamp(Mathf.RoundToInt(rect.width), 1, 1024);
+        height = Mathf.Clamp(Mathf.RoundToInt(rect.height), 1, 1024);
+
+        RenderTexture? target = null;
+        Texture2D? readable = null;
+        var previous = RenderTexture.active;
+        try
+        {
+            target = RenderTexture.GetTemporary(
+                texture.width, texture.height, 0,
+                RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            Graphics.Blit(texture, target);
+            RenderTexture.active = target;
+
+            readable = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            readable.ReadPixels(new Rect(rect.x, rect.y, width, height), 0, 0);
+            readable.Apply(false);
+            return readable.GetPixels32();
+        }
+        catch (System.Exception error)
+        {
+            Debug.LogWarning($"[NOVR] World map: could not read sprite '{sprite.name}': {error.Message}");
+            return null;
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+            if (target != null) RenderTexture.ReleaseTemporary(target);
+            if (readable != null) Object.Destroy(readable);
+        }
+    }
+
+    /// <summary>
     /// Write a sprite out beside the frame dumps, RGBA as the game holds it, so
     /// the sprite and the pixels it produced on screen can be put side by side.
     /// </summary>
-    private static void Dump(Sprite sprite, Texture2D readable)
+    private static void Dump(Sprite sprite, Color32[] pixels, int width, int height)
     {
+        Texture2D? image = null;
         try
         {
             var folder = System.IO.Path.Combine(
@@ -600,13 +713,22 @@ internal sealed class WorldMapIcons
             System.IO.Directory.CreateDirectory(folder);
             var safe = sprite.name;
             foreach (var bad in System.IO.Path.GetInvalidFileNameChars()) safe = safe.Replace(bad, '_');
+
+            image = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            image.SetPixels32(pixels);
+            image.Apply(false);
+
             var path = System.IO.Path.Combine(folder, safe + ".png");
-            System.IO.File.WriteAllBytes(path, readable.EncodeToPNG());
+            System.IO.File.WriteAllBytes(path, image.EncodeToPNG());
             Debug.Log($"[NOVR] World map: wrote sprite '{sprite.name}' to {path}.");
         }
         catch (System.Exception error)
         {
             Debug.LogWarning($"[NOVR] World map: could not write sprite '{sprite.name}': {error.Message}");
+        }
+        finally
+        {
+            if (image != null) Object.Destroy(image);
         }
     }
 
