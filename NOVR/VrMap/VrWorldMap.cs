@@ -44,6 +44,7 @@ public class VrWorldMap : NOVRBehaviour
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
     private readonly List<GameObject> _hiddenPanels = new();
+    private readonly List<bool> _panelWasActive = new();
 
     protected override void OnDisable()
     {
@@ -91,9 +92,10 @@ public class VrWorldMap : NOVRBehaviour
     /// model fills, and a small flat map of the ground is the one thing a big
     /// solid one makes redundant.
     ///
-    /// <para>Found by the components they contain — <c>DynamicMap</c>,
-    /// <c>WeaponStatus</c> — as the two direct children of the helmet rect that
-    /// own them, which is the same pair the panel spread moves.</para>
+    /// <para>Found by what they are, not where they sit: the weapon readout is
+    /// the child of the helmet rect that owns a <c>WeaponStatus</c>, and the map
+    /// is the <c>DynamicMap</c> scene singleton, asked for directly because it
+    /// is not under the helmet at all.</para>
     ///
     /// <para>Deactivated rather than faded. A CanvasGroup at alpha 0 took the
     /// weapon readout out and left the tactical map drawing, so something under
@@ -110,42 +112,46 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
-        if (_hiddenPanels.Count > 0) return;
+        if (_hiddenPanels.Count >= 2) return;
 
         var hmd = SceneSingleton<HeadMountedDisplay>.i;
-        if (hmd == null) return;
-
-        foreach (Transform child in hmd.transform)
+        if (hmd != null)
         {
-            var what = child.GetComponentInChildren<global::DynamicMap>(true) != null ? "tactical map"
-                : child.GetComponentInChildren<WeaponStatus>(true) != null ? "weapon readout"
-                : null;
-            if (what == null) continue;
-
-            _hiddenPanels.Add(child.gameObject);
-            child.gameObject.SetActive(false);
-            Debug.Log($"[NOVR] World map: hid the helmet's {what} ('{child.name}').");
+            foreach (Transform child in hmd.transform)
+            {
+                if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
+                HidePanel(child.gameObject, "weapon readout");
+            }
         }
 
-        if (_hiddenPanels.Count < 2)
-        {
-            Debug.LogWarning(
-                $"[NOVR] World map: expected to find the helmet's tactical map and weapon readout, " +
-                $"found {_hiddenPanels.Count}. Children of the helmet rect: " +
-                string.Join(", ", System.Linq.Enumerable.Select(
-                    System.Linq.Enumerable.Cast<Transform>(hmd.transform), c => c.name)));
-        }
+        // The tactical map is not reached through the helmet rect. Measured: the
+        // helmet's children are Speed, Altitude, Bearing, ArtificialHorizon,
+        // TopRightPanel and LowerLeftPanel, and none of them holds a DynamicMap
+        // — the map is its own scene singleton, placed at an anchor in the
+        // helmet rather than living under it. Ask it for itself instead.
+        var map = SceneSingleton<global::DynamicMap>.i;
+        if (map != null) HidePanel(map.gameObject, "tactical map");
+    }
+
+    private void HidePanel(GameObject panel, string what)
+    {
+        if (_hiddenPanels.Contains(panel)) return;
+        _hiddenPanels.Add(panel);
+        _panelWasActive.Add(panel.activeSelf);
+        panel.SetActive(false);
+        Debug.Log($"[NOVR] World map: hid the {what} ('{panel.name}').");
     }
 
     private void ShowHelmetPanels()
     {
         if (_hiddenPanels.Count == 0) return;
-        foreach (var hidden in _hiddenPanels)
+        for (var i = 0; i < _hiddenPanels.Count; i++)
         {
-            if (hidden != null) hidden.SetActive(true);
+            if (_hiddenPanels[i] != null) _hiddenPanels[i].SetActive(_panelWasActive[i]);
         }
 
         _hiddenPanels.Clear();
+        _panelWasActive.Clear();
     }
 
     /// <summary>
