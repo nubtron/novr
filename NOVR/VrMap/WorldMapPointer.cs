@@ -59,10 +59,21 @@ internal sealed class WorldMapPointer
 
     public void Refresh(WorldMapIcons icons, Transform model, float seaLevelY)
     {
-        if (!TryRay(out var ray, out var trigger))
+        if (!TryRay(out var ray, out var trigger, out var handTracked))
         {
             Hide();
             return;
+        }
+
+        // With the self test on and no hand to point with — which is every
+        // harness run, because the mock runtime produces no controllers — aim at
+        // the biggest symbol instead of the horizon. Not a simulation of the
+        // pick: it is the same ray going into the same code, so the ring, its
+        // size and whether it draws over the terrain all end up in the frame.
+        // The trigger stays where it is, so nothing is clicked.
+        if (!handTracked && VrMapConfig.SelfTest != null && VrMapConfig.SelfTest.Value)
+        {
+            ray = AtBiggest(icons, ray);
         }
 
         var pick = Pick(icons, ray);
@@ -98,10 +109,11 @@ internal sealed class WorldMapPointer
     /// same head-relative reconstruction the controller models use — which is
     /// what puts the ray in the same space as the model without a conversion.
     /// </summary>
-    private static bool TryRay(out Ray ray, out float trigger)
+    private static bool TryRay(out Ray ray, out float trigger, out bool handTracked)
     {
         ray = default;
         trigger = 0f;
+        handTracked = false;
 
         var camera = APIBus.CockpitHudCamera;
         if (camera == null) return false;
@@ -125,11 +137,28 @@ internal sealed class WorldMapPointer
             ray = new Ray(
                 camera.transform.TransformPoint(relativePosition),
                 camera.transform.rotation * relativeRotation * Vector3.forward);
+            handTracked = true;
             return true;
         }
 
         ray = new Ray(camera.transform.position, camera.transform.forward);
         return true;
+    }
+
+    /// <summary>The ray from where we are to the largest symbol on the model.</summary>
+    private static Ray AtBiggest(WorldMapIcons icons, Ray ray)
+    {
+        var biggest = default(WorldMapIcons.Placed);
+        foreach (var symbol in icons.Symbols())
+        {
+            if (symbol.Transform == null) continue;
+            if (biggest.Transform != null && symbol.Radius <= biggest.Radius) continue;
+            biggest = symbol;
+        }
+
+        if (biggest.Transform == null) return ray;
+        var direction = biggest.Transform.position - ray.origin;
+        return direction.sqrMagnitude > 1e-6f ? new Ray(ray.origin, direction.normalized) : ray;
     }
 
     /// <summary>
