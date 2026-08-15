@@ -23,7 +23,10 @@ namespace NOVR;
 public class NOVRPlugin : BaseUnityPlugin
 {
     
+    private const string HarmonyId = "deltawing.novr";
+
     private static NOVRPlugin _instance;
+    private static Harmony? _harmony;
     public static string ModFolderPath { get; private set; }
 
     public NOVRPlugin()
@@ -40,8 +43,36 @@ public class NOVRPlugin : BaseUnityPlugin
         }
 
         InputTracking.trackingAcquired += TrackingAcquired;
-        Harmony.CreateAndPatchAll(Assembly.GetExecutingAssembly());
+        _harmony = new Harmony(HarmonyId);
+        _harmony.PatchAll(Assembly.GetExecutingAssembly());
         Core.Create();
+    }
+
+    /// <summary>
+    /// Undo everything the constructor did, leaving the game running vanilla.
+    /// Called by <see cref="Core"/> when XR cannot start — without a headset the
+    /// mod is not merely idle, it is actively harmful: the VR cursor rebinds
+    /// every <c>InputSystemUIInputModule</c> action to a VirtualMouse whose
+    /// position comes from a head that does not exist, so menu clicks are
+    /// delivered but always land in the same wrong place.
+    ///
+    /// Safe only because <see cref="Core"/> starts XR before it builds the VR
+    /// UI, so on this path the cursor was never constructed and none of that
+    /// has happened yet. There is nothing to restore, only work to not do.
+    /// </summary>
+    internal static void StandDown(string reason)
+    {
+        _instance?.Logger.LogWarning(
+            $"NOVR standing down: {reason} Reverting to vanilla — Harmony patches removed, no VR UI, no cursor takeover. " +
+            "Start SteamVR (or your runtime) before the game to fly in VR; pass --no-vr to skip this check entirely.");
+
+        if (_instance != null)
+        {
+            InputTracking.trackingAcquired -= _instance.TrackingAcquired;
+        }
+
+        _harmony?.UnpatchSelf();
+        _harmony = null;
     }
 
     private static bool ShouldDisableVr()
