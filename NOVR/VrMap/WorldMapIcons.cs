@@ -283,6 +283,11 @@ internal sealed class WorldMapIcons
         // would drop from the model something the flat map is showing.
         icon.sprite = source.iconImage.sprite;
         icon.color = source.iconImage.color;
+        // Only with a sprite. Preserving the aspect of a sprite that is not
+        // there divides by its zero size, and one NaN vertex takes the whole
+        // canvas batch with it — every symbol on the model disappeared, not
+        // just the five without sprites.
+        icon.preserveAspect = icon.sprite != null;
 
         var t = icon.transform;
         t.position = model.TransformPoint(mapPosition);
@@ -371,7 +376,6 @@ internal sealed class WorldMapIcons
 
         var image = go.AddComponent<Image>();
         image.raycastTarget = false;
-        image.preserveAspect = true;
         var overlay = Overlay();
         if (overlay != null) image.material = overlay;
         ((RectTransform)go.transform).sizeDelta = new Vector2(IconRectSize, IconRectSize);
