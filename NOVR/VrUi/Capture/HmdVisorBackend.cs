@@ -47,6 +47,7 @@ public class HmdVisorBackend : NOVRBehaviour
     private RenderTexture? _target;
     private Canvas? _panelCanvas;
     private RawImage? _panelImage;
+    private RawImage? _shadeImage;
     private RectTransform? _panelRect;
     private float _nextRebind;
     private bool _active;
@@ -217,9 +218,11 @@ public class HmdVisorBackend : NOVRBehaviour
         if (_panelCanvas != null)
         {
             if (_panelImage != null && _panelImage.material != null) Destroy(_panelImage.material);
+            if (_shadeImage != null && _shadeImage.material != null) Destroy(_shadeImage.material);
             Destroy(_panelCanvas.gameObject);
             _panelCanvas = null;
             _panelImage = null;
+            _shadeImage = null;
             _panelRect = null;
         }
 
@@ -257,13 +260,33 @@ public class HmdVisorBackend : NOVRBehaviour
         canvas.worldCamera = hudCamera;
 
         var rect = (RectTransform)canvas.transform;
-        var imageGo = new GameObject("Visor Texture");
-        imageGo.transform.SetParent(rect, false);
+
+        // Two quads, same texture, drawn back to front: shade, then symbology.
+        // See ShadeVisor() for why the visor is the one panel that gets this.
+        var shade = CreateQuad(rect, "Visor Shade", ShadeMaterial(), 3000);
+        var image = CreateQuad(rect, "Visor Texture", FlightHudCaptureBackend.CreatePanelMaterial(), 3001);
+
+        LayerHelper.SetLayerRecursive(go.transform, LayerHelper.GetVrUiLayer());
+
+        _panelCanvas = canvas;
+        _panelImage = image;
+        _shadeImage = shade;
+        _panelRect = rect;
+    }
+
+    private RawImage CreateQuad(RectTransform parent, string name, Material material, int renderQueue)
+    {
+        var imageGo = new GameObject(name);
+        imageGo.transform.SetParent(parent, false);
 
         var image = imageGo.AddComponent<RawImage>();
         image.texture = _target;
         image.raycastTarget = false;
-        image.material = FlightHudCaptureBackend.CreatePanelMaterial();
+        image.material = material;
+        // Hierarchy order is not enough: a WorldSpace canvas sorts by material
+        // render queue (the durable finding behind the masked-menu-text bug),
+        // and these two quads are coincident. Say the order explicitly.
+        image.material.renderQueue = renderQueue;
 
         var imageRect = (RectTransform)imageGo.transform;
         imageRect.anchorMin = Vector2.zero;
@@ -271,12 +294,21 @@ public class HmdVisorBackend : NOVRBehaviour
         imageRect.offsetMin = Vector2.zero;
         imageRect.offsetMax = Vector2.zero;
 
-        LayerHelper.SetLayerRecursive(go.transform, LayerHelper.GetVrUiLayer());
-
-        _panelCanvas = canvas;
-        _panelImage = image;
-        _panelRect = rect;
+        return image;
     }
+
+    /// <summary>
+    /// The shade quad's material: the stock UI one, untouched. All the work is
+    /// done by the graphic's colour, which <see cref="ShadeVisor"/> sets to
+    /// black with the shading strength as its alpha.
+    ///
+    /// <c>UI/Default</c> computes <c>src = tex * vertexColour</c> and blends
+    /// <c>SrcAlpha, OneMinusSrcAlpha</c>. With a black vertex colour that is
+    /// <c>dst = dst * (1 - texAlpha * strength)</c> — exactly alpha-compositing
+    /// black over the view, which is what the game's two backing sprites are.
+    /// No custom shader, and nothing to ship.
+    /// </summary>
+    private static Material ShadeMaterial() => new(Canvas.GetDefaultCanvasMaterial());
 
     private void Maintain()
     {
@@ -303,6 +335,8 @@ public class HmdVisorBackend : NOVRBehaviour
             _panelImage.material.SetColor("_Color", new Color(brightness, brightness, brightness, 1f));
         }
 
+        ShadeVisor();
+
         var aspect = (float)_targetWidth / _targetHeight;
         _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth / aspect);
         var scale = widthMeters / PanelCanvasReferenceWidth;
@@ -314,5 +348,51 @@ public class HmdVisorBackend : NOVRBehaviour
         _loggedPlacement = true;
         Debug.Log($"[NOVR] HMD visor panel: {widthMeters:F1} m wide at {distance:F1} m " +
                   $"({fovDegrees:F0}deg horizontal), head-locked.");
+    }
+
+    /// <summary>
+    /// Give back the flat game's dark backings behind the weapon readout, the
+    /// tactical map and the HMD number boxes.
+    ///
+    /// Those backings are two sprites, <c>mapPanel</c> and <c>weaponsPanel</c>
+    /// (plus the readout boxes), and they are authored as the exact opposite of
+    /// the rest of the HUD: pure black RGB with a real alpha channel and a
+    /// soft ~8 texel edge ramp, i.e. darkening masks, where the symbology
+    /// textures are BC1 with no alpha at all and are meant to be added. The
+    /// panels therefore write alpha into the capture texture and no colour, so
+    /// an additive quad drops them entirely — which is why they were missing.
+    ///
+    /// A combiner cannot darken, and the airframe HUD panel is deliberately
+    /// modelled as one. The visor is not: these elements are displays glued to
+    /// the helmet, not symbology projected through glass, so darkening is the
+    /// faithful behaviour rather than a violation of it. Measured on the flat
+    /// game, the backings pass 34-39% of what is behind them.
+    ///
+    /// The strength knob exists because the texture's alpha is *saturated*, not
+    /// authored: every draw over the panel accumulates alpha, so a region the
+    /// artist made 0.65 opaque arrives at 0.87-1.00. Scaling it back is what
+    /// makes the result match the flat frame; it is also what keeps the
+    /// difference between an icon quad and bare panel below anything visible.
+    /// </summary>
+    private void ShadeVisor()
+    {
+        if (_shadeImage == null) return;
+
+        var authored = Mathf.Clamp01(CapturedHmd.PanelShading?.Value ?? 0.65f);
+
+        // The setting is in the flat game's units — "pass 35% of the light" —
+        // and this converts it to the units the blend actually runs in.
+        //
+        // The flat game's backing is a ScreenSpaceOverlay draw: it multiplies
+        // gamma-encoded pixels. This quad is drawn by the pose-driven UI camera
+        // into a linear target, so the same alpha multiplies linear light and
+        // comes out far lighter after the transfer curve. Measured: at 0.65 the
+        // panel passed 0.66-0.69 of the sky behind it where the flat game
+        // passes 0.34-0.39 — predicted 0.68 by (1 - a)^(1/2.2), which is what
+        // confirmed the space rather than some other loss.
+        var strength = 1f - Mathf.Pow(1f - authored, 2.2f);
+
+        _shadeImage.enabled = authored > 0f;
+        _shadeImage.color = new Color(0f, 0f, 0f, strength);
     }
 }
