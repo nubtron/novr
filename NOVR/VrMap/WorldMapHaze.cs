@@ -131,12 +131,21 @@ internal sealed class WorldMapHaze
     {
         if (_root != null) return true;
 
-        var shader = Shader.Find("Universal Render Pipeline/Unlit") ?? Shader.Find("Unlit/Color");
+        // Shader.Find in a player build only sees shaders the game itself ships,
+        // and URP's own Unlit is not one of them — asked for, and it came back
+        // null. Sprites/Default is: the model's sea is already painted with it.
+        // It is unlit, alpha blended, writes no depth and tests depth normally,
+        // which is the entire specification here.
+        var shader = Shader.Find("Sprites/Default")
+                     ?? Shader.Find("Universal Render Pipeline/Unlit")
+                     ?? Shader.Find("Unlit/Color");
         if (shader == null)
         {
             Debug.LogWarning("[NOVR] World map haze: no unlit shader to build the air out of.");
             return false;
         }
+
+        Debug.Log($"[NOVR] World map haze: building the air out of '{shader.name}'.");
 
         // One sphere mesh, borrowed off a primitive and then thrown away with its
         // GameObject and collider — cheaper than owning a mesh generator for a
