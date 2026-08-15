@@ -19,6 +19,7 @@ public static class CapturedHmd
     public static ConfigEntry<bool> Visor;
     public static ConfigEntry<float> VisorFieldOfView;
     public static ConfigEntry<float> PanelShading;
+    public static ConfigEntry<float> PanelSpread;
     public static ConfigEntry<bool> GazeDesignator;
     public static ConfigEntry<bool> ViewIcons;
 
@@ -60,6 +61,22 @@ public static class CapturedHmd
                 + "it does there. Only the helmet visor is shaded — the airframe HUD panel is "
                 + "combiner glass and stays purely additive. Takes effect immediately.",
                 new AcceptableValueRange<float>(0f, 1f)));
+
+        PanelSpread = config.Bind(
+            "Experimental",
+            "Captured HMD Panel Spread",
+            10f,
+            new ConfigDescription(
+                "How far out from the centre of your view the tactical map and the weapon/"
+                + "countermeasure readout sit, in degrees. The flat game puts them in screen "
+                + "corners, and a screen is much wider than the visor, so mapped onto the visor "
+                + "they crowd the middle of your view where the flight HUD already is. Each moves "
+                + "outwards along its own bearing, and is clamped so it stays on the visor — a "
+                + "large element may not be able to take the whole amount. 0 leaves them exactly "
+                + "where the flat game puts them. The four HMD readouts (speed, altitude, "
+                + "bearing, horizon) are not affected: the game's own HMD settings place those. "
+                + "Takes effect immediately.",
+                new AcceptableValueRange<float>(0f, 30f)));
 
         GazeDesignator = config.Bind(
             "Experimental",
