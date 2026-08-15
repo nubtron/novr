@@ -39,8 +39,17 @@ public class Core : MonoBehaviour
         gameObject.AddComponent<MotionControllerVisual>();
     }
 
+    /// <summary>
+    /// Set once the mod has given up on XR, so <see cref="OnDestroy"/> lets the
+    /// object go instead of resurrecting it. Static because the resurrection is
+    /// what we are suppressing: the instance is on its way out.
+    /// </summary>
+    private static bool _stoodDown;
+
     private void OnDestroy()
     {
+        if (_stoodDown) return;
+
         Debug.Log("NOVR has been destroyed. This shouldn't have happened. Recreating...");
         
         Create();
@@ -57,11 +66,51 @@ public class Core : MonoBehaviour
 
         _refreshRateProperty = xrDeviceType?.GetProperty("refreshRate");
         
+        // XR comes up first, before anything is built on top of it. It is the
+        // one step here that can fail for a reason outside the mod's control —
+        // no headset, runtime not running, form factor unavailable — and it
+        // used to throw straight out of Start(), from *below* the VR UI. That
+        // left the mod half-built and the game unplayable: patched, UI alive,
+        // menu clicks routed to a cursor with no head to drive it.
+        //
+        // Ordering it first is what makes giving up clean. Neither of the two
+        // behaviours below reads XR state in Awake, so the working path is
+        // unchanged; the failing path simply never constructs them, instead of
+        // constructing them and hoping a pending Start() can be outrun.
+        try
+        {
+            _vrTogglerManager = new VrTogglerManager();
+        }
+        catch (Exception ex)
+        {
+            StandDown(ex);
+            return;
+        }
+
         _headsetData = NOVRBehaviour.Create<NOVRHeadsetData>(transform);
         _vrUi = NOVRBehaviour.Create<NOUIManager>(transform);
-        
-        _vrTogglerManager = new VrTogglerManager();
-        
+
+    }
+
+    /// <summary>
+    /// Tear the mod back out of a running game after XR failed to start.
+    /// Destroying this GameObject takes the whole mod with it: every behaviour
+    /// added in <see cref="Awake"/> lives on it, and the VR UI and headset data
+    /// are parented under its transform.
+    ///
+    /// This is only clean because it happens in Start(), before any of those
+    /// behaviours have had an Update(): <c>VrCameraManager</c> has not yet
+    /// reparented a camera, and the VR UI — the part that creates the
+    /// VirtualMouse and rewrites the UI bindings — was never constructed at
+    /// all. Nothing has to be undone because nothing has been done.
+    /// </summary>
+    private void StandDown(Exception cause)
+    {
+        Debug.LogWarning($"[NOVR] XR failed to start: {cause.Message}");
+
+        _stoodDown = true;
+        NOVRPlugin.StandDown("no XR runtime available (is the headset on and SteamVR running?).");
+        Destroy(gameObject);
     }
 
 
