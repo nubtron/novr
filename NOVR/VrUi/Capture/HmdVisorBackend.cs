@@ -62,6 +62,9 @@ public class HmdVisorBackend : NOVRBehaviour
     private readonly List<SpreadTarget> _spreadTargets = new();
     private bool _loggedSpread;
     private bool _rollUnshaded;
+    private Material? _colourOnly;
+    /// <summary>What the roll indicator's graphics were drawn with, so the game gets them back.</summary>
+    private readonly List<(Graphic Graphic, Material? Material)> _rollMaterials = new();
 
     public static bool IsVisorActive => _instance != null && _instance._active;
 
@@ -248,6 +251,14 @@ public class HmdVisorBackend : NOVRBehaviour
         if (_panelCanvas != null)
         {
             if (_panelImage != null && _panelImage.material != null) Destroy(_panelImage.material);
+            foreach (var (graphic, original) in _rollMaterials)
+            {
+                if (graphic != null) graphic.material = original;
+            }
+            _rollMaterials.Clear();
+            _rollUnshaded = false;
+            if (_colourOnly != null) Destroy(_colourOnly);
+            _colourOnly = null;
             if (_shadeImage != null && _shadeImage.material != null) Destroy(_shadeImage.material);
             Destroy(_panelCanvas.gameObject);
             _panelCanvas = null;
@@ -472,6 +483,28 @@ public class HmdVisorBackend : NOVRBehaviour
     }
 
     /// <summary>
+    /// A UI material that writes colour and leaves the alpha channel alone.
+    /// <c>_ColorMask</c> is a real property on <c>UI/Default</c>, so this needs no
+    /// shader of its own: 14 is R|G|B, the same mask minus A.
+    /// </summary>
+    private Material? ColourOnlyMaterial()
+    {
+        if (_colourOnly != null) return _colourOnly;
+
+        var shader = Shader.Find("UI/Default");
+        if (shader == null)
+        {
+            Debug.LogWarning("[NOVR] HMD visor: no 'UI/Default' shader, so the roll indicator " +
+                             "stays inside the darkening mask.");
+            return null;
+        }
+
+        _colourOnly = new Material(shader) { name = "NOVR Visor Colour Only" };
+        _colourOnly.SetFloat("_ColorMask", 14f);
+        return _colourOnly;
+    }
+
+    /// <summary>
     /// Take the roll indicator out of the darkening mask.
     ///
     /// <para>The shade quad is masked by the capture's own alpha channel, which is
@@ -483,12 +516,23 @@ public class HmdVisorBackend : NOVRBehaviour
     /// rectangle. So that one comes out as a dark slab in the middle of the view
     /// where the others come out as a thin outline.</para>
     ///
-    /// <para>The fix is to stop it writing alpha rather than to stop it drawing.
-    /// Its fill is black, so it contributes nothing to the colour and all it can
-    /// do is subtract; zeroing the alpha of a black graphic removes the darkening
-    /// and leaves every visible pixel where it was. Anything under it that is not
-    /// black is left alone — that is the symbology, and it is drawn from its
-    /// colour, not its alpha.</para>
+    /// <para><b>And there is no backing there at all.</b> Asked what it contains,
+    /// the widget is three symbology Images and nothing else: <c>vector</c>
+    /// (velocityVector, green), <c>horizon</c> (exclusionCircle, green) and
+    /// <c>sky</c> (exclusionCircle, blue at 0.8 alpha). The dark slab is the
+    /// <c>sky</c> disc — an instrument, drawn semi-transparent — being darkened by
+    /// its own alpha. Two earlier guesses died here: a black tint (the boxes are
+    /// tinted white and it is the *sprite* that is black, so the colour says
+    /// nothing) and "clear the alpha of the backing" (there is no backing, and
+    /// clearing alpha on an Image removes its colour too, which would delete the
+    /// attitude indicator rather than un-darken it).</para>
+    ///
+    /// <para><b>So stop it writing alpha without stopping it drawing.</b>
+    /// <c>UI/Default</c> exposes <c>_ColorMask</c>, so a material that writes RGB
+    /// and not A lets the widget composite into the capture's colour exactly as
+    /// before while contributing nothing to the channel the shade is masked by.
+    /// The instrument is untouched and the slab is gone, with no shader shipped
+    /// and nothing else on the visor affected.</para>
     /// </summary>
     private void UnshadeRollIndicator()
     {
@@ -503,38 +547,27 @@ public class HmdVisorBackend : NOVRBehaviour
 
         _rollUnshaded = true;
 
-        var cleared = 0;
-        var kept = 0;
+        var material = ColourOnlyMaterial();
+        if (material == null) return;
+
+        var masked = 0;
         foreach (var graphic in horizon.transform.GetComponentsInChildren<Graphic>(true))
         {
             var image = graphic as Image;
             var sprite = image != null && image.sprite != null ? image.sprite.name : "<none>";
 
-            // The backing is the Image; the readout is text. A black tint was the
-            // first guess and the wrong one — the box is tinted white and its
-            // *sprite* is the black one, so the colour says nothing. What
-            // separates them is what they are: text draws its glyphs, an Image
-            // under a readout draws the box behind them.
-            var backing = image != null;
-
             Debug.Log($"[NOVR] HMD visor roll indicator: '{graphic.name}' " +
                       $"{graphic.GetType().Name} colour={graphic.color} sprite='{sprite}' " +
-                      $"size={((RectTransform)graphic.transform).rect.size} " +
-                      $"— {(backing ? "backing, alpha cleared" : "left alone")}.");
+                      "— drawing colour only, no alpha.");
 
-            if (!backing)
-            {
-                kept++;
-                continue;
-            }
-
-            var colour = graphic.color;
-            graphic.color = new Color(colour.r, colour.g, colour.b, 0f);
-            cleared++;
+            _rollMaterials.Add((graphic, graphic.material));
+            graphic.material = material;
+            masked++;
         }
 
-        Debug.Log("[NOVR] HMD visor: roll indicator taken out of the darkening mask — " +
-                  $"{cleared} backing(s) set to zero alpha, {kept} left alone.");
+        Debug.Log($"[NOVR] HMD visor: roll indicator taken out of the darkening mask — " +
+                  $"{masked} graphic(s) now write colour without alpha, so the shade quad " +
+                  "has nothing of theirs to darken.");
     }
 
     /// <summary>
