@@ -185,8 +185,9 @@ public class VrWorldMap : NOVRBehaviour
         if (count > 0)
         {
             _iconsSeen = true;
-            Debug.Log($"[NOVR] World map: {count} unit icon(s) on the model, of " +
-                      $"{UnitRegistry.allUnits.Count} unit(s) in the mission.");
+            var airbases = _iconLayer != null ? _iconLayer.Airbases : 0;
+            Debug.Log($"[NOVR] World map: {count} icon(s) on the model — {count - airbases} unit(s) " +
+                      $"of {UnitRegistry.allUnits.Count} in the mission, and {airbases} airbase(s).");
             return;
         }
 
