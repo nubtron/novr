@@ -43,8 +43,50 @@ public class VrWorldMap : NOVRBehaviour
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
-    private readonly List<GameObject> _hiddenPanels = new();
-    private readonly List<bool> _panelWasActive = new();
+    private readonly List<HiddenPanel> _hiddenPanels = new();
+
+    /// <summary>
+    /// A panel we took out of view, and exactly what it takes to put it back.
+    ///
+    /// <para>Two mechanisms, because the two panels need different ones. A
+    /// <c>Canvas</c> is switched off where there is one: the game re-activates
+    /// the map's GameObject on its own (<c>DynamicMap.EnableCanvas</c>), so
+    /// deactivating it is a fight we lose every frame, while a disabled Canvas
+    /// component survives it. Where there is no Canvas, the GameObject.</para>
+    /// </summary>
+    private readonly struct HiddenPanel
+    {
+        public HiddenPanel(GameObject go, Canvas? canvas)
+        {
+            Go = go;
+            Canvas = canvas;
+            WasActive = go.activeSelf;
+            WasEnabled = canvas != null && canvas.enabled;
+        }
+
+        public readonly GameObject Go;
+        public readonly Canvas? Canvas;
+        public readonly bool WasActive;
+        public readonly bool WasEnabled;
+
+        public void Hide()
+        {
+            if (Canvas != null)
+            {
+                if (Canvas.enabled) Canvas.enabled = false;
+            }
+            else if (Go != null && Go.activeSelf)
+            {
+                Go.SetActive(false);
+            }
+        }
+
+        public void Restore()
+        {
+            if (Canvas != null) Canvas.enabled = WasEnabled;
+            else if (Go != null) Go.SetActive(WasActive);
+        }
+    }
 
     protected override void OnDisable()
     {
@@ -112,46 +154,51 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
-        if (_hiddenPanels.Count >= 2) return;
-
-        var hmd = SceneSingleton<HeadMountedDisplay>.i;
-        if (hmd != null)
+        if (_hiddenPanels.Count < 2)
         {
-            foreach (Transform child in hmd.transform)
+            var hmd = SceneSingleton<HeadMountedDisplay>.i;
+            if (hmd != null)
             {
-                if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
-                HidePanel(child.gameObject, "weapon readout");
+                foreach (Transform child in hmd.transform)
+                {
+                    if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
+                    TakePanel(child.gameObject, "weapon readout");
+                }
             }
+
+            // The tactical map is not reached through the helmet rect. Measured:
+            // the helmet's children are Speed, Altitude, Bearing,
+            // ArtificialHorizon, TopRightPanel and LowerLeftPanel, and none of
+            // them holds a DynamicMap — the map is its own scene singleton,
+            // placed at an anchor in the helmet rather than living under it.
+            var map = SceneSingleton<global::DynamicMap>.i;
+            if (map != null) TakePanel(map.gameObject, "tactical map");
         }
 
-        // The tactical map is not reached through the helmet rect. Measured: the
-        // helmet's children are Speed, Altitude, Bearing, ArtificialHorizon,
-        // TopRightPanel and LowerLeftPanel, and none of them holds a DynamicMap
-        // — the map is its own scene singleton, placed at an anchor in the
-        // helmet rather than living under it. Ask it for itself instead.
-        var map = SceneSingleton<global::DynamicMap>.i;
-        if (map != null) HidePanel(map.gameObject, "tactical map");
+        // Every frame, not once. The game turns the map's GameObject back on by
+        // itself, so a single hide is undone before it is ever seen.
+        foreach (var panel in _hiddenPanels) panel.Hide();
     }
 
-    private void HidePanel(GameObject panel, string what)
+    private void TakePanel(GameObject panel, string what)
     {
-        if (_hiddenPanels.Contains(panel)) return;
-        _hiddenPanels.Add(panel);
-        _panelWasActive.Add(panel.activeSelf);
-        panel.SetActive(false);
-        Debug.Log($"[NOVR] World map: hid the {what} ('{panel.name}').");
+        foreach (var known in _hiddenPanels)
+        {
+            if (known.Go == panel) return;
+        }
+
+        var canvas = panel.GetComponent<Canvas>();
+        _hiddenPanels.Add(new HiddenPanel(panel, canvas));
+        Debug.Log(
+            $"[NOVR] World map: hiding the {what} ('{panel.name}') by " +
+            (canvas != null ? "disabling its Canvas" : "deactivating it") + ".");
     }
 
     private void ShowHelmetPanels()
     {
         if (_hiddenPanels.Count == 0) return;
-        for (var i = 0; i < _hiddenPanels.Count; i++)
-        {
-            if (_hiddenPanels[i] != null) _hiddenPanels[i].SetActive(_panelWasActive[i]);
-        }
-
+        foreach (var panel in _hiddenPanels) panel.Restore();
         _hiddenPanels.Clear();
-        _panelWasActive.Clear();
     }
 
     /// <summary>
