@@ -56,6 +56,7 @@ internal sealed class WorldMapPointer
     private bool _triggerDown;
     private bool _sweptOnce;
     private bool _ringLogged;
+    private bool _clickChecked;
 
     public WorldMapPointer(Transform room) => _room = room;
 
@@ -252,20 +253,67 @@ internal sealed class WorldMapPointer
         var hud = SceneSingleton<CombatHUD>.i;
         var selector = SceneSingleton<TargetListSelector>.i;
         var aircraft = hud != null ? hud.aircraft : null;
-        var selected = map != null && map.selectedIcons.Contains(icon);
 
         if (aircraft != null && !aircraft.disabled)
         {
             if (unitIcon.unit == aircraft) return;
             if (selector != null && selector.CheckExclusions(unitIcon.unit)) return;
-            if (selected) hud.DeSelectUnit(unitIcon.unit);
+
+            // The target list, not selectedIcons. CombatHUD.SelectUnit selects the
+            // HUD marker and calls weaponManager.AddTargetList — it never touches
+            // the map's selection, so asking the map whether this unit is selected
+            // always answers no while flying, and a second press would designate
+            // it again instead of dropping it.
+            var targets = hud.GetTargetList();
+            if (targets != null && targets.Contains(unitIcon.unit)) hud.DeSelectUnit(unitIcon.unit);
             else hud.SelectUnit(unitIcon.unit);
             return;
         }
 
         if (map == null) return;
-        if (selected) map.DeselectIcon(unitIcon.unit);
+        if (map.selectedIcons.Contains(icon)) map.DeselectIcon(unitIcon.unit);
         else map.SelectIcon(unitIcon.unit);
+    }
+
+    /// <summary>
+    /// Press the trigger on a real unit, twice, and ask the game what happened.
+    ///
+    /// <para>Half the click path can be tested here and half cannot. An airbase
+    /// needs a pilot with no aircraft, and the harness is always flying — that is
+    /// the game's own rule and it cannot be worked around from this side. A unit
+    /// is the opposite: designating one is exactly what you do while flying, so
+    /// the whole dispatch runs for real against <c>CombatHUD</c> and the target
+    /// list says whether it took.</para>
+    /// </summary>
+    public void VerifyClick(WorldMapIcons icons)
+    {
+        if (_clickChecked) return;
+
+        var hud = SceneSingleton<CombatHUD>.i;
+        if (hud == null || hud.aircraft == null || hud.aircraft.disabled) return;
+
+        UnitMapIcon? target = null;
+        foreach (var symbol in icons.Symbols())
+        {
+            if (symbol.Source is not UnitMapIcon candidate || candidate.unit == null) continue;
+            if (candidate.unit == hud.aircraft) continue;
+            target = candidate;
+            break;
+        }
+
+        if (target == null) return;
+        _clickChecked = true;
+
+        var before = hud.GetTargetList()?.Count ?? -1;
+        Click(target);
+        var afterSelect = hud.GetTargetList()?.Count ?? -1;
+        Click(target);
+        var afterDeselect = hud.GetTargetList()?.Count ?? -1;
+
+        Debug.Log(
+            $"[NOVR] World map click check: '{target.unit.unitName}' — target list {before} " +
+            $"-> {afterSelect} on the first press -> {afterDeselect} on the second " +
+            $"({(afterSelect == before + 1 && afterDeselect == before ? "select and deselect both took" : "NOT the expected select/deselect")}).");
     }
 
     /// <summary>
