@@ -120,21 +120,28 @@ public static class VrMapConfig
             "Experimental",
             "World Map Icons",
             true,
-            "Stand the units on the model. Which units appear, what symbol each gets and what "
-            + "colour it is are not decided here: they are read off the game's own map icon for "
-            + "that unit, so tracking, spotting, radar returns and the last-known position of a "
-            + "contact that has gone cold all behave exactly as they do on the flat map. What is "
-            + "added is height — a symbol sits at its unit's actual altitude, which is the one "
-            + "thing a flat map cannot show and the reason to have a solid one.");
+            "Stand the units and airbases on the model. Which units appear, what symbol each gets, "
+            + "what colour it is and how big it is are not decided here: they are read off the "
+            + "game's own map icon for that unit, so tracking, spotting, radar returns and the "
+            + "last-known position of a contact that has gone cold all behave exactly as they do "
+            + "on the flat map, and an airbase stays the landmark it is there rather than becoming "
+            + "one more dot among the tanks. What is added is height — a symbol sits at the "
+            + "altitude in the same tracking record its position comes from, so it is exactly as "
+            + "stale as the position under it, and never a live altitude under a stale place. "
+            + "That is the one thing a flat map cannot show and the reason to have a solid one. "
+            + "The symbols are drawn over the terrain rather than into it: a map symbol annotates "
+            + "the ground, so a ridge in front of it does not saw it in half.");
 
         IconSize = config.Bind(
             "Experimental",
             "World Map Icon Size",
             0.35f,
             new ConfigDescription(
-                "How big the unit symbols are, in real metres. They are a fixed size in the room "
-                + "rather than on the map, so zooming the model in and out does not change how "
-                + "readable they are.",
+                "How big an ordinary unit's symbol is, in real metres. Everything else is sized "
+                + "relative to that by the same ratios the flat map uses, so an airbase comes out "
+                + "about three times an aircraft and stays findable. They are a fixed size in the "
+                + "room rather than on the map, so zooming the model in and out does not change "
+                + "how readable they are.",
                 new AcceptableValueRange<float>(0.05f, 2f)));
 
         HideCockpit = config.Bind(
