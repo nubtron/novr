@@ -240,7 +240,8 @@ internal sealed class WorldMapIcons
             var at = _placedAt.TryGetValue(placed.Key, out var where) ? where : Vector3.zero;
             _inventory.Add($"{placed.Key.name} ({kind}, sprite '{sprite}', " +
                            $"{placed.Value.transform.localScale.x * IconRectSize:F2}m, " +
-                           $"map {at.x:F0},{at.y:F0},{at.z:F0}, {Coverage(placed.Value.sprite)})");
+                           $"map {at.x:F0},{at.y:F0},{at.z:F0}, {OnScreen(placed.Value.transform)}" +
+                           $", {Coverage(placed.Value.sprite)})");
         }
 
         var mount = APIBus.MainCamera != null ? APIBus.MainCamera.transform : null;
@@ -334,6 +335,34 @@ internal sealed class WorldMapIcons
         return $"sprite {width}x{height} alpha: {clear * 100f / total:F0}% clear, " +
                $"{partial * 100f / total:F0}% partial, {solid * 100f / total:F0}% solid, " +
                $"centre a={centre.a}, opaque-and-black {dark * 100f / total:F0}%";
+    }
+
+    /// <summary>
+    /// Where a symbol falls in the view, and how far below the horizon it sits.
+    ///
+    /// <para>Three capture runs went looking for a symbol that was simply below
+    /// the bottom of the frame, and a frame with nothing in it looks exactly like
+    /// a frame where the drawing is broken. The model hangs under you and most of
+    /// it is steeply down: at 1:1200 an airbase 5.9 km away is 4.9 m out and 8 m
+    /// below, which is 58° under the horizon and off the bottom of any forward
+    /// view. So say so, rather than making the next reader infer it from a black
+    /// square.</para>
+    /// </summary>
+    private static string OnScreen(Transform icon)
+    {
+        var camera = APIBus.CockpitHudCamera;
+        if (camera == null) return "no view camera";
+
+        var viewport = camera.WorldToViewportPoint(icon.position, Camera.MonoOrStereoscopicEye.Mono);
+        var toIcon = icon.position - camera.transform.position;
+        var horizontal = new Vector3(toIcon.x, 0f, toIcon.z).magnitude;
+        var depression = horizontal > 0.001f ? -Mathf.Atan2(toIcon.y, horizontal) * Mathf.Rad2Deg : 0f;
+        var inFrame = viewport.z > 0f &&
+                      viewport.x >= 0f && viewport.x <= 1f &&
+                      viewport.y >= 0f && viewport.y <= 1f;
+
+        return $"view {viewport.x:F2},{viewport.y:F2} {(inFrame ? "IN frame" : "off frame")}, " +
+               $"{depression:F0}° below the horizon";
     }
 
     /// <summary>
