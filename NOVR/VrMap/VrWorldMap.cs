@@ -1,0 +1,191 @@
+using NOVR.VrUi;
+using UnityEngine;
+using UnityEngine.Rendering;
+
+namespace NOVR.VrMap;
+
+/// <summary>
+/// The 3D world map: the whole theatre as a solid model hanging below you, and
+/// the shortcut that shows and hides it.
+///
+/// <para><b>Why a model and not a camera pointed at the world.</b> The obvious
+/// way to get a map like this is to fly a camera to 40 km and look down, which
+/// needs no new geometry at all. It also produces a flat picture: at that range
+/// the two eyes see the same image, so a headset shows you a photograph. The
+/// whole value of doing this in VR is the diorama — depth you get by having the
+/// thing be small and near. So the world is shrunk instead of the viewer being
+/// moved.</para>
+///
+/// <para><b>Why it is drawn by the UI camera.</b> The model lives on the VR UI
+/// layer, which <see cref="NOUIManager.CockpitHudCamera"/> draws as a URP
+/// overlay with the depth buffer cleared. That is what lets a 41 m landscape sit
+/// in a cockpit you are strapped into without the canopy rails cutting through
+/// it. It also puts the model behind the HUD panels rather than over them, since
+/// the model is opaque geometry and they are transparent.</para>
+///
+/// <para><b>Why it does not follow your head.</b> The model is placed against
+/// the airframe mount, not the head: a model anchored to the head moves when you
+/// lean, and a world that moves when you lean is the single most reliable way to
+/// make someone sick. It is world-aligned too — north stays north as you turn,
+/// so the model behaves like an object you are flying over rather than a thing
+/// strapped to the aircraft.</para>
+/// </summary>
+public class VrWorldMap : NOVRBehaviour
+{
+    private static readonly int DatumOriginId = Shader.PropertyToID("_Datum_OriginPosition");
+    private static readonly int DatumExtentId = Shader.PropertyToID("_Datum_WorldExtent");
+
+    private WorldMapModel? _model;
+    private bool _datumOverridden;
+
+    protected override void OnEnable()
+    {
+        base.OnEnable();
+        RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
+        RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
+    }
+
+    protected override void OnDisable()
+    {
+        base.OnDisable();
+        RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
+        RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
+        RestoreDatum();
+    }
+
+    private void OnDestroy()
+    {
+        RestoreDatum();
+        _model?.Destroy();
+        _model = null;
+    }
+
+    private void Update()
+    {
+        // Safety net. The override is meant to be undone by the matching
+        // endCameraRendering, but a frame that never finishes rendering that
+        // camera would otherwise leave the *real* terrain reading its texture
+        // through a 41 m window — the whole world one flat colour, with nothing
+        // on screen to suggest the map was involved.
+        RestoreDatum();
+
+        if (VrMapConfig.ToggleShortcut != null && Input.GetKeyDown(VrMapConfig.ToggleShortcut.Value))
+        {
+            VrMapConfig.Open.Value = !VrMapConfig.Open.Value;
+        }
+
+        if (VrMapConfig.Enabled == null || !VrMapConfig.Enabled.Value || !VrMapConfig.Open.Value)
+        {
+            Hide();
+            return;
+        }
+
+        var model = EnsureModel();
+        if (model == null) return;
+
+        Place(model);
+        model.Root.SetActive(true);
+    }
+
+    private WorldMapModel? EnsureModel()
+    {
+        var levelInfo = NetworkSceneSingleton<LevelInfo>.i;
+        var settings = levelInfo != null ? levelInfo.LoadedMapSettings : null;
+        if (settings == null)
+        {
+            Hide();
+            return null;
+        }
+
+        // Rebuild when the mission moves to a different map — the clones hold
+        // the old map's meshes, and the old map's prefab has been destroyed.
+        if (_model != null && (_model.Root == null || _model.Settings != settings))
+        {
+            _model.Destroy();
+            _model = null;
+        }
+
+        return _model ??= WorldMapModel.Build();
+    }
+
+    private void Hide()
+    {
+        if (_model?.Root != null) _model.Root.SetActive(false);
+    }
+
+    /// <summary>
+    /// Put the model under the aircraft, at scale, with the piece of map you are
+    /// actually over directly below you — so the model slides beneath you as you
+    /// fly, the way the ground does.
+    /// </summary>
+    private void Place(WorldMapModel model)
+    {
+        var mount = AnchorPosition();
+        if (mount == null) return;
+
+        var scale = 1f / Mathf.Max(1f, VrMapConfig.Scale.Value);
+        var exaggeration = Mathf.Max(1f, VrMapConfig.ReliefExaggeration.Value);
+        var modelScale = new Vector3(scale, scale * exaggeration, scale);
+
+        var root = model.Root.transform;
+        root.localScale = modelScale;
+        root.rotation = Quaternion.identity;
+
+        // Where we are on the map, in map metres: world position less the
+        // floating origin, flattened to sea level.
+        var here = mount.Value - global::Datum.originPosition;
+        var beneathUs = new Vector3(here.x, 0f, here.z);
+
+        var seaLevel = mount.Value + Vector3.down * VrMapConfig.EyeHeight.Value;
+        root.position = seaLevel - Vector3.Scale(beneathUs, modelScale);
+    }
+
+    /// <summary>
+    /// The airframe-fixed mount — the same one the captured flight HUD hangs its
+    /// panel from. Its position moves with the aircraft; its rotation is not
+    /// used, deliberately.
+    /// </summary>
+    private static Vector3? AnchorPosition()
+    {
+        var mainCamera = APIBus.MainCamera;
+        if (mainCamera == null) return null;
+        var mount = mainCamera.transform.parent;
+        return mount != null ? mount.position : mainCamera.transform.position;
+    }
+
+    private void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
+    {
+        if (_model?.Root == null || !_model.Root.activeSelf) return;
+        if (!VrMapConfig.RemapTerrainDatum.Value) return;
+        if (NOUIManager.I == null || camera != NOUIManager.I.CockpitHudCamera) return;
+
+        // The terrain shader reads its position in the map from the pixel's
+        // world position measured against these two globals. Point them at the
+        // model — origin at the model's map (0,0), extent scaled with it — and
+        // every clone reads the same texel it would have read full size.
+        var root = _model.Root.transform;
+        var scale = root.localScale.x;
+        Shader.SetGlobalVector(DatumOriginId, root.position);
+        Shader.SetGlobalVector(DatumExtentId, _model.MapSize * 0.5f * scale);
+        _datumOverridden = true;
+    }
+
+    private void OnEndCameraRendering(ScriptableRenderContext context, Camera camera)
+    {
+        if (!_datumOverridden) return;
+        if (NOUIManager.I == null || camera != NOUIManager.I.CockpitHudCamera) return;
+        RestoreDatum();
+    }
+
+    private void RestoreDatum()
+    {
+        if (!_datumOverridden) return;
+        _datumOverridden = false;
+
+        Shader.SetGlobalVector(DatumOriginId, global::Datum.originPosition);
+
+        var levelInfo = NetworkSceneSingleton<LevelInfo>.i;
+        var settings = levelInfo != null ? levelInfo.LoadedMapSettings : null;
+        if (settings != null) Shader.SetGlobalVector(DatumExtentId, settings.MapSize * 0.5f);
+    }
+}
