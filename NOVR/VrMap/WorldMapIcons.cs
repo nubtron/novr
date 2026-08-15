@@ -84,6 +84,36 @@ internal sealed class WorldMapIcons
     public int Airbases { get; private set; }
 
     /// <summary>
+    /// A symbol as something that can be pointed at: where it is, how big it is
+    /// in real metres, and the game's own icon behind it — which is what any
+    /// click has to be handed back to.
+    /// </summary>
+    internal readonly struct Placed
+    {
+        public Placed(MapIcon source, Transform transform, float radius)
+        {
+            Source = source;
+            Transform = transform;
+            Radius = radius;
+        }
+
+        public readonly MapIcon Source;
+        public readonly Transform Transform;
+        public readonly float Radius;
+    }
+
+    /// <summary>Every symbol currently on the model, for the pointer to aim at.</summary>
+    internal IEnumerable<Placed> Symbols()
+    {
+        foreach (var placed in _icons)
+        {
+            if (placed.Key == null || placed.Value == null || !placed.Value.enabled) continue;
+            var t = placed.Value.transform;
+            yield return new Placed(placed.Key, t, t.lossyScale.x * IconRectSize * 0.5f);
+        }
+    }
+
+    /// <summary>
     /// Bring the icon layer up to date for this frame. <paramref name="model"/>
     /// is the model root, whose transform turns map coordinates into places in
     /// the room; <paramref name="head"/> is what the symbols turn to face.

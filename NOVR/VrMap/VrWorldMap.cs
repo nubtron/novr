@@ -54,6 +54,7 @@ public class VrWorldMap : NOVRBehaviour
     private WorldMapModel? _model;
     private WorldMapIcons? _iconLayer;
     private WorldMapSelfTest? _selfTest;
+    private WorldMapPointer? _pointer;
     private bool _reported;
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
@@ -121,6 +122,8 @@ public class VrWorldMap : NOVRBehaviour
         ShowHelmetPanels();
         _iconLayer?.Clear();
         _iconLayer = null;
+        _pointer?.Destroy();
+        _pointer = null;
         if (_marker != null) Destroy(_marker);
         _marker = null;
         _model?.Destroy();
@@ -181,6 +184,29 @@ public class VrWorldMap : NOVRBehaviour
             Mathf.Max(0.01f, VrMapConfig.IconSize.Value));
 
         ReportIcons(_iconLayer.Count);
+        RefreshPointer(model, room);
+    }
+
+    /// <summary>
+    /// Point at the model and select what you are pointing at. Sea level on the
+    /// model is map y = 0 by construction — map coordinates are world less the
+    /// floating origin, and the datum's own y is the sea.
+    /// </summary>
+    private void RefreshPointer(WorldMapModel model, Transform room)
+    {
+        if (VrMapConfig.Pointer == null || !VrMapConfig.Pointer.Value || _iconLayer == null)
+        {
+            _pointer?.Hide();
+            return;
+        }
+
+        _pointer ??= new WorldMapPointer(room);
+        _pointer.Refresh(_iconLayer, model.Root.transform, 0f);
+
+        if (VrMapConfig.SelfTest != null && VrMapConfig.SelfTest.Value && _iconLayer.Count > 0)
+        {
+            _pointer.Sweep(_iconLayer);
+        }
     }
 
     /// <summary>
@@ -431,6 +457,7 @@ public class VrWorldMap : NOVRBehaviour
     {
         if (_model?.Root != null) _model.Root.SetActive(false);
         _iconLayer?.SetVisible(false);
+        _pointer?.Hide();
         ShowCockpit();
         ShowHelmetPanels();
         _reported = false;
