@@ -119,8 +119,8 @@ public static class VrMapConfig
             + "3D map is up. Both are stacked in front of the same view the model fills, and the "
             + "small flat map of the ground is the one thing the big solid one makes redundant. "
             + "The rest of the helmet display — speed, altitude, bearing, horizon — stays, "
-            + "because you are still flying. They are hidden rather than switched off, so the "
-            + "game's own map keeps running underneath and comes back exactly as it was.");
+            + "because you are still flying. Both come back exactly as they were when you close "
+            + "the map.");
 
         DebugMarker = config.Bind(
             "Experimental",
