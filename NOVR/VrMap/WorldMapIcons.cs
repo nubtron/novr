@@ -73,6 +73,7 @@ internal sealed class WorldMapIcons
     private float _airbasesFound;
     private bool _inventoried;
     private readonly List<string> _inventory = new();
+    private readonly Dictionary<MapIcon, Vector3> _placedAt = new();
 
     public WorldMapIcons(Transform room) => _room = room;
 
@@ -187,12 +188,18 @@ internal sealed class WorldMapIcons
             if (placed.Key == null || placed.Value == null) continue;
             var kind = placed.Key is AirbaseMapIcon ? "airbase" : "unit";
             var sprite = placed.Value.sprite != null ? placed.Value.sprite.name : "<none>";
+            var at = _placedAt.TryGetValue(placed.Key, out var where) ? where : Vector3.zero;
             _inventory.Add($"{placed.Key.name} ({kind}, sprite '{sprite}', " +
-                           $"{placed.Value.transform.localScale.x * IconRectSize:F2}m)");
+                           $"{placed.Value.transform.localScale.x * IconRectSize:F2}m, " +
+                           $"map {at.x:F0},{at.y:F0},{at.z:F0})");
         }
 
-        Debug.Log("[NOVR] World map icons: " + string.Join(", ", _inventory));
+        var mount = APIBus.MainCamera != null ? APIBus.MainCamera.transform : null;
+        var here = mount != null ? mount.position - global::Datum.originPosition : Vector3.zero;
+        Debug.Log($"[NOVR] World map icons (aircraft at map {here.x:F0},{here.y:F0},{here.z:F0}): " +
+                  string.Join(", ", _inventory));
         _inventory.Clear();
+        _placedAt.Clear();
     }
 
     /// <summary>
@@ -288,6 +295,8 @@ internal sealed class WorldMapIcons
         // canvas batch with it — every symbol on the model disappeared, not
         // just the five without sprites.
         icon.preserveAspect = icon.sprite != null;
+
+        if (!_inventoried) _placedAt[source] = mapPosition;
 
         var t = icon.transform;
         t.position = model.TransformPoint(mapPosition);
