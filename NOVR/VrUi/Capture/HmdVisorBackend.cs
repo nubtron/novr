@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.UI;
@@ -58,7 +59,26 @@ public class HmdVisorBackend : NOVRBehaviour
     private Transform? _savedParent;
     private int _savedSiblingIndex;
 
+    private readonly List<SpreadTarget> _spreadTargets = new();
+    private bool _loggedSpread;
+
     public static bool IsVisorActive => _instance != null && _instance._active;
+
+    /// <summary>
+    /// One element of the HMD layer that <see cref="SpreadPanels"/> can push
+    /// outwards, with everything about it that does not change per frame.
+    /// </summary>
+    private sealed class SpreadTarget
+    {
+        public RectTransform Rect = null!;
+        public string Label = "";
+        /// <summary>Its untouched position, so the offset is set and never accumulated.</summary>
+        public Vector3 BasePosition;
+        /// <summary>Unit vector from the centre of view to the element, in canvas space.</summary>
+        public Vector2 Direction;
+        /// <summary>How far it can still travel along that vector before a corner leaves the capture.</summary>
+        public float MaxDistance;
+    }
 
     /// <summary>
     /// Where the airframe boresight sits in the visor canvas's space — the one
@@ -201,6 +221,15 @@ public class HmdVisorBackend : NOVRBehaviour
     {
         _active = false;
 
+        // Put the two spread elements back before the subtree goes home, or the
+        // offsets ride along into the flat game's own HUD.
+        foreach (var target in _spreadTargets)
+        {
+            if (target.Rect != null) target.Rect.localPosition = target.BasePosition;
+        }
+        _spreadTargets.Clear();
+        _loggedSpread = false;
+
         if (_hmdRect != null && _savedParent != null)
         {
             _hmdRect.SetParent(_savedParent, false);
@@ -336,6 +365,7 @@ public class HmdVisorBackend : NOVRBehaviour
         }
 
         ShadeVisor();
+        SpreadPanels(fovDegrees);
 
         var aspect = (float)_targetWidth / _targetHeight;
         _panelRect.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth / aspect);
@@ -394,5 +424,116 @@ public class HmdVisorBackend : NOVRBehaviour
 
         _shadeImage.enabled = authored > 0f;
         _shadeImage.color = new Color(0f, 0f, 0f, strength);
+    }
+
+    /// <summary>
+    /// Push the tactical map and the weapon/countermeasure readout further from
+    /// the centre of view.
+    ///
+    /// The flat game puts them in screen corners, and a screen is much wider
+    /// than the visor: mapped onto a 70 degree panel they end up crowding the
+    /// middle of the pilot's view, right where the flight HUD is. This moves
+    /// them back out along their own bearing from the centre, in degrees, which
+    /// is the unit that means something here — the visor's pixels only exist
+    /// because the game's arithmetic wanted them.
+    ///
+    /// Only these two. The four HMD widgets (speed, altitude, bearing, horizon)
+    /// are deliberately left alone: <c>HeadMountedDisplay.RefreshSettings</c>
+    /// rewrites their positions from `hmdSideDist` / `hmdSideAngle` /
+    /// `hmdTopHeight` whenever the player applies options, so the game already
+    /// owns that placement and fighting it would be a bug rather than a
+    /// feature. The map and the readout are the two it does not touch.
+    /// </summary>
+    private void SpreadPanels(float fovDegrees)
+    {
+        if (_spreadTargets.Count == 0 || _spreadTargets.Exists(t => t.Rect == null))
+        {
+            ResolveSpreadTargets();
+        }
+
+        var degrees = Mathf.Clamp(CapturedHmd.PanelSpread?.Value ?? 10f, 0f, 30f);
+        var pixels = degrees * _targetWidth / Mathf.Max(1f, fovDegrees);
+
+        foreach (var target in _spreadTargets)
+        {
+            if (target.Rect == null) continue;
+            var distance = Mathf.Min(pixels, target.MaxDistance);
+            var canvasDelta = (Vector3)(target.Direction * distance);
+            // The HMD rect and the canvas are both unrotated UI rects, so this
+            // is the identity in practice. Going through the transforms anyway
+            // costs nothing and survives someone scaling the subtree later.
+            var localDelta = target.Rect.parent != null
+                ? target.Rect.parent.InverseTransformVector(_visorCanvas!.transform.TransformVector(canvasDelta))
+                : canvasDelta;
+            target.Rect.localPosition = target.BasePosition + localDelta;
+        }
+    }
+
+    /// <summary>
+    /// Find the map and the weapon readout among the HMD subtree's own
+    /// children, by the components they contain rather than by name or path:
+    /// names are the game's to change, and a component is what the element
+    /// actually is. Each is moved as a whole — the direct child of the HMD rect
+    /// that owns it — so nothing inside is disturbed.
+    /// </summary>
+    private void ResolveSpreadTargets()
+    {
+        _spreadTargets.Clear();
+        if (_hmdRect == null || _visorCanvas == null) return;
+
+        var canvasTransform = _visorCanvas.transform;
+        var halfWidth = _targetWidth * 0.5f;
+        var halfHeight = _targetHeight * 0.5f;
+        var corners = new Vector3[4];
+
+        foreach (Transform child in _hmdRect)
+        {
+            if (child is not RectTransform rect) continue;
+
+            var label = child.GetComponentInChildren<DynamicMap>(true) != null ? "tactical map"
+                : child.GetComponentInChildren<WeaponStatus>(true) != null ? "weapon readout"
+                : null;
+            if (label == null) continue;
+
+            rect.GetWorldCorners(corners);
+            var min = canvasTransform.InverseTransformPoint(corners[0]);
+            var max = canvasTransform.InverseTransformPoint(corners[2]);
+            var centre = new Vector2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+            if (centre.sqrMagnitude < 1f) continue;   // dead centre: no outward direction to take
+
+            var direction = centre.normalized;
+            var maxDistance = Mathf.Max(0f, Mathf.Min(
+                Allowance(direction.x, min.x, max.x, halfWidth),
+                Allowance(direction.y, min.y, max.y, halfHeight)));
+
+            _spreadTargets.Add(new SpreadTarget
+            {
+                Rect = rect,
+                Label = label,
+                BasePosition = rect.localPosition,
+                Direction = direction,
+                MaxDistance = maxDistance,
+            });
+        }
+
+        if (_loggedSpread || _spreadTargets.Count == 0) return;
+        _loggedSpread = true;
+        foreach (var target in _spreadTargets)
+        {
+            Debug.Log($"[NOVR] HMD visor spread: {target.Label} can move " +
+                      $"{target.MaxDistance:F0} px outwards before it leaves the capture.");
+        }
+    }
+
+    /// <summary>
+    /// How far a rect spanning <paramref name="lo"/>..<paramref name="hi"/> on
+    /// one axis can travel at rate <paramref name="d"/> before its leading edge
+    /// passes +/-<paramref name="half"/>. An axis it is not moving along cannot
+    /// be the binding one.
+    /// </summary>
+    private static float Allowance(float d, float lo, float hi, float half)
+    {
+        if (Mathf.Abs(d) < 1e-4f) return float.MaxValue;
+        return d > 0f ? (half - hi) / d : (lo + half) / -d;
     }
 }
