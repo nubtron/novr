@@ -18,6 +18,8 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Enabled;
     public static ConfigEntry<bool> Open;
     public static ConfigEntry<KeyCode> ToggleShortcut;
+    public static ConfigEntry<WorldMapButton> ToggleButton;
+    public static ConfigEntry<WorldMapOrientation> Orientation;
     public static ConfigEntry<float> Scale;
     public static ConfigEntry<float> EyeHeight;
     public static ConfigEntry<float> ReliefExaggeration;
@@ -29,6 +31,9 @@ public static class VrMapConfig
     public static ConfigEntry<float> IconOpacity;
     public static ConfigEntry<bool> IconOverlay;
     public static ConfigEntry<bool> Pointer;
+    public static ConfigEntry<bool> CaptureControls;
+    public static ConfigEntry<float> PanSpeed;
+    public static ConfigEntry<float> TurnSpeed;
     public static ConfigEntry<bool> HideCockpit;
     public static ConfigEntry<bool> HideWorld;
     public static ConfigEntry<bool> HideHelmetPanels;
@@ -61,7 +66,37 @@ public static class VrMapConfig
             "Input",
             "World Map Shortcut",
             KeyCode.F10,
-            "Keyboard shortcut that shows and hides the 3D world map.");
+            "Keyboard shortcut that shows and hides the 3D world map. Kept as a second way in, "
+            + "because a keyboard is a poor thing to reach for in a headset — the controller "
+            + "button below is the one meant to be used.");
+
+        ToggleButton = config.Bind(
+            "Input",
+            "World Map Button",
+            WorldMapButton.LeftSecondary,
+            "Controller button that shows and hides the 3D world map. Every button on a VR "
+            + "controller is free: the game has no VR bindings at all, because it is not a VR "
+            + "game — the controllers exist only inside this mod — so nothing has to be given up "
+            + "to bind this, and nothing the game does can shadow it. The default is the left "
+            + "hand's upper face button (Y on a Touch controller), chosen because the right hand "
+            + "is the one pointing at the map and the trigger on either hand already means "
+            + "'select'. Set it to None to use the keyboard shortcut alone.");
+
+        Orientation = config.Bind(
+            "Experimental",
+            "World Map Orientation",
+            WorldMapOrientation.NorthUp,
+            "Which way the model is turned, and what turns it. The room the model hangs in is "
+            + "not attached to the aircraft, so a model left alone in it is fixed to the "
+            + "physical room you are sitting in and flying does not disturb it. North Up is "
+            + "exactly that: north stays north, and the map behaves like a table you are "
+            + "standing over — you look around it by moving your head, which is the one motion "
+            + "that ought to move a map. Track Up points the aircraft's heading away from you so "
+            + "what is ahead on the model is ahead through the canopy, taking the heading only, "
+            + "so roll and pitch do not tip it; it still swings when you turn. World Fixed "
+            + "carries the whole attitude, which pins the map to the world and makes your head "
+            + "roll against it on every stick input — geometrically the most honest and the "
+            + "worst to be inside, unless you are stationary.");
 
         Scale = config.Bind(
             "Experimental",
@@ -189,6 +224,43 @@ public static class VrMapConfig
             + "marker on a map. Turn it off to see the difference, or if you would rather a symbol "
             + "behind a mountain stayed behind it. This changes the depth test and nothing else; "
             + "how much of the terrain reads through a symbol is Icon Opacity above.");
+
+        CaptureControls = config.Bind(
+            "Experimental",
+            "World Map Takes The Controls",
+            true,
+            "While the map is up, pitch, roll and yaw move the map instead of the aeroplane: push "
+            + "to send the model away from you, roll to slide it sideways, yaw to spin it about "
+            + "the point under your head. Both are cleared when the map closes, so closing and "
+            + "reopening recentres it on the aircraft. This is safer than the alternative rather "
+            + "than braver: what the aircraft gets while the map is up is zero stick, and zero "
+            + "through the flight assist is wings level — whereas leaving the controls connected "
+            + "means every input you make to move the map is one the aeroplane also takes while "
+            + "you cannot see out of it. The throttle is untouched, because it is not a movement "
+            + "control and a map has no business with the engines. It reads whatever you have "
+            + "Pitch, Roll and Yaw bound to, so a HOTAS, a gamepad and the keyboard all work "
+            + "without being told about.");
+
+        PanSpeed = config.Bind(
+            "Experimental",
+            "World Map Pan Speed",
+            3f,
+            new ConfigDescription(
+                "How fast the stick slides the map, in real metres per second — so the model "
+                + "moves past you at the same apparent speed however much the world is shrunk "
+                + "by. At 3 m/s and 1:1200 that is 3.6 km of theatre a second, and about 23 "
+                + "seconds from one edge of the map to the other.",
+                new AcceptableValueRange<float>(0.2f, 20f)));
+
+        TurnSpeed = config.Bind(
+            "Experimental",
+            "World Map Turn Speed",
+            45f,
+            new ConfigDescription(
+                "How fast yaw spins the map, in degrees per second, about the point under your "
+                + "head — which is the point you are looking down at, and so the one worth "
+                + "turning around.",
+                new AcceptableValueRange<float>(5f, 180f)));
 
         HideCockpit = config.Bind(
             "Experimental",

@@ -132,7 +132,8 @@ public class VrWorldMap : NOVRBehaviour
 
     private void Update()
     {
-        if (VrMapConfig.ToggleShortcut != null && Input.GetKeyDown(VrMapConfig.ToggleShortcut.Value))
+        if (VrMapConfig.ToggleShortcut != null && Input.GetKeyDown(VrMapConfig.ToggleShortcut.Value) ||
+            WorldMapButtons.Pressed())
         {
             VrMapConfig.Open.Value = !VrMapConfig.Open.Value;
         }
@@ -164,6 +165,9 @@ public class VrWorldMap : NOVRBehaviour
 
         var model = EnsureModel();
         if (model == null) return;
+
+        // Before the model is placed, because it is what decides where.
+        WorldMapControls.Refresh(Mathf.Max(1f, VrMapConfig.Scale.Value));
 
         Place(model);
         model.Root.SetActive(true);
@@ -420,6 +424,8 @@ public class VrWorldMap : NOVRBehaviour
 
         Debug.Log(
             $"[NOVR] World map placed: root local={root.localPosition} scale={root.localScale.x:E3} " +
+            $"rot={root.localRotation.eulerAngles} orientation={(VrMapConfig.Orientation != null ? VrMapConfig.Orientation.Value.ToString() : "?")} " +
+            $"aircraft rot={(mount != null ? mount.rotation.eulerAngles.ToString() : "<none>")} " +
             $"layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
             $"icons={(_iconLayer == null ? "off" : _iconLayer.Count + " of " + UnitRegistry.allUnits.Count + " units")} " +
             $"datum={(global::Datum.originPosition)}");
@@ -468,6 +474,10 @@ public class VrWorldMap : NOVRBehaviour
         if (_model?.Root != null) _model.Root.SetActive(false);
         _iconLayer?.SetVisible(false);
         _pointer?.Hide();
+        // Before anything else that can fail: the aeroplane gets its controls
+        // back on the frame the map goes away, not on the frame the rest of the
+        // teardown happens to finish.
+        WorldMapControls.Release();
         ShowCockpit();
         ShowHelmetPanels();
         _reported = false;
@@ -493,6 +503,42 @@ public class VrWorldMap : NOVRBehaviour
     /// welded to the airframe and would roll with it. Countering the mount's
     /// rotation is what makes it behave like ground you are flying over.</para>
     /// </summary>
+    /// <summary>
+    /// The rotation that takes map directions into the room, for the orientation
+    /// the pilot asked for. <c>WorldFixed</c> is the inverse of the whole aircraft
+    /// attitude; <c>TrackUp</c> keeps only its heading; <c>NorthUp</c> is nothing
+    /// at all, which is what makes it immovable.
+    /// </summary>
+    private static Quaternion Turn(Transform mount)
+    {
+        var orientation = VrMapConfig.Orientation != null
+            ? VrMapConfig.Orientation.Value
+            : WorldMapOrientation.NorthUp;
+
+        switch (orientation)
+        {
+            case WorldMapOrientation.WorldFixed:
+                return Quaternion.Inverse(mount.rotation);
+            case WorldMapOrientation.TrackUp:
+                // eulerAngles.y off a rotation with roll in it is not the heading;
+                // the flattened forward is, and it stays right upside down.
+                var forward = mount.forward;
+                var flat = new Vector3(forward.x, 0f, forward.z);
+                if (flat.sqrMagnitude < 1e-6f)
+                {
+                    // Pointing straight up or down: the nose says nothing about
+                    // heading, so take it from where the top of the head faces.
+                    var up = -mount.up * Mathf.Sign(forward.y);
+                    flat = new Vector3(up.x, 0f, up.z);
+                    if (flat.sqrMagnitude < 1e-6f) return Quaternion.identity;
+                }
+
+                return Quaternion.Inverse(Quaternion.LookRotation(flat.normalized, Vector3.up));
+            default:
+                return Quaternion.identity;
+        }
+    }
+
     private void Place(WorldMapModel model)
     {
         var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
@@ -504,28 +550,49 @@ public class VrWorldMap : NOVRBehaviour
         var exaggeration = Mathf.Max(1f, VrMapConfig.ReliefExaggeration.Value);
         var modelScale = new Vector3(scale, scale * exaggeration, scale);
 
-        // World orientation as seen from inside the room. Local scale is applied
-        // before this rotation, so the vertical exaggeration still runs along the
-        // map's own up rather than the aircraft's.
-        var toWorld = Quaternion.Inverse(mount.rotation);
+        // How the model is turned inside the room. Local scale is applied before
+        // this rotation, so the vertical exaggeration still runs along the map's
+        // own up rather than the aircraft's.
+        //
+        // The room is not attached to the aircraft — it sits near the world origin
+        // with the raw headset pose inside it — so a model left unrotated is fixed
+        // to the physical room and the aircraft cannot disturb it. Countering the
+        // aircraft's whole attitude, which is what this did, pins the model to the
+        // world instead, and since your head is in the aircraft the model then
+        // rolls and pitches against you on every stick input. That reads exactly
+        // like being turned around by the aeroplane, which is what a flight
+        // reported. Heading alone is the middle: aligned with where you are going,
+        // undisturbed by how you are flying.
+        var toWorld = Turn(mount);
+
+        // Whatever the stick has pushed the map to, on top of the orientation. The
+        // spin is applied outside the orientation so it turns the model about the
+        // room's own vertical — which, given the placement below, is the vertical
+        // through the point under your head.
+        var turn = Quaternion.Euler(0f, WorldMapControls.Spin, 0f) * toWorld;
 
         var root = model.Root.transform;
         if (root.parent != room) root.SetParent(room, false);
         root.localScale = modelScale;
-        root.localRotation = toWorld;
+        root.localRotation = turn;
 
-        // Where we are on the map, in map metres: world position less the
-        // floating origin, flattened to sea level.
+        // Where we are on the map, in map metres: world position less the floating
+        // origin, flattened to sea level — then wherever the map has been panned
+        // to from there. This point is the one held under the head, so it is both
+        // what panning moves and what spinning turns about.
         var here = mount.position - global::Datum.originPosition;
-        var beneathUs = new Vector3(here.x, 0f, here.z);
+        var pan = WorldMapControls.Pan;
+        var beneathUs = new Vector3(here.x + pan.x, 0f, here.z + pan.y);
 
         var headInRoom = room.InverseTransformPoint(head.transform.position);
-        var down = toWorld * Vector3.down;
+        var down = turn * Vector3.down;
         root.localPosition = headInRoom
                              + down * VrMapConfig.EyeHeight.Value
-                             - toWorld * Vector3.Scale(beneathUs, modelScale);
+                             - turn * Vector3.Scale(beneathUs, modelScale);
 
-        PlaceMarker(root, beneathUs, modelScale);
+        // The marker still belongs on the aircraft, not on wherever the map has
+        // been pushed to.
+        PlaceMarker(root, new Vector3(here.x, 0f, here.z), modelScale);
     }
 
     /// <summary>
