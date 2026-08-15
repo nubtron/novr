@@ -78,6 +78,9 @@ internal sealed class WorldMapIcons
 
     public int Count => _icons.Count;
 
+    /// <summary>How many of them are airbases — the ones you spawn from.</summary>
+    public int Airbases { get; private set; }
+
     /// <summary>
     /// Bring the icon layer up to date for this frame. <paramref name="model"/>
     /// is the model root, whose transform turns map coordinates into places in
@@ -131,7 +134,8 @@ internal sealed class WorldMapIcons
             _seen.Add(mapIcon);
         }
 
-        foreach (var airbase in Airbases(map))
+        Airbases = 0;
+        foreach (var airbase in AirbaseIcons(map))
         {
             if (airbase == null || airbase.iconImage == null || airbase.airbase == null) continue;
             var centre = airbase.airbase.center;
@@ -145,6 +149,7 @@ internal sealed class WorldMapIcons
             Place(airbase, model, head, centre.position - global::Datum.originPosition,
                   iconSize * (AirbaseIconPixels / NominalIconPixels));
             _seen.Add(airbase);
+            Airbases++;
         }
 
         // Anything not visited this frame has gone, been hidden, or stopped
@@ -227,11 +232,24 @@ internal sealed class WorldMapIcons
     }
 
     /// <summary>
+    /// The shape of a symbol, as a multiplier on a square. Buildings are drawn by
+    /// the flat map at their real footprint — a long hangar is a long rectangle —
+    /// and squaring everything off would lose that. Normalised on x so the size
+    /// worked out above still means what it says.
+    /// </summary>
+    private static Vector3 Aspect(Image image)
+    {
+        var drawn = image.transform.localScale;
+        if (drawn.x <= 0f || drawn.y <= 0f) return Vector3.one;
+        return new Vector3(1f, Mathf.Clamp(drawn.y / drawn.x, 0.2f, 5f), 1f);
+    }
+
+    /// <summary>
     /// The airbase icons, found by component because the dictionary holding them
     /// is private. Re-found on a slow timer rather than every frame: airbases are
     /// generated once per mission and refreshed when one changes hands.
     /// </summary>
-    private AirbaseMapIcon[] Airbases(global::DynamicMap map)
+    private AirbaseMapIcon[] AirbaseIcons(global::DynamicMap map)
     {
         var options = SceneSingleton<MapOptions>.i;
         if (options != null && !options.showAirbaseIcon) return System.Array.Empty<AirbaseMapIcon>();
@@ -258,13 +276,17 @@ internal sealed class WorldMapIcons
     private void Place(MapIcon source, Transform model, Transform head, Vector3 mapPosition, float size)
     {
         var icon = Obtain(source);
+        // A null sprite is not a missing icon: a UI Image with no sprite draws a
+        // plain filled rectangle, which is exactly how the flat map draws a
+        // building — a footprint, not a symbol. Copying the sprite across
+        // reproduces that for free, and disabling the image for want of one
+        // would drop from the model something the flat map is showing.
         icon.sprite = source.iconImage.sprite;
         icon.color = source.iconImage.color;
-        icon.enabled = icon.sprite != null;
 
         var t = icon.transform;
         t.position = model.TransformPoint(mapPosition);
-        t.localScale = Vector3.one * (size / IconRectSize);
+        t.localScale = Aspect(source.iconImage) * (size / IconRectSize);
         // A world-space canvas faces its own +Z, so +Z points at the head.
         var toHead = head.position - t.position;
         if (toHead.sqrMagnitude > 1e-6f) t.rotation = Quaternion.LookRotation(toHead, Vector3.up);
