@@ -298,6 +298,10 @@ internal sealed class WorldMapIcons
     private static string Coverage(Sprite? sprite)
     {
         if (sprite == null) return "no sprite: a plain filled rectangle";
+        // ReadPixels stalls on the GPU, and a mission with a hundred units would
+        // pay for a hundred of them in the frame the map opens. The question it
+        // answers is asked once per change, not once per flight.
+        if (VrMapConfig.SelfTest == null || !VrMapConfig.SelfTest.Value) return "sprite not read";
         var texture = sprite.texture;
         if (texture == null) return "sprite has no texture";
 
