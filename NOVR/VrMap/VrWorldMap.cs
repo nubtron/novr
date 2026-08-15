@@ -206,6 +206,7 @@ public class VrWorldMap : NOVRBehaviour
         if (VrMapConfig.SelfTest != null && VrMapConfig.SelfTest.Value && _iconLayer.Count > 0)
         {
             _pointer.Sweep(_iconLayer);
+            _pointer.VerifyClick(_iconLayer);
         }
     }
 
