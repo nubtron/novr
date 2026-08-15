@@ -335,6 +335,14 @@ internal sealed class WorldMapIcons
 
             var centre = pixels[(height / 2) * width + (width / 2)];
             var total = Mathf.Max(1, pixels.Length);
+
+            // And the sprite itself, on disk, because "it has a black background"
+            // is a claim about the picture and every number above is a summary of
+            // one. A summary cannot show a black halo around a glyph, or colour
+            // that was never bled into the transparent texels, and both of those
+            // look like a black background once something magnifies them.
+            Dump(sprite, readable);
+
             return $"sprite {width}x{height} alpha: {clear * 100f / total:F0}% clear, " +
                    $"{partial * 100f / total:F0}% partial, {solid * 100f / total:F0}% solid, " +
                    $"centre a={centre.a}";
@@ -456,9 +464,21 @@ internal sealed class WorldMapIcons
         var t = icon.transform;
         t.position = model.TransformPoint(mapPosition);
         t.localScale = Aspect(source.iconImage) * (size / IconRectSize);
-        // A world-space canvas faces its own +Z, so +Z points at the head.
-        var toHead = head.position - t.position;
-        if (toHead.sqrMagnitude > 1e-6f) t.rotation = Quaternion.LookRotation(toHead, Vector3.up);
+        // Square to the view, not aimed at the eye.
+        //
+        // Aiming each symbol at the head and asking for world up as the up hint
+        // reads fine at a distance and comes apart underfoot: for a symbol almost
+        // directly below you the direction to the head *is* world up, the two
+        // vectors the rotation is built from are parallel, and the roll it falls
+        // back on is whatever the remaining rounding says. The symbols then fan
+        // out radially from the point under your feet and spin as they pass, which
+        // is exactly what a degenerate LookRotation looks like from inside.
+        //
+        // Taking the head's own rotation has no such case anywhere: every symbol
+        // lies in the view plane and every one of them is upright to the reader,
+        // looking down at the model or across it. A map symbol is meant to be read,
+        // and "upright" for something read is upright in the view.
+        t.rotation = head.rotation;
     }
 
     public void SetVisible(bool visible)
@@ -565,6 +585,29 @@ internal sealed class WorldMapIcons
         var over = VrMapConfig.IconOverlay == null || VrMapConfig.IconOverlay.Value;
         material.SetInt("unity_GUIZTestMode",
                         (int)(over ? CompareFunction.Always : CompareFunction.LessEqual));
+    }
+
+    /// <summary>
+    /// Write a sprite out beside the frame dumps, RGBA as the game holds it, so
+    /// the sprite and the pixels it produced on screen can be put side by side.
+    /// </summary>
+    private static void Dump(Sprite sprite, Texture2D readable)
+    {
+        try
+        {
+            var folder = System.IO.Path.Combine(
+                BepInEx.Paths.PluginPath, "NOVR", "dumps", "sprites");
+            System.IO.Directory.CreateDirectory(folder);
+            var safe = sprite.name;
+            foreach (var bad in System.IO.Path.GetInvalidFileNameChars()) safe = safe.Replace(bad, '_');
+            var path = System.IO.Path.Combine(folder, safe + ".png");
+            System.IO.File.WriteAllBytes(path, readable.EncodeToPNG());
+            Debug.Log($"[NOVR] World map: wrote sprite '{sprite.name}' to {path}.");
+        }
+        catch (System.Exception error)
+        {
+            Debug.LogWarning($"[NOVR] World map: could not write sprite '{sprite.name}': {error.Message}");
+        }
     }
 
     private Image Obtain(MapIcon source)

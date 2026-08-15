@@ -62,6 +62,22 @@ internal sealed class WorldMapPointer
 
     public MapIcon? Hovered => _hovered;
 
+    /// <summary>
+    /// Whether the mod's own UI cursor is on screen — which it is whenever the
+    /// game wants a mouse, the spawn selection being the case that matters here.
+    ///
+    /// <para>Two free-floating cursors in one view is one too many: during airbase
+    /// selection the UI cursor sits on the spawn panel and this one runs over the
+    /// ground, both of them round, both of them following your head, and neither
+    /// of them obviously the one that is going to act. So while the UI cursor is
+    /// up, this pointer stops drawing a second free cursor and keeps only the ring
+    /// it puts <i>around a symbol</i> — which is not a cursor but a statement
+    /// about what is under the one you already have. Both are driven from the
+    /// centre of the view in gaze mode, so they agree about where that is.</para>
+    /// </summary>
+    private static bool SomethingElseIsDrawingACursor =>
+        VrUiCursor.I != null && VrUiCursor.I.IsActive;
+
     public void Refresh(WorldMapIcons icons, Transform model, float seaLevelY)
     {
         if (!TryRay(out var ray, out var trigger, out var handTracked))
@@ -93,7 +109,7 @@ internal sealed class WorldMapPointer
         {
             DrawRing(pick.Transform.position, pick.Radius * 1.4f);
         }
-        else if (onGround)
+        else if (onGround && !SomethingElseIsDrawingACursor)
         {
             // Constant angular size, so the reticle stays the same thing to look
             // at whether it is on the near edge of the model or the far one.
