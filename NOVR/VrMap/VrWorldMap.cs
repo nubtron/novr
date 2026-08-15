@@ -57,6 +57,9 @@ public class VrWorldMap : NOVRBehaviour
     private GameObject? _marker;
     private readonly Dictionary<Camera, int> _maskedCameras = new();
     private readonly List<HiddenPanel> _hiddenPanels = new();
+    private bool _helmetTaken;
+    private bool _iconsSeen;
+    private float _iconsEmptySince;
 
     /// <summary>
     /// A panel we took out of view, and exactly what it takes to put it back.
@@ -165,6 +168,36 @@ public class VrWorldMap : NOVRBehaviour
             model.Root.transform,
             head.transform,
             Mathf.Max(0.01f, VrMapConfig.IconSize.Value));
+
+        ReportIcons(_iconLayer.Count);
+    }
+
+    /// <summary>
+    /// Say once when units first appear, and complain once if they never do.
+    /// The placement report fires on the first frame the map opens, which is
+    /// too early to tell whether the icon layer works — it read "0 of 121" for
+    /// a reason that had nothing to do with the icons.
+    /// </summary>
+    private void ReportIcons(int count)
+    {
+        if (_iconsSeen) return;
+
+        if (count > 0)
+        {
+            _iconsSeen = true;
+            Debug.Log($"[NOVR] World map: {count} unit icon(s) on the model, of " +
+                      $"{UnitRegistry.allUnits.Count} unit(s) in the mission.");
+            return;
+        }
+
+        if (_iconsEmptySince == 0f) _iconsEmptySince = Time.unscaledTime;
+        if (Time.unscaledTime - _iconsEmptySince < 5f) return;
+
+        _iconsSeen = true;
+        var map = SceneSingleton<global::DynamicMap>.i;
+        Debug.LogWarning(
+            $"[NOVR] World map: no unit icons after 5s with {UnitRegistry.allUnits.Count} unit(s) in the " +
+            $"mission. DynamicMap={(map == null ? "<none>" : map.name + " active=" + map.gameObject.activeInHierarchy + " factor=" + map.mapDisplayFactor)}.");
     }
 
     /// <summary>
@@ -192,53 +225,66 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
-        if (_hiddenPanels.Count < 3)
-        {
-            var hmd = SceneSingleton<HeadMountedDisplay>.i;
-            var helmet = hmd != null ? hmd.transform : null;
-            if (helmet != null)
-            {
-                foreach (Transform child in helmet)
-                {
-                    if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
-                    TakePanel(child.gameObject, "weapon readout");
-                }
-            }
-
-            // The tactical map is not reached through the helmet rect. Measured:
-            // the helmet's children are Speed, Altitude, Bearing,
-            // ArtificialHorizon, TopRightPanel and LowerLeftPanel, and none of
-            // them holds a DynamicMap — the map is its own scene singleton,
-            // placed at an anchor in the helmet rather than living under it.
-            var map = SceneSingleton<global::DynamicMap>.i;
-            if (map != null)
-            {
-                TakePanel(map.gameObject, "tactical map");
-
-                // And the dark backing the map is read against is not part of
-                // the map either. Hiding the map alone leaves a grey pane
-                // hanging in the sky. The map owns it as a field, so take the
-                // Image rather than the object it sits on — deactivating that
-                // object takes DynamicMap.Update down with it, and with it the
-                // unit icons this map reads.
-                if (map.mapBackground != null) TakePanel(map.mapBackground.gameObject, "tactical map backing");
-            }
-        }
+        if (!_helmetTaken) TakeHelmetPanels();
 
         // Every frame, not once. The game turns the map's GameObject back on by
         // itself, so a single hide is undone before it is ever seen.
         foreach (var panel in _hiddenPanels) panel.Hide();
     }
 
-    private void TakePanel(GameObject panel, string what)
+    /// <summary>
+    /// Work out what to switch off, once. Each of the three needs a different
+    /// mechanism, and using one rule for all of them broke two of them:
+    /// deactivating everything stopped the map updating its unit icons, and
+    /// disabling one component each left the weapon readout's symbols drawn over
+    /// a hole where its backing had been.
+    /// </summary>
+    private void TakeHelmetPanels()
+    {
+        var hmd = SceneSingleton<HeadMountedDisplay>.i;
+        var helmet = hmd != null ? hmd.transform : null;
+        var map = SceneSingleton<global::DynamicMap>.i;
+        if (helmet == null || map == null) return;
+
+        // The weapon readout: deactivated outright. Nothing under it has to keep
+        // running, and it is the only way to take both its symbols and the panel
+        // they sit on.
+        foreach (Transform child in helmet)
+        {
+            if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
+            Take(child.gameObject, null, "weapon readout");
+        }
+
+        // The map itself: its Canvas, so DynamicMap keeps updating underneath —
+        // it is where the unit icons come from.
+        Take(map.gameObject, map.GetComponent<Canvas>(), "tactical map");
+
+        // The dark backing: not part of the map object and not `mapBackground`
+        // either (measured — disabling that changed nothing). It is drawn by the
+        // helmet child the map is anchored to, so take every graphic under that
+        // child except the map's own, which is already handled and whose icon
+        // images this feature reads.
+        foreach (Transform child in helmet)
+        {
+            if (map.hudMapAnchor == null || !map.hudMapAnchor.IsChildOf(child)) continue;
+            foreach (var graphic in child.GetComponentsInChildren<UnityEngine.UI.Graphic>(true))
+            {
+                if (graphic == null || graphic.transform.IsChildOf(map.transform)) continue;
+                Take(graphic.gameObject, graphic, "tactical map backing");
+            }
+
+            break;
+        }
+
+        _helmetTaken = true;
+    }
+
+    private void Take(GameObject panel, Behaviour? component, string what)
     {
         foreach (var known in _hiddenPanels)
         {
             if (known.Go == panel) return;
         }
-
-        Behaviour? component = panel.GetComponent<Canvas>();
-        component ??= panel.GetComponent<UnityEngine.UI.Graphic>();
 
         _hiddenPanels.Add(new HiddenPanel(panel, component));
         Debug.Log(
@@ -248,6 +294,7 @@ public class VrWorldMap : NOVRBehaviour
 
     private void ShowHelmetPanels()
     {
+        _helmetTaken = false;
         if (_hiddenPanels.Count == 0) return;
         foreach (var panel in _hiddenPanels) panel.Restore();
         _hiddenPanels.Clear();
