@@ -154,12 +154,13 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
-        if (_hiddenPanels.Count < 2)
+        if (_hiddenPanels.Count < 3)
         {
             var hmd = SceneSingleton<HeadMountedDisplay>.i;
-            if (hmd != null)
+            var helmet = hmd != null ? hmd.transform : null;
+            if (helmet != null)
             {
-                foreach (Transform child in hmd.transform)
+                foreach (Transform child in helmet)
                 {
                     if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
                     TakePanel(child.gameObject, "weapon readout");
@@ -172,7 +173,25 @@ public class VrWorldMap : NOVRBehaviour
             // them holds a DynamicMap — the map is its own scene singleton,
             // placed at an anchor in the helmet rather than living under it.
             var map = SceneSingleton<global::DynamicMap>.i;
-            if (map != null) TakePanel(map.gameObject, "tactical map");
+            if (map != null)
+            {
+                TakePanel(map.gameObject, "tactical map");
+
+                // And the dark backing the map is read against is not part of
+                // the map either — it belongs to the anchor the map is placed
+                // at. Hiding the map alone leaves a grey pane hanging in the
+                // sky. Follow the map's own anchor field up to whichever child
+                // of the helmet holds it rather than naming that child.
+                if (map.hudMapAnchor != null && helmet != null)
+                {
+                    foreach (Transform child in helmet)
+                    {
+                        if (!map.hudMapAnchor.IsChildOf(child)) continue;
+                        TakePanel(child.gameObject, "tactical map backing");
+                        break;
+                    }
+                }
+            }
         }
 
         // Every frame, not once. The game turns the map's GameObject back on by
