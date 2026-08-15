@@ -198,7 +198,7 @@ public static class VrMapConfig
         HazeRange = config.Bind(
             "Experimental",
             "World Map Haze Range",
-            40f,
+            60f,
             new ConfigDescription(
                 "How far you can see through the model's air, in map kilometres — the horizontal "
                 + "distance from the point under your head at which sea-level ground is as lost as "
@@ -212,11 +212,14 @@ public static class VrMapConfig
         HazeStrength = config.Bind(
             "Experimental",
             "World Map Haze Strength",
-            0.85f,
+            0.7f,
             new ConfigDescription(
-                "How much of the ground is lost at the far end of the range: 0.85 means the "
-                + "furthest terrain shows through at 15%, which is heavy enough to read as "
-                + "distance without hiding what is there. 1 would fade it out entirely.",
+                "How much of the ground is lost at the far end of the range: 0.7 means the "
+                + "furthest terrain still shows through at 30%. Together with the range this is "
+                + "deliberately thinner than a real 60 km day, which would take about 70% of the "
+                + "contrast out of ground only 20 km away — measured, and it looks like it: the "
+                + "map goes blue and stops being a map. What is wanted here is enough air to say "
+                + "which ridge is in front of which, and no more. Raise it towards 1 for weather.",
                 new AcceptableValueRange<float>(0.1f, 1f)));
 
         Icons = config.Bind(
