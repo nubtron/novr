@@ -434,7 +434,13 @@ internal sealed class WorldMapIcons
         // reproduces that for free, and disabling the image for want of one
         // would drop from the model something the flat map is showing.
         icon.sprite = source.iconImage.sprite;
-        icon.color = source.iconImage.color;
+        // The colour is the game's; the opacity is not. A map symbol is an
+        // annotation, and the ground it annotates has to stay readable through it —
+        // which on a flat map comes free, because the sprite sits on a picture,
+        // and here has to be paid for.
+        var colour = source.iconImage.color;
+        colour.a *= VrMapConfig.IconOpacity != null ? VrMapConfig.IconOpacity.Value : 1f;
+        icon.color = colour;
         // Only with a sprite. Preserving the aspect of a sprite that is not
         // there divides by its zero size, and one NaN vertex takes the whole
         // canvas batch with it — every symbol on the model disappeared, not
@@ -493,36 +499,35 @@ internal sealed class WorldMapIcons
     }
 
     /// <summary>
-    /// The shader the flat map draws its icons with: UI/Default with the blend
-    /// line changed to additive. Same property list, down to the stencil block.
-    /// </summary>
-    private const string AdditiveShader = "Unlit/AdditiveTextShader";
-
-    /// <summary>
     /// The material that makes a symbol an annotation rather than an object.
     ///
-    /// <para><b>Additive, because that is what the flat map does.</b> Every map
+    /// <para><b>Why the sprites need help at all.</b> They are solid where they are
+    /// drawn: measured, the airbase's is 78% fully opaque and opaque at its centre
+    /// pixel, an aircraft's glyph likewise, and six of the fifteen symbols in a
+    /// mission have no sprite whatsoever and fall back to a plain filled
+    /// rectangle. On a flat map, over a picture of the ground, that costs nothing.
+    /// On a solid model each one is a slab covering the terrain it exists to
+    /// annotate.</para>
+    ///
+    /// <para><b>Not the game's own blend, and that was measured too.</b> Every map
     /// icon in the game is drawn with <c>Text_additive</c> —
-    /// <c>Unlit/AdditiveTextShader</c> — and a symbol drawn additively never hides
-    /// what is under it: it brightens it. Drawn with ordinary alpha blending
-    /// instead, the same sprite is a solid slab, because the sprites are mostly
-    /// solid where they are drawn at all — measured: the airbase's is 78% fully
-    /// opaque, an aircraft's glyph is opaque to the centre pixel, and six of the
-    /// fifteen symbols in a mission have no sprite whatsoever and draw as a plain
-    /// filled rectangle. On a flat map over a picture of the ground that is
-    /// invisible; on a solid model it covers the terrain the symbol exists to
-    /// annotate. So this borrows the game's shader rather than inventing a look:
-    /// the same sprite, the same colour and the same blend, and the model's
-    /// symbols match the ones on the flat map because they are drawn the same way.</para>
+    /// <c>Unlit/AdditiveTextShader</c>, UI/Default with the blend line changed —
+    /// which never hides what is under it because it brightens it instead. Copying
+    /// that looked like the principled answer and it is the wrong one here: the
+    /// flat map's background is always the same dark map image, and the model's is
+    /// terrain that runs from dark forest to lit snow, with sky behind anything
+    /// standing above it. Tried, and an aircraft symbol against the sky came out
+    /// as almost nothing — additive over a background already near white has
+    /// nowhere left to go. So this alpha-blends and takes the see-through from
+    /// opacity instead, which behaves the same over dark ground and light.</para>
     ///
     /// <para><b>Depth, because a world-space canvas depth-tests like anything
     /// else.</b> A symbol standing on the far side of a ridge is sawn in half by
     /// it, and one at ground level is half-buried. Both read as a solid object
-    /// embedded in the terrain. The UI shaders take their depth test from
+    /// embedded in the terrain. <c>UI/Default</c> takes its depth test from
     /// <c>unity_GUIZTestMode</c>, so forcing that to Always draws every symbol
     /// over the model while leaving the symbols sorted normally against each
-    /// other. The additive shader carries the same property block, so it takes the
-    /// same override.</para>
+    /// other.</para>
     /// </summary>
     private Material? Overlay()
     {
@@ -532,21 +537,11 @@ internal sealed class WorldMapIcons
             return _overlay;
         }
 
-        // The game's own, then the engine's. The fall-back is a worse-looking
-        // symbol, not a missing one, so it is worth taking silently-ish.
-        var shader = Shader.Find(AdditiveShader);
+        var shader = Shader.Find("UI/Default");
         if (shader == null)
         {
-            Debug.LogWarning($"[NOVR] World map: no '{AdditiveShader}' shader, so unit symbols " +
-                             "will be drawn with ordinary alpha blending and will hide the " +
-                             "terrain under them instead of brightening it.");
-            shader = Shader.Find("UI/Default");
-        }
-
-        if (shader == null)
-        {
-            Debug.LogWarning("[NOVR] World map: no 'UI/Default' shader either, so unit symbols " +
-                             "will be cut into the terrain instead of drawn over it.");
+            Debug.LogWarning("[NOVR] World map: no 'UI/Default' shader, so unit symbols will be " +
+                             "cut into the terrain instead of drawn over it.");
             return null;
         }
 
