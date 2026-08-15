@@ -52,6 +52,7 @@ internal sealed class WorldMapPointer
     private MapIcon? _hovered;
     private bool _triggerDown;
     private bool _sweptOnce;
+    private bool _ringLogged;
 
     public WorldMapPointer(Transform room) => _room = room;
 
@@ -250,6 +251,16 @@ internal sealed class WorldMapPointer
             var angle = i / (float)(RingSegments - 1) * Mathf.PI * 2f;
             _ringLine.SetPosition(i, centre + (right * Mathf.Cos(angle) + up * Mathf.Sin(angle)) * radius);
         }
+
+        if (_ringLogged) return;
+        _ringLogged = true;
+        Debug.Log(
+            $"[NOVR] World map pointer ring: centre={centre} radius={radius:F3}m " +
+            $"width={_ringLine.widthMultiplier:F3}m distance={toHead.magnitude:F2}m " +
+            $"layer={_ring.layer} active={_ring.activeInHierarchy} " +
+            $"material={(_ringLine.material == null ? "<none>" : _ringLine.material.shader.name)} " +
+            $"colour={_ringLine.startColor} points={_ringLine.positionCount} " +
+            $"first={_ringLine.GetPosition(0)}");
     }
 
     private void EnsureRing()
