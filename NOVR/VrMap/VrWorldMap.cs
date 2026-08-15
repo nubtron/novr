@@ -37,6 +37,8 @@ public class VrWorldMap : NOVRBehaviour
 
     private WorldMapModel? _model;
     private bool _datumOverridden;
+    private bool _reported;
+    private GameObject? _marker;
 
     protected override void OnEnable()
     {
@@ -56,6 +58,8 @@ public class VrWorldMap : NOVRBehaviour
     private void OnDestroy()
     {
         RestoreDatum();
+        if (_marker != null) Destroy(_marker);
+        _marker = null;
         _model?.Destroy();
         _model = null;
     }
@@ -85,6 +89,39 @@ public class VrWorldMap : NOVRBehaviour
 
         Place(model);
         model.Root.SetActive(true);
+        ReportOnce(model);
+    }
+
+    /// <summary>
+    /// One line, the first frame the model is up, saying where it actually is
+    /// and whether anything can see it. "The map opens and there is nothing in
+    /// it" has too many possible causes to diagnose from a screenshot: the model
+    /// could be somewhere else, on the wrong layer, culled, or drawn and
+    /// invisible. These are the numbers that separate those.
+    /// </summary>
+    private void ReportOnce(WorldMapModel model)
+    {
+        if (_reported) return;
+        _reported = true;
+
+        var root = model.Root.transform;
+        var first = model.Root.GetComponentInChildren<MeshRenderer>();
+        var camera = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
+        var mount = AnchorPosition();
+
+        Debug.Log(
+            $"[NOVR] World map placed: root={root.position} scale={root.localScale} " +
+            $"layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
+            $"mount={(mount.HasValue ? mount.Value.ToString() : "<none>")} " +
+            $"datum={(global::Datum.originPosition)}");
+        Debug.Log(
+            $"[NOVR] World map first renderer: " +
+            (first == null
+                ? "<none>"
+                : $"{first.name} bounds={first.bounds} visible={first.isVisible} " +
+                  $"enabled={first.enabled} material={first.sharedMaterial?.name} " +
+                  $"shader={first.sharedMaterial?.shader?.name}") +
+            $"; overlay camera={(camera == null ? "<none>" : $"{camera.name} mask=0x{camera.cullingMask:X} " + $"pos={camera.transform.position} far={camera.farClipPlane}")}");
     }
 
     private WorldMapModel? EnsureModel()
@@ -138,6 +175,42 @@ public class VrWorldMap : NOVRBehaviour
 
         var seaLevel = mount.Value + Vector3.down * VrMapConfig.EyeHeight.Value;
         root.position = seaLevel - Vector3.Scale(beneathUs, modelScale);
+
+        PlaceMarker(root, beneathUs, modelScale);
+    }
+
+    /// <summary>
+    /// A plain cube, in world metres, sitting on the model exactly where the
+    /// ground under the aircraft should be. It is a control: it uses the
+    /// engine's default material rather than the game's terrain shader, and it
+    /// is parented into the model like everything else. If the cube draws and
+    /// the terrain does not, the geometry is in the right place and the shader
+    /// is the problem; if neither draws, the problem is the model or the camera.
+    /// </summary>
+    private void PlaceMarker(Transform root, Vector3 beneathUs, Vector3 modelScale)
+    {
+        if (VrMapConfig.DebugMarker == null || !VrMapConfig.DebugMarker.Value)
+        {
+            if (_marker != null) _marker.SetActive(false);
+            return;
+        }
+
+        if (_marker == null)
+        {
+            _marker = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            _marker.name = "World Map Debug Marker";
+            Destroy(_marker.GetComponent<Collider>());
+        }
+
+        _marker.SetActive(true);
+        var marker = _marker.transform;
+        if (marker.parent != root) marker.SetParent(root, false);
+        marker.localPosition = beneathUs;
+        // Undo the model's scale so the cube is a fixed size in the room rather
+        // than a fixed size on the map — at 1:1200 a map-sized cube would be
+        // invisible and prove nothing.
+        marker.localScale = new Vector3(3f / modelScale.x, 3f / modelScale.y, 3f / modelScale.z);
+        _marker.layer = (int)LayerHelper.GetVrUiLayer();
     }
 
     /// <summary>

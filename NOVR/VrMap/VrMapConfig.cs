@@ -22,6 +22,7 @@ public static class VrMapConfig
     public static ConfigEntry<float> EyeHeight;
     public static ConfigEntry<float> ReliefExaggeration;
     public static ConfigEntry<bool> RemapTerrainDatum;
+    public static ConfigEntry<bool> DebugMarker;
 
     public static void Bind(ConfigFile config)
     {
@@ -96,5 +97,14 @@ public static class VrMapConfig
             + "whole texture back on it. Turn this off to see the model without the correction; "
             + "if the terrain looks right either way, the shader was not using world position "
             + "after all and this can go.");
+
+        DebugMarker = config.Bind(
+            "Experimental",
+            "World Map Debug Marker",
+            false,
+            "Put a plain 3 m cube on the model where the ground under the aircraft is. It uses "
+            + "the engine's own material rather than the game's terrain shader, so it separates "
+            + "'the model is not where I think it is' from 'the model is there and its shader "
+            + "draws nothing'. Diagnostic only.");
     }
 }
