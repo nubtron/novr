@@ -507,20 +507,34 @@ public class HmdVisorBackend : NOVRBehaviour
         var kept = 0;
         foreach (var graphic in horizon.transform.GetComponentsInChildren<Graphic>(true))
         {
-            var colour = graphic.color;
-            var black = Mathf.Max(colour.r, Mathf.Max(colour.g, colour.b)) < 0.15f;
-            if (!black || colour.a <= 0f)
+            var image = graphic as Image;
+            var sprite = image != null && image.sprite != null ? image.sprite.name : "<none>";
+
+            // The backing is the Image; the readout is text. A black tint was the
+            // first guess and the wrong one — the box is tinted white and its
+            // *sprite* is the black one, so the colour says nothing. What
+            // separates them is what they are: text draws its glyphs, an Image
+            // under a readout draws the box behind them.
+            var backing = image != null;
+
+            Debug.Log($"[NOVR] HMD visor roll indicator: '{graphic.name}' " +
+                      $"{graphic.GetType().Name} colour={graphic.color} sprite='{sprite}' " +
+                      $"size={((RectTransform)graphic.transform).rect.size} " +
+                      $"— {(backing ? "backing, alpha cleared" : "left alone")}.");
+
+            if (!backing)
             {
                 kept++;
                 continue;
             }
 
+            var colour = graphic.color;
             graphic.color = new Color(colour.r, colour.g, colour.b, 0f);
             cleared++;
         }
 
         Debug.Log("[NOVR] HMD visor: roll indicator taken out of the darkening mask — " +
-                  $"{cleared} black graphic(s) set to zero alpha, {kept} left alone.");
+                  $"{cleared} backing(s) set to zero alpha, {kept} left alone.");
     }
 
     /// <summary>
