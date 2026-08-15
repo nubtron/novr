@@ -145,7 +145,7 @@ public class VrWorldMap : NOVRBehaviour
 
         var open = VrMapConfig.Enabled != null && VrMapConfig.Enabled.Value &&
                    VrMapConfig.Open != null && VrMapConfig.Open.Value &&
-                   !MenuIsUp();
+                   !SomethingElseOwnsTheScreen();
 
         // Before the early return, so the closed phase is timed too — the whole
         // point of the self test is the comparison between the two.
@@ -185,40 +185,73 @@ public class VrWorldMap : NOVRBehaviour
     }
 
     /// <summary>
-    /// Whether the game is showing a menu, in which case the map stands down
-    /// until it goes away.
+    /// Whether something else owns the screen, in which case the map stands down
+    /// until it does not.
     ///
     /// <para><b>Why it yields rather than sharing the view.</b> The map wants the
     /// whole world around you and takes what it needs to get it: the cursor is
     /// driven from the middle of your view so you can point anywhere, the helmet
     /// panels are hidden, the cockpit and the outside are culled and the stick is
-    /// taken off the aeroplane. A menu wants the opposite of all four — a cursor
-    /// amplified against a panel pinned in front of you, and everything else left
-    /// alone. Both at once is what a flight ran into after a crash: the spawn
-    /// screen came up with the map still open behind it, and the report was two
-    /// cursors, one of which would select map symbols and neither of which would
-    /// press "select airbase".</para>
+    /// taken off the aeroplane. Pointer UI wants the opposite of all four — a
+    /// cursor amplified against a panel pinned in front of you, and everything
+    /// else left alone. Both at once is what a flight ran into after a crash: the
+    /// spawn screen came up with the map still open behind it, and the report was
+    /// two cursors, one of which would select map symbols and neither of which
+    /// would press "select airbase".</para>
+    ///
+    /// <para><b>Asked as "does the game want a mouse", which is the game's own
+    /// question.</b> <c>CursorManager</c> carries a flag per reason — the map
+    /// being maximized is one of them, and <c>DynamicMap.Maximize</c> sets it in
+    /// the same breath as it calls <c>GameplayUI.ShowSelectAirbase</c>. So the
+    /// spawn screen, the flat map and every menu that wants pointing at all
+    /// answer yes together, and nothing has to be enumerated. The captured-menu
+    /// backend is asked as well, because it keys on the menu scene's own canvas
+    /// and can be up in cases the cursor flags are not.</para>
     ///
     /// <para>This is a suspend and not a close: <c>Open</c> is left alone, so the
-    /// map is exactly where it was the moment the menu goes away, and the pilot
-    /// does not have to notice that anything happened. Everything the map holds is
-    /// given back through the ordinary <see cref="Hide"/> path, which is the same
-    /// one the toggle uses, so there is no second teardown to keep correct.</para>
+    /// map comes back exactly where it was, and the pilot does not have to notice
+    /// that anything happened. Everything the map holds is given back through the
+    /// ordinary <see cref="Hide"/> path, which is the same one the toggle uses, so
+    /// there is no second teardown to keep correct.</para>
     /// </summary>
-    private bool MenuIsUp()
+    private bool SomethingElseOwnsTheScreen()
     {
-        var up = NOVR.VrUi.Capture.MenuCaptureBackend.IsActive;
+        string? why = null;
+        if (NOVR.VrUi.Capture.MenuCaptureBackend.IsActive) why = "a menu is up";
+        else if (WantsAPointer()) why = "the game has asked for the mouse pointer";
+
+        var up = why != null;
         if (up == _menuWasUp) return up;
 
         _menuWasUp = up;
         if (VrMapConfig.Open != null && VrMapConfig.Open.Value)
         {
             Debug.Log(up
-                ? "[NOVR] World map: a menu is up — standing down until it closes."
-                : "[NOVR] World map: the menu has closed — back up.");
+                ? $"[NOVR] World map: {why} — standing down until it goes away."
+                : "[NOVR] World map: the screen is ours again — back up.");
         }
 
         return up;
+    }
+
+    /// <summary>
+    /// The game's own cursor state, with a fallback for the case where its
+    /// manager is not reachable. Both mean the same thing: a pointer is on
+    /// screen, so a pointer is what the player is meant to be using.
+    /// </summary>
+    private static bool WantsAPointer()
+    {
+        try
+        {
+            if (CursorManager.GetFlags() != 0) return true;
+        }
+        catch (System.Exception)
+        {
+            // Not worth a warning every frame: the fallback below is the same
+            // question asked of Unity instead of the game.
+        }
+
+        return Cursor.visible && Cursor.lockState != CursorLockMode.Locked;
     }
 
     private void RefreshIcons(WorldMapModel model)
