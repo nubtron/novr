@@ -25,6 +25,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Sea;
     public static ConfigEntry<bool> Icons;
     public static ConfigEntry<float> IconSize;
+    public static ConfigEntry<float> IconOpacity;
     public static ConfigEntry<bool> IconOverlay;
     public static ConfigEntry<bool> Pointer;
     public static ConfigEntry<bool> HideCockpit;
@@ -132,10 +133,9 @@ public static class VrMapConfig
             + "altitude in the same tracking record its position comes from, so it is exactly as "
             + "stale as the position under it, and never a live altitude under a stale place. "
             + "That is the one thing a flat map cannot show and the reason to have a solid one. "
-            + "The symbols are drawn over the terrain rather than into it, with the game's own "
-            + "additive icon shader: a map symbol annotates the ground, so a ridge in front of it "
-            + "does not saw it in half and the symbol itself brightens the ground rather than "
-            + "hiding it.");
+            + "The symbols are drawn over the terrain rather than into it, and see-through rather "
+            + "than solid: a map symbol annotates the ground, so a ridge in front of it does not "
+            + "saw it in half and the ground stays readable underneath it.");
 
         IconSize = config.Bind(
             "Experimental",
@@ -149,6 +149,19 @@ public static class VrMapConfig
                 + "how readable they are.",
                 new AcceptableValueRange<float>(0.05f, 2f)));
 
+        IconOpacity = config.Bind(
+            "Experimental",
+            "World Map Icon Opacity",
+            0.6f,
+            new ConfigDescription(
+                "How solid a symbol is. The game's icon sprites are filled rather than outlined — "
+                + "an airbase's is 78% fully opaque, and the buildings have no sprite at all and "
+                + "draw as a plain rectangle — which costs nothing on a flat map, where the symbol "
+                + "sits on a picture of the ground, and turns each one into a slab on a solid "
+                + "model. Below 1 the terrain reads through the symbol and it becomes the "
+                + "annotation it is meant to be. 1 is the flat map's own, fully solid.",
+                new AcceptableValueRange<float>(0.05f, 1f)));
+
         IconOverlay = config.Bind(
             "Experimental",
             "World Map Icon Overlay",
@@ -158,9 +171,8 @@ public static class VrMapConfig
             + "normally, one standing behind a ridge is sawn in half by it and one at ground level "
             + "is half-buried, which reads as a solid object embedded in the terrain rather than a "
             + "marker on a map. Turn it off to see the difference, or if you would rather a symbol "
-            + "behind a mountain stayed behind it. This changes the depth test and nothing else — "
-            + "the symbols are drawn with the game's own additive icon shader either way, so they "
-            + "brighten the terrain rather than covering it.");
+            + "behind a mountain stayed behind it. This changes the depth test and nothing else; "
+            + "how much of the terrain reads through a symbol is Icon Opacity above.");
 
         HideCockpit = config.Bind(
             "Experimental",
