@@ -1,6 +1,6 @@
+using System.Collections.Generic;
 using NOVR.VrUi;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace NOVR.VrMap;
 
@@ -18,10 +18,10 @@ namespace NOVR.VrMap;
 ///
 /// <para><b>Why it is drawn by the UI camera.</b> The model lives on the VR UI
 /// layer, which <see cref="NOUIManager.CockpitHudCamera"/> draws as a URP
-/// overlay with the depth buffer cleared. That is what lets a 41 m landscape sit
-/// in a cockpit you are strapped into without the canopy rails cutting through
-/// it. It also puts the model behind the HUD panels rather than over them, since
-/// the model is opaque geometry and they are transparent.</para>
+/// overlay with the depth buffer cleared. That is what lets a landscape tens of
+/// metres across sit in a cockpit you are strapped into without the canopy rails
+/// cutting through it. It also puts the model behind the HUD panels rather than
+/// over them, since the model is opaque geometry and they are transparent.</para>
 ///
 /// <para><b>Why it does not follow your head.</b> The model is placed against
 /// the airframe mount, not the head: a model anchored to the head moves when you
@@ -32,32 +32,27 @@ namespace NOVR.VrMap;
 /// </summary>
 public class VrWorldMap : NOVRBehaviour
 {
-    private static readonly int DatumOriginId = Shader.PropertyToID("_Datum_OriginPosition");
-    private static readonly int DatumExtentId = Shader.PropertyToID("_Datum_WorldExtent");
+    /// <summary>
+    /// What the cockpit is drawn on. Both go while the map is up: you are
+    /// supposed to be over the landscape, not looking at it past a canopy rail.
+    /// </summary>
+    private const int CockpitLayers = (1 << (int)LayerHelper.Layers.Cockpit)
+                                      | (1 << (int)LayerHelper.Layers.CockpitAndExternal);
 
     private WorldMapModel? _model;
-    private bool _datumOverridden;
     private bool _reported;
     private GameObject? _marker;
-
-    protected override void OnEnable()
-    {
-        base.OnEnable();
-        RenderPipelineManager.beginCameraRendering += OnBeginCameraRendering;
-        RenderPipelineManager.endCameraRendering += OnEndCameraRendering;
-    }
+    private readonly Dictionary<Camera, int> _maskedCameras = new();
 
     protected override void OnDisable()
     {
         base.OnDisable();
-        RenderPipelineManager.beginCameraRendering -= OnBeginCameraRendering;
-        RenderPipelineManager.endCameraRendering -= OnEndCameraRendering;
-        RestoreDatum();
+        ShowCockpit();
     }
 
     private void OnDestroy()
     {
-        RestoreDatum();
+        ShowCockpit();
         if (_marker != null) Destroy(_marker);
         _marker = null;
         _model?.Destroy();
@@ -66,13 +61,6 @@ public class VrWorldMap : NOVRBehaviour
 
     private void Update()
     {
-        // Safety net. The override is meant to be undone by the matching
-        // endCameraRendering, but a frame that never finishes rendering that
-        // camera would otherwise leave the *real* terrain reading its texture
-        // through a 41 m window — the whole world one flat colour, with nothing
-        // on screen to suggest the map was involved.
-        RestoreDatum();
-
         if (VrMapConfig.ToggleShortcut != null && Input.GetKeyDown(VrMapConfig.ToggleShortcut.Value))
         {
             VrMapConfig.Open.Value = !VrMapConfig.Open.Value;
@@ -89,15 +77,17 @@ public class VrWorldMap : NOVRBehaviour
 
         Place(model);
         model.Root.SetActive(true);
+        HideCockpit();
         ReportOnce(model);
     }
 
     /// <summary>
     /// One line, the first frame the model is up, saying where it actually is
-    /// and whether anything can see it. "The map opens and there is nothing in
-    /// it" has too many possible causes to diagnose from a screenshot: the model
+    /// and what frame it went into. "The map opens and there is nothing in it"
+    /// has too many possible causes to diagnose from a screenshot: the model
     /// could be somewhere else, on the wrong layer, culled, or drawn and
-    /// invisible. These are the numbers that separate those.
+    /// invisible. These are the numbers that separate those, and they are what
+    /// caught the room the first time.
     /// </summary>
     private void ReportOnce(WorldMapModel model)
     {
@@ -111,8 +101,8 @@ public class VrWorldMap : NOVRBehaviour
         var mount = Mount();
 
         Debug.Log(
-            $"[NOVR] World map placed: root local={root.localPosition} world={root.position} " +
-            $"scale={root.localScale.x:E3} layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
+            $"[NOVR] World map placed: root local={root.localPosition} scale={root.localScale.x:E3} " +
+            $"layer={model.Root.layer} active={model.Root.activeInHierarchy} " +
             $"datum={(global::Datum.originPosition)}");
         Debug.Log(
             "[NOVR] World map frames: " +
@@ -120,13 +110,12 @@ public class VrWorldMap : NOVRBehaviour
             $"head={(camera == null ? "<none>" : $"{camera.transform.position} rot={camera.transform.rotation.eulerAngles}")} " +
             $"mount={(mount == null ? "<none>" : $"{mount.position} rot={mount.rotation.eulerAngles}")}");
         Debug.Log(
-            $"[NOVR] World map first renderer: " +
+            "[NOVR] World map first renderer: " +
             (first == null
                 ? "<none>"
-                : $"{first.name} bounds={first.bounds} visible={first.isVisible} " +
-                  $"enabled={first.enabled} material={first.sharedMaterial?.name} " +
-                  $"shader={first.sharedMaterial?.shader?.name}") +
-            $"; overlay camera={(camera == null ? "<none>" : $"{camera.name} mask=0x{camera.cullingMask:X} " + $"pos={camera.transform.position} far={camera.farClipPlane}")}");
+                : $"{first.name} bounds={first.bounds} enabled={first.enabled} " +
+                  $"material={first.sharedMaterial?.name} shader={first.sharedMaterial?.shader?.name}") +
+            $"; overlay camera={(camera == null ? "<none>" : $"{camera.name} mask=0x{camera.cullingMask:X} far={camera.farClipPlane}")}");
     }
 
     private WorldMapModel? EnsureModel()
@@ -153,6 +142,7 @@ public class VrWorldMap : NOVRBehaviour
     private void Hide()
     {
         if (_model?.Root != null) _model.Root.SetActive(false);
+        ShowCockpit();
         _reported = false;
     }
 
@@ -212,6 +202,41 @@ public class VrWorldMap : NOVRBehaviour
     }
 
     /// <summary>
+    /// Take the cockpit out of every camera that draws the aircraft, remembering
+    /// what each had so it can be given back exactly. Culling masks rather than
+    /// disabling the cameras: the cockpit and post-processing passes do other
+    /// work, and a mask is a change that can be undone precisely.
+    /// </summary>
+    private void HideCockpit()
+    {
+        if (VrMapConfig.HideCockpit == null || !VrMapConfig.HideCockpit.Value)
+        {
+            ShowCockpit();
+            return;
+        }
+
+        var mount = Mount();
+        if (mount == null) return;
+
+        foreach (var camera in mount.GetComponentsInChildren<Camera>(true))
+        {
+            if (!_maskedCameras.ContainsKey(camera)) _maskedCameras[camera] = camera.cullingMask;
+            camera.cullingMask &= ~CockpitLayers;
+        }
+    }
+
+    private void ShowCockpit()
+    {
+        if (_maskedCameras.Count == 0) return;
+        foreach (var masked in _maskedCameras)
+        {
+            if (masked.Key != null) masked.Key.cullingMask = masked.Value;
+        }
+
+        _maskedCameras.Clear();
+    }
+
+    /// <summary>
     /// A plain cube, in world metres, sitting on the model exactly where the
     /// ground under the aircraft should be. It is a control: it uses the
     /// engine's default material rather than the game's terrain shader, and it
@@ -255,41 +280,5 @@ public class VrWorldMap : NOVRBehaviour
         var mainCamera = APIBus.MainCamera;
         if (mainCamera == null) return null;
         return mainCamera.transform.parent != null ? mainCamera.transform.parent : mainCamera.transform;
-    }
-
-    private void OnBeginCameraRendering(ScriptableRenderContext context, Camera camera)
-    {
-        if (_model?.Root == null || !_model.Root.activeSelf) return;
-        if (!VrMapConfig.RemapTerrainDatum.Value) return;
-        if (NOUIManager.I == null || camera != NOUIManager.I.CockpitHudCamera) return;
-
-        // The terrain shader reads its position in the map from the pixel's
-        // world position measured against these two globals. Point them at the
-        // model — origin at the model's map (0,0), extent scaled with it — and
-        // every clone reads the same texel it would have read full size.
-        var root = _model.Root.transform;
-        var scale = root.localScale.x;
-        Shader.SetGlobalVector(DatumOriginId, root.position);
-        Shader.SetGlobalVector(DatumExtentId, _model.MapSize * 0.5f * scale);
-        _datumOverridden = true;
-    }
-
-    private void OnEndCameraRendering(ScriptableRenderContext context, Camera camera)
-    {
-        if (!_datumOverridden) return;
-        if (NOUIManager.I == null || camera != NOUIManager.I.CockpitHudCamera) return;
-        RestoreDatum();
-    }
-
-    private void RestoreDatum()
-    {
-        if (!_datumOverridden) return;
-        _datumOverridden = false;
-
-        Shader.SetGlobalVector(DatumOriginId, global::Datum.originPosition);
-
-        var levelInfo = NetworkSceneSingleton<LevelInfo>.i;
-        var settings = levelInfo != null ? levelInfo.LoadedMapSettings : null;
-        if (settings != null) Shader.SetGlobalVector(DatumExtentId, settings.MapSize * 0.5f);
     }
 }

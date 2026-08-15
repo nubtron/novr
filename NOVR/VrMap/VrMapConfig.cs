@@ -21,7 +21,7 @@ public static class VrMapConfig
     public static ConfigEntry<float> Scale;
     public static ConfigEntry<float> EyeHeight;
     public static ConfigEntry<float> ReliefExaggeration;
-    public static ConfigEntry<bool> RemapTerrainDatum;
+    public static ConfigEntry<bool> HideCockpit;
     public static ConfigEntry<bool> DebugMarker;
 
     public static void Bind(ConfigFile config)
@@ -84,19 +84,14 @@ public static class VrMapConfig
                 + "1 is honest terrain.",
                 new AcceptableValueRange<float>(1f, 10f)));
 
-        RemapTerrainDatum = config.Bind(
+        HideCockpit = config.Bind(
             "Experimental",
-            "World Map Remap Terrain Datum",
+            "World Map Hide Cockpit",
             true,
-            "Retarget the game's terrain shader at the model while the model is being drawn. The "
-            + "ground's colour is not painted into the mesh: the shader works out where in the "
-            + "map's one big satellite texture each pixel is, from the pixel's world position "
-            + "against two global shader values the game sets (_Datum_OriginPosition, "
-            + "_Datum_WorldExtent). A model 41 m across therefore reads a 41 m patch of an 82 km "
-            + "texture — one flat colour. Scaling the two globals to match the model puts the "
-            + "whole texture back on it. Turn this off to see the model without the correction; "
-            + "if the terrain looks right either way, the shader was not using world position "
-            + "after all and this can go.");
+            "Take the cockpit out of view while the map is up. The point of this map is that you "
+            + "are over the landscape, and a canopy rail across it says otherwise. The aircraft "
+            + "keeps flying, and everything that is not the airframe — sky, weather, the real "
+            + "world past the model — stays where it was.");
 
         DebugMarker = config.Bind(
             "Experimental",
