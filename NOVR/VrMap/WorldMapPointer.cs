@@ -264,8 +264,23 @@ internal sealed class WorldMapPointer
         _ringLine.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         _ringLine.receiveShadows = false;
 
-        var shader = Shader.Find("Sprites/Default");
-        if (shader != null) _ringLine.material = new Material(shader);
+        // Over the model, not into it — the same rule the symbols follow, and for
+        // the same reason: a reticle that a ridge can hide is a reticle you
+        // cannot use. Missing this is why the first ring never appeared. The
+        // airbase it was drawn around sits in a valley past a ridge and is itself
+        // only visible because its symbol ignores depth; the ring, which did not,
+        // was behind the hill in every frame.
+        var shader = Shader.Find("UI/Default");
+        if (shader != null)
+        {
+            var material = new Material(shader) { name = "NOVR World Map Pointer" };
+            material.SetInt("unity_GUIZTestMode", (int)UnityEngine.Rendering.CompareFunction.Always);
+            _ringLine.material = material;
+            return;
+        }
+
+        var fallback = Shader.Find("Sprites/Default");
+        if (fallback != null) _ringLine.material = new Material(fallback);
     }
 
     public void Hide()
