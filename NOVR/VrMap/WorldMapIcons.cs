@@ -71,6 +71,8 @@ internal sealed class WorldMapIcons
     private readonly List<MapIcon> _stale = new();
     private AirbaseMapIcon[]? _airbases;
     private float _airbasesFound;
+    private bool _inventoried;
+    private readonly List<string> _inventory = new();
 
     public WorldMapIcons(Transform room) => _room = room;
 
@@ -157,6 +159,35 @@ internal sealed class WorldMapIcons
 
         foreach (var gone in _stale) Retire(gone);
         _stale.Clear();
+
+        Inventory();
+    }
+
+    /// <summary>
+    /// One line, once, naming every symbol on the model with the sprite it is
+    /// wearing and how big that came out. Eight icons is a short list, and
+    /// "there is a large red slab on the mountain" is not a question a screenshot
+    /// can answer: it says nothing about which unit it is, which sprite the game
+    /// handed over, or whether the size came from the flat map's ratios or from
+    /// the clamp that catches the building branch.
+    /// </summary>
+    private void Inventory()
+    {
+        if (_inventoried || _icons.Count == 0) return;
+        _inventoried = true;
+
+        _inventory.Clear();
+        foreach (var placed in _icons)
+        {
+            if (placed.Key == null || placed.Value == null) continue;
+            var kind = placed.Key is AirbaseMapIcon ? "airbase" : "unit";
+            var sprite = placed.Value.sprite != null ? placed.Value.sprite.name : "<none>";
+            _inventory.Add($"{placed.Key.name} ({kind}, sprite '{sprite}', " +
+                           $"{placed.Value.transform.localScale.x * IconRectSize:F2}m)");
+        }
+
+        Debug.Log("[NOVR] World map icons: " + string.Join(", ", _inventory));
+        _inventory.Clear();
     }
 
     /// <summary>
@@ -249,6 +280,7 @@ internal sealed class WorldMapIcons
         _icons.Clear();
         _seen.Clear();
         _airbases = null;
+        _inventoried = false;
         if (_container != null) Object.Destroy(_container);
         if (_overlay != null) Object.Destroy(_overlay);
         _container = null;
@@ -291,6 +323,7 @@ internal sealed class WorldMapIcons
     /// </summary>
     private Material? Overlay()
     {
+        if (VrMapConfig.IconOverlay != null && !VrMapConfig.IconOverlay.Value) return null;
         if (_overlay != null) return _overlay;
 
         var shader = Shader.Find("UI/Default");
