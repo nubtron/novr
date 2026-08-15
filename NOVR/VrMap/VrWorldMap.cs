@@ -61,32 +61,35 @@ public class VrWorldMap : NOVRBehaviour
     /// <summary>
     /// A panel we took out of view, and exactly what it takes to put it back.
     ///
-    /// <para>Two mechanisms, because the two panels need different ones. A
-    /// <c>Canvas</c> is switched off where there is one: the game re-activates
-    /// the map's GameObject on its own (<c>DynamicMap.EnableCanvas</c>), so
-    /// deactivating it is a fight we lose every frame, while a disabled Canvas
-    /// component survives it. Where there is no Canvas, the GameObject.</para>
+    /// <para>A single component is switched off wherever one will do, and the
+    /// GameObject only as a last resort. Two reasons, both learned the hard way:
+    /// the game re-activates the map's GameObject on its own
+    /// (<c>DynamicMap.EnableCanvas</c>), so deactivating it is a fight lost every
+    /// frame; and a deactivated GameObject stops the behaviours under it running,
+    /// which for the map means <c>DynamicMap.Update</c> no longer maintains the
+    /// unit icons — the icon layer's entire source of truth. Hiding the map used
+    /// to switch off the map the icons are read from.</para>
     /// </summary>
     private readonly struct HiddenPanel
     {
-        public HiddenPanel(GameObject go, Canvas? canvas)
+        public HiddenPanel(GameObject go, Behaviour? component)
         {
             Go = go;
-            Canvas = canvas;
+            Component = component;
             WasActive = go.activeSelf;
-            WasEnabled = canvas != null && canvas.enabled;
+            WasEnabled = component != null && component.enabled;
         }
 
         public readonly GameObject Go;
-        public readonly Canvas? Canvas;
+        public readonly Behaviour? Component;
         public readonly bool WasActive;
         public readonly bool WasEnabled;
 
         public void Hide()
         {
-            if (Canvas != null)
+            if (Component != null)
             {
-                if (Canvas.enabled) Canvas.enabled = false;
+                if (Component.enabled) Component.enabled = false;
             }
             else if (Go != null && Go.activeSelf)
             {
@@ -96,7 +99,7 @@ public class VrWorldMap : NOVRBehaviour
 
         public void Restore()
         {
-            if (Canvas != null) Canvas.enabled = WasEnabled;
+            if (Component != null) Component.enabled = WasEnabled;
             else if (Go != null) Go.SetActive(WasActive);
         }
     }
@@ -175,12 +178,11 @@ public class VrWorldMap : NOVRBehaviour
     /// is the <c>DynamicMap</c> scene singleton, asked for directly because it
     /// is not under the helmet at all.</para>
     ///
-    /// <para>Deactivated rather than faded. A CanvasGroup at alpha 0 took the
-    /// weapon readout out and left the tactical map drawing, so something under
-    /// the map does not inherit the group. Deactivating is also the state the
-    /// game itself uses for the map — <c>DynamicMap.EnableCanvas(false)</c> does
-    /// exactly this — so it is a supported thing to do to it rather than a trick
-    /// that happens to work.</para>
+    /// <para>Switched off a component at a time rather than faded. A CanvasGroup
+    /// at alpha 0 took the weapon readout out and left the tactical map drawing,
+    /// so something under the map does not inherit the group; and deactivating
+    /// the objects instead stopped <c>DynamicMap.Update</c>, which is what keeps
+    /// the unit icons this map draws alive. See <see cref="HiddenPanel"/>.</para>
     /// </summary>
     private void HideHelmetPanels()
     {
@@ -214,19 +216,12 @@ public class VrWorldMap : NOVRBehaviour
                 TakePanel(map.gameObject, "tactical map");
 
                 // And the dark backing the map is read against is not part of
-                // the map either — it belongs to the anchor the map is placed
-                // at. Hiding the map alone leaves a grey pane hanging in the
-                // sky. Follow the map's own anchor field up to whichever child
-                // of the helmet holds it rather than naming that child.
-                if (map.hudMapAnchor != null && helmet != null)
-                {
-                    foreach (Transform child in helmet)
-                    {
-                        if (!map.hudMapAnchor.IsChildOf(child)) continue;
-                        TakePanel(child.gameObject, "tactical map backing");
-                        break;
-                    }
-                }
+                // the map either. Hiding the map alone leaves a grey pane
+                // hanging in the sky. The map owns it as a field, so take the
+                // Image rather than the object it sits on — deactivating that
+                // object takes DynamicMap.Update down with it, and with it the
+                // unit icons this map reads.
+                if (map.mapBackground != null) TakePanel(map.mapBackground.gameObject, "tactical map backing");
             }
         }
 
@@ -242,11 +237,13 @@ public class VrWorldMap : NOVRBehaviour
             if (known.Go == panel) return;
         }
 
-        var canvas = panel.GetComponent<Canvas>();
-        _hiddenPanels.Add(new HiddenPanel(panel, canvas));
+        Behaviour? component = panel.GetComponent<Canvas>();
+        component ??= panel.GetComponent<UnityEngine.UI.Graphic>();
+
+        _hiddenPanels.Add(new HiddenPanel(panel, component));
         Debug.Log(
             $"[NOVR] World map: hiding the {what} ('{panel.name}') by " +
-            (canvas != null ? "disabling its Canvas" : "deactivating it") + ".");
+            (component != null ? "disabling its " + component.GetType().Name : "deactivating it") + ".");
     }
 
     private void ShowHelmetPanels()

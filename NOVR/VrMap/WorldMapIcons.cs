@@ -69,9 +69,14 @@ internal sealed class WorldMapIcons
         {
             if (unit == null) continue;
 
+            // activeSelf and the image's own enabled flag, not activeInHierarchy:
+            // this map hides the helmet's tactical map while it is up, and the
+            // icons hang under it, so the whole chain reads inactive for a reason
+            // that has nothing to do with whether the pilot can see that unit.
+            // These two are the game's decision about this icon specifically.
             if (!global::DynamicMap.TryGetMapIcon(unit, out var mapIcon) ||
                 mapIcon == null || mapIcon.iconImage == null ||
-                !mapIcon.gameObject.activeInHierarchy)
+                !mapIcon.gameObject.activeSelf || !mapIcon.iconImage.enabled)
             {
                 Retire(unit);
                 continue;
