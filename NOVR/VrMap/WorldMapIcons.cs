@@ -470,21 +470,27 @@ internal sealed class WorldMapIcons
         var t = icon.transform;
         t.position = model.TransformPoint(mapPosition);
         t.localScale = Aspect(source.iconImage) * (size / IconRectSize);
-        // Square to the view, not aimed at the eye.
+        // Aimed at the eye, but upright in the *view* rather than in the world.
         //
-        // Aiming each symbol at the head and asking for world up as the up hint
-        // reads fine at a distance and comes apart underfoot: for a symbol almost
-        // directly below you the direction to the head *is* world up, the two
-        // vectors the rotation is built from are parallel, and the roll it falls
-        // back on is whatever the remaining rounding says. The symbols then fan
+        // A world-space canvas is readable from its +Z side, so +Z has to point at
+        // the head — that part was always right. What was wrong was the up hint.
+        // Asking for world up reads fine at a distance and comes apart underfoot:
+        // for a symbol almost directly below you the direction to the head *is*
+        // world up, the two vectors the rotation is built from are parallel, and
+        // the roll falls back on whatever the rounding says. The symbols then fan
         // out radially from the point under your feet and spin as they pass, which
-        // is exactly what a degenerate LookRotation looks like from inside.
+        // is what a degenerate LookRotation looks like from inside.
         //
-        // Taking the head's own rotation has no such case anywhere: every symbol
-        // lies in the view plane and every one of them is upright to the reader,
-        // looking down at the model or across it. A map symbol is meant to be read,
-        // and "upright" for something read is upright in the view.
-        t.rotation = head.rotation;
+        // The head's own up has no such case in view: it is perpendicular to the
+        // view direction by construction, and the direction to a symbol you can
+        // see is within a right angle of that direction — so the two can only line
+        // up for a symbol already off the side of the screen. Every symbol that can
+        // be read is upright to the reader, looking down at the model or across it.
+        //
+        // Taking the head's whole rotation instead is the tempting one-liner and is
+        // wrong: it points +Z along the view direction, which is the canvas's back.
+        var toHead = head.position - t.position;
+        if (toHead.sqrMagnitude > 1e-6f) t.rotation = Quaternion.LookRotation(toHead, head.up);
     }
 
     public void SetVisible(bool visible)
