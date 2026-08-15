@@ -90,12 +90,14 @@ public static class VrMapConfig
         ReliefExaggeration = config.Bind(
             "Experimental",
             "World Map Relief Exaggeration",
-            2f,
+            1f,
             new ConfigDescription(
-                "Vertical stretch applied to the model. At 1:1200 a 2 km mountain is 1.7 m tall, "
-                + "which is true but hard to read; every relief map ever printed exaggerates. "
-                + "1 is honest terrain. Keep the peaks under Eye Height or you will fly into "
-                + "them: at 1:1200 and 2x, a 2 km summit reaches 3.3 m against an 8 m eye.",
+                "Vertical stretch applied to the model. 1 is honest terrain — the ground at the "
+                + "same scale as everything else — and is the default because a stereo model does "
+                + "not need the trick a printed relief map needs: at 1:1200 a 2 km mountain is "
+                + "1.7 m tall, which is small on paper and perfectly readable when both eyes can "
+                + "see it. Above 1 the terrain is a lie you have chosen, and the peaks climb "
+                + "towards you: at 2x a 2 km summit reaches 3.3 m against an 8 m eye.",
                 new AcceptableValueRange<float>(1f, 10f)));
 
         Detail = config.Bind(

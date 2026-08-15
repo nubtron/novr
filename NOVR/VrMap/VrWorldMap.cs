@@ -153,6 +153,15 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
+        // While the map is up, the surface being pointed at is the whole model
+        // around you rather than a menu pinned in front of you, so head gaze goes
+        // to the middle of the view and stays there. Amplification is the right
+        // trade for a panel and the wrong one here: at 2x the cursor leaves the
+        // centre twice as fast as the head does and then stops at the yaw clamp,
+        // pinned to the edge of a rectangle that is no longer in front of you.
+        // Asked for every frame, so closing the map gives it straight back.
+        VrUiCursor.I?.UseViewCentreGaze();
+
         var model = EnsureModel();
         if (model == null) return;
 
