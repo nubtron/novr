@@ -534,17 +534,23 @@ public class VrWorldMap : NOVRBehaviour
         foreach (var (name, attitude) in cases)
         {
             // The heading the model ends up showing: undo the map's rotation and
-            // read where the aircraft's nose points on it.
+            // read where the aircraft points on it. Straight up or down there is
+            // no nose heading to read — the measure is undefined, not the answer —
+            // so fall back to where the canopy faces, which is what a pilot means
+            // by heading in a vertical.
             var track = Turn(attitude, WorldMapOrientation.TrackUp);
             var nose = track * (attitude * Vector3.forward);
-            var shown = Mathf.Atan2(nose.x, nose.z) * Mathf.Rad2Deg;
+            var vertical = new Vector2(nose.x, nose.z).sqrMagnitude < 0.01f;
+            var read = vertical ? track * (attitude * Vector3.down) : nose;
+            var shown = Mathf.Atan2(read.x, read.z) * Mathf.Rad2Deg;
 
             Debug.Log($"[NOVR] World map orientation, {name}: " +
                       $"NorthUp {Turn(attitude, WorldMapOrientation.NorthUp).eulerAngles}, " +
                       $"TrackUp {track.eulerAngles}, " +
                       $"WorldFixed {Turn(attitude, WorldMapOrientation.WorldFixed).eulerAngles}; " +
-                      $"under TrackUp the nose points {shown:F1}° on the model " +
-                      $"(0 means straight away from you, and is the only right answer).");
+                      $"under TrackUp the {(vertical ? "canopy (the nose is vertical and has no heading)" : "nose")} " +
+                      $"points {shown:F1}° on the model " +
+                      "(0 means straight away from you, and is the only right answer).");
         }
     }
 
