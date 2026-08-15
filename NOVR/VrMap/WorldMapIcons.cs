@@ -131,6 +131,9 @@ internal sealed class WorldMapIcons
         }
 
         EnsureContainer();
+        // Re-reads the depth setting, so turning it over takes effect on symbols
+        // that already exist rather than only on the next one placed.
+        Overlay();
         SetVisible(true);
         _seen.Clear();
 
@@ -490,33 +493,79 @@ internal sealed class WorldMapIcons
     }
 
     /// <summary>
-    /// The material that makes a symbol an overlay rather than an object.
+    /// The shader the flat map draws its icons with: UI/Default with the blend
+    /// line changed to additive. Same property list, down to the stencil block.
+    /// </summary>
+    private const string AdditiveShader = "Unlit/AdditiveTextShader";
+
+    /// <summary>
+    /// The material that makes a symbol an annotation rather than an object.
     ///
-    /// <para>By default a world-space canvas depth-tests like anything else, so a
-    /// symbol standing on the far side of a ridge is sawn in half by it and one
-    /// at ground level is half-buried. That reads as a solid thing embedded in
-    /// the terrain, which is not what a map symbol is: it is an annotation, and
-    /// an annotation is never occluded by the thing it annotates. <c>UI/Default</c>
-    /// takes its depth test from <c>unity_GUIZTestMode</c>, so forcing that to
-    /// Always draws every symbol over the model while leaving it sorted normally
-    /// against the other symbols.</para>
+    /// <para><b>Additive, because that is what the flat map does.</b> Every map
+    /// icon in the game is drawn with <c>Text_additive</c> —
+    /// <c>Unlit/AdditiveTextShader</c> — and a symbol drawn additively never hides
+    /// what is under it: it brightens it. Drawn with ordinary alpha blending
+    /// instead, the same sprite is a solid slab, because the sprites are mostly
+    /// solid where they are drawn at all — measured: the airbase's is 78% fully
+    /// opaque, an aircraft's glyph is opaque to the centre pixel, and six of the
+    /// fifteen symbols in a mission have no sprite whatsoever and draw as a plain
+    /// filled rectangle. On a flat map over a picture of the ground that is
+    /// invisible; on a solid model it covers the terrain the symbol exists to
+    /// annotate. So this borrows the game's shader rather than inventing a look:
+    /// the same sprite, the same colour and the same blend, and the model's
+    /// symbols match the ones on the flat map because they are drawn the same way.</para>
+    ///
+    /// <para><b>Depth, because a world-space canvas depth-tests like anything
+    /// else.</b> A symbol standing on the far side of a ridge is sawn in half by
+    /// it, and one at ground level is half-buried. Both read as a solid object
+    /// embedded in the terrain. The UI shaders take their depth test from
+    /// <c>unity_GUIZTestMode</c>, so forcing that to Always draws every symbol
+    /// over the model while leaving the symbols sorted normally against each
+    /// other. The additive shader carries the same property block, so it takes the
+    /// same override.</para>
     /// </summary>
     private Material? Overlay()
     {
-        if (VrMapConfig.IconOverlay != null && !VrMapConfig.IconOverlay.Value) return null;
-        if (_overlay != null) return _overlay;
+        if (_overlay != null)
+        {
+            Depth(_overlay);
+            return _overlay;
+        }
 
-        var shader = Shader.Find("UI/Default");
+        // The game's own, then the engine's. The fall-back is a worse-looking
+        // symbol, not a missing one, so it is worth taking silently-ish.
+        var shader = Shader.Find(AdditiveShader);
         if (shader == null)
         {
-            Debug.LogWarning("[NOVR] World map: no 'UI/Default' shader, so unit symbols will be " +
-                             "cut into the terrain instead of drawn over it.");
+            Debug.LogWarning($"[NOVR] World map: no '{AdditiveShader}' shader, so unit symbols " +
+                             "will be drawn with ordinary alpha blending and will hide the " +
+                             "terrain under them instead of brightening it.");
+            shader = Shader.Find("UI/Default");
+        }
+
+        if (shader == null)
+        {
+            Debug.LogWarning("[NOVR] World map: no 'UI/Default' shader either, so unit symbols " +
+                             "will be cut into the terrain instead of drawn over it.");
             return null;
         }
 
         _overlay = new Material(shader) { name = "NOVR World Map Icon" };
-        _overlay.SetInt("unity_GUIZTestMode", (int)CompareFunction.Always);
+        Depth(_overlay);
         return _overlay;
+    }
+
+    /// <summary>
+    /// Set the depth test from the setting, every time, on the one shared
+    /// material — so the setting can be turned over mid-flight and so the A/B it
+    /// exists for changes exactly one thing. Off does not mean "no material":
+    /// that would swap the blend as well and compare two changes at once.
+    /// </summary>
+    private static void Depth(Material material)
+    {
+        var over = VrMapConfig.IconOverlay == null || VrMapConfig.IconOverlay.Value;
+        material.SetInt("unity_GUIZTestMode",
+                        (int)(over ? CompareFunction.Always : CompareFunction.LessEqual));
     }
 
     private Image Obtain(MapIcon source)

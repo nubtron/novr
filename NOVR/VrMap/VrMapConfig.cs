@@ -132,8 +132,10 @@ public static class VrMapConfig
             + "altitude in the same tracking record its position comes from, so it is exactly as "
             + "stale as the position under it, and never a live altitude under a stale place. "
             + "That is the one thing a flat map cannot show and the reason to have a solid one. "
-            + "The symbols are drawn over the terrain rather than into it: a map symbol annotates "
-            + "the ground, so a ridge in front of it does not saw it in half.");
+            + "The symbols are drawn over the terrain rather than into it, with the game's own "
+            + "additive icon shader: a map symbol annotates the ground, so a ridge in front of it "
+            + "does not saw it in half and the symbol itself brightens the ground rather than "
+            + "hiding it.");
 
         IconSize = config.Bind(
             "Experimental",
@@ -156,7 +158,9 @@ public static class VrMapConfig
             + "normally, one standing behind a ridge is sawn in half by it and one at ground level "
             + "is half-buried, which reads as a solid object embedded in the terrain rather than a "
             + "marker on a map. Turn it off to see the difference, or if you would rather a symbol "
-            + "behind a mountain stayed behind it.");
+            + "behind a mountain stayed behind it. This changes the depth test and nothing else — "
+            + "the symbols are drawn with the game's own additive icon shader either way, so they "
+            + "brighten the terrain rather than covering it.");
 
         HideCockpit = config.Bind(
             "Experimental",
