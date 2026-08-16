@@ -28,9 +28,10 @@ namespace NOVR.VrUi.HarmonyPatches;
 ///   swaps nest inside that one: markers project through the head while the
 ///   weapon-state symbology later in the same LateUpdate keeps the design eye);
 /// - the transform reads and screen dimensions go through provider methods via
-///   a transpiler; the providers return the vanilla values whenever the layer
-///   is inactive, so <c>AirbaseOverlay</c>'s calls into the shared
-///   <c>PinToScreenEdge</c> and every non-VR configuration stay bit-identical;
+///   a transpiler; the providers answer with this layer's values only while one
+///   of its own camera swaps is in effect, so <c>AirbaseOverlay</c>'s calls
+///   into the shared <c>PinToScreenEdge</c> get the eye and the screen its own
+///   panel is measured in, and every non-VR configuration stays bit-identical;
 /// - each freshly written screen-pixel position is re-expressed on the island
 ///   canvas by a postfix (<see cref="ViewLayerBackend.RemapPixels"/>) — a
 ///   coordinate change, not a repositioning.
@@ -61,17 +62,41 @@ internal static class ViewLayerPatches
     private static readonly FieldInfo? CameraStateManagerInstanceField =
         AccessTools.Field(typeof(SceneSingleton<CameraStateManager>), "i");
 
+    /// <summary>
+    /// True only inside one of this class's own camera swaps.
+    ///
+    /// <para>The redirected reads are not private to this layer:
+    /// <c>HUDFunctions.PinToScreenEdge</c> is shared, and <c>AirbaseOverlay</c>
+    /// calls it for the airbase marker — from inside the *design eye's* swap,
+    /// on a panel measured in real screen pixels. Answering that call with the
+    /// head and a 1920x1080 virtual screen puts the marker in a coordinate
+    /// system belonging to neither eye. So the providers speak only where this
+    /// layer is actually driving.</para>
+    /// </summary>
+    private static int _swapDepth;
+
     /// <summary>The transform the icon code should measure the view from.</summary>
     public static Transform ViewTransform()
     {
-        var eye = ViewLayerBackend.AcquireProjectionCamera();
-        if (eye != null) return eye.transform;
+        if (_swapDepth > 0)
+        {
+            var eye = ViewLayerBackend.AcquireProjectionCamera();
+            if (eye != null) return eye.transform;
+        }
+
+        // Inside the design eye's swap the view *is* the design eye: it is what
+        // the projection a line above used, and what the panel is conformal to.
+        var designEye = HudDesignEyePatches.ActiveDesignEye;
+        if (designEye != null) return designEye.transform;
+
         return SceneSingleton<CameraStateManager>.i.transform;
     }
 
-    public static int ScreenWidth() => ViewLayerBackend.IsActive ? ViewLayerBackend.TexWidth : Screen.width;
+    public static int ScreenWidth() =>
+        _swapDepth > 0 && ViewLayerBackend.IsActive ? ViewLayerBackend.TexWidth : Screen.width;
 
-    public static int ScreenHeight() => ViewLayerBackend.IsActive ? ViewLayerBackend.TexHeight : Screen.height;
+    public static int ScreenHeight() =>
+        _swapDepth > 0 && ViewLayerBackend.IsActive ? ViewLayerBackend.TexHeight : Screen.height;
 
     // ---------------------------------------------------------------- camera swap
 
@@ -87,12 +112,14 @@ internal static class ViewLayerPatches
 
         previous = manager.mainCamera;
         manager.mainCamera = eye;
+        _swapDepth++;
     }
 
     private static void Restore(Camera? previous)
     {
         if (previous == null) return;
 
+        if (_swapDepth > 0) _swapDepth--;
         var manager = SceneSingleton<CameraStateManager>.i;
         if (manager != null) manager.mainCamera = previous;
     }
