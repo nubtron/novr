@@ -179,10 +179,16 @@ public class AutoStartMission : MonoBehaviour
 
             try
             {
+                // The title is logged because pressing blind is a real risk: a
+                // dialogue that appears mid-run may be the mission telling you
+                // it has failed, and the button then agrees with it. Seeing
+                // what was agreed to afterwards is the difference between
+                // "the run ended" and knowing why.
+                var title = DialogueTitle(box);
                 DialoguePressMethod.Invoke(box, null);
                 _dialoguesDismissed++;
-                Debug.Log($"[NOVR-HARNESS] Dismissed briefing dialogue {_dialoguesDismissed} " +
-                          $"(id {box.CurrentId}); timescale is now {Time.timeScale:0.##}.");
+                Debug.Log($"[NOVR-HARNESS] Dismissed dialogue {_dialoguesDismissed} " +
+                          $"(id {box.CurrentId}, \"{title}\"); timescale is now {Time.timeScale:0.##}.");
             }
             catch (Exception e)
             {
@@ -195,8 +201,14 @@ public class AutoStartMission : MonoBehaviour
 
     // ------------------------------------------------------------ approach mode
 
-    /// <summary>How far out on the extended centreline the aircraft is held.</summary>
-    private const float ApproachDistance = 2000f;
+    /// <summary>
+    /// How far out on the extended centreline the aircraft is held. Kept short
+    /// on purpose: at 2 km both a tutorial and a campaign mission treated the
+    /// placement as leaving the mission area and put up a failure dialogue
+    /// within two seconds. Inside the airbase's own radius nothing objects, and
+    /// the overlay's approach test only needs 2.5 km.
+    /// </summary>
+    private const float ApproachDistance = 1200f;
 
     /// <summary>
     /// The gradient the game's own glideslope symbology is drawn on
@@ -442,6 +454,23 @@ public class AutoStartMission : MonoBehaviour
         }
 
         return null;
+    }
+
+    private static readonly FieldInfo DialogueTitleField =
+        AccessTools.Field(typeof(DialogueBox), "titleText");
+
+    private static string DialogueTitle(DialogueBox box)
+    {
+        try
+        {
+            var component = DialogueTitleField?.GetValue(box) as Component;
+            var text = component != null ? component.GetComponent<TMPro.TMP_Text>() : null;
+            return text != null ? text.text : "<unreadable>";
+        }
+        catch (Exception)
+        {
+            return "<unreadable>";
+        }
     }
 
     private static string DescribeOverlay()
