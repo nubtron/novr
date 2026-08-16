@@ -19,6 +19,11 @@ public static class VrMapConfig
     public static ConfigEntry<bool> Open;
     public static ConfigEntry<KeyCode> ToggleShortcut;
     public static ConfigEntry<WorldMapButton> ToggleButton;
+    public static ConfigEntry<WorldMapPlacement> Placement;
+    public static ConfigEntry<float> WallWidth;
+    public static ConfigEntry<float> WallDistance;
+    public static ConfigEntry<bool> WallFollowsHead;
+    public static ConfigEntry<bool> FollowGameMap;
     public static ConfigEntry<WorldMapOrientation> Orientation;
     public static ConfigEntry<float> Scale;
     public static ConfigEntry<float> EyeHeight;
@@ -52,12 +57,13 @@ public static class VrMapConfig
             "World Map",
             true,
             "Make the 3D world map available. It is the whole map as a solid model of the real "
-            + "terrain — the game's own ground, at its own colours — hanging below you at model "
-            + "scale, so you look down on the theatre the way you would from a very long way up, "
-            + "but close enough that both eyes see it as a solid thing rather than a flat picture. "
-            + "That last part is the entire reason it exists: a real map seen from 40 km has no "
-            + "depth to give, and a model a few metres away does. It does not replace the game's map — "
-            + "open that as usual. Turning this off costs nothing while the map is closed.");
+            + "terrain — the game's own ground, at its own colours — at model scale, close enough "
+            + "that both eyes see it as a solid thing rather than a flat picture. That last part "
+            + "is the entire reason it exists: a real map seen from 40 km has no depth to give, "
+            + "and a model a few metres away does. By default it stands in front of you where the "
+            + "game's map goes and replaces it, opening and closing with it; see World Map "
+            + "Placement for the alternative, which is the theatre laid out below you instead. "
+            + "Turning this off costs nothing while the map is closed.");
 
         Open = config.Bind(
             "Experimental",
@@ -86,6 +92,73 @@ public static class VrMapConfig
             + "hand's upper face button (Y on a Touch controller), chosen because the right hand "
             + "is the one pointing at the map and the trigger on either hand already means "
             + "'select'. Set it to None to use the keyboard shortcut alone.");
+
+        Placement = config.Bind(
+            "Experimental",
+            "World Map Placement",
+            WorldMapPlacement.Wall,
+            "Where the model hangs, which decides what kind of instrument it is. Wall stands it "
+            + "up in front of you, in the place the game's own map appears — a solid hologram of "
+            + "the theatre with north up the wall and the terrain standing out of it towards you. "
+            + "The flat map is hidden while it is up, because it is the same map; the cockpit and "
+            + "the outside world are not, because you have not gone anywhere, and the aeroplane "
+            + "keeps its stick. Table lays the theatre out below you as a diorama you fly over, "
+            + "with the ground under the aircraft directly under your head — the cockpit and the "
+            + "world are hidden and the aeroplane is given a level stick, because you are "
+            + "somewhere else while you read it. Wall is the default: it is the map the game "
+            + "already has, in the place it already is, with depth added.");
+
+        WallWidth = config.Bind(
+            "Experimental",
+            "World Map Wall Width",
+            3f,
+            new ConfigDescription(
+                "How wide the whole theatre is on the wall, in real metres, before any zoom. The "
+                + "width is what is chosen here and the scale falls out of it, so an 82 km map and "
+                + "a 200 km one both fill the same wall — which is what the flat map does, and is "
+                + "what makes mirroring its zoom mean anything. Zooming in with the map keys "
+                + "enlarges the model about its centre exactly as it enlarges the flat one; there "
+                + "is no frame to clip against, so the parts you have zoomed past extend beyond "
+                + "what you can see, which is what a hologram would do.",
+                new AcceptableValueRange<float>(0.5f, 30f)));
+
+        WallDistance = config.Bind(
+            "Experimental",
+            "World Map Wall Distance",
+            3f,
+            new ConfigDescription(
+                "How far in front of you the wall stands, in real metres. This is the number that "
+                + "decides whether it is a hologram or a picture: the eyes are 65 mm apart, so "
+                + "depth is a ratio against this distance and it falls away fast. At 3 m a "
+                + "mountain standing 10 cm out of the wall is plainly in front of it; at the 25 m "
+                + "the flat map is projected to, the same mountain is a photograph. Near enough to "
+                + "reach is the point — the model is drawn over the cockpit, so nothing in the "
+                + "aircraft can be in the way of it.",
+                new AcceptableValueRange<float>(1f, 30f)));
+
+        WallFollowsHead = config.Bind(
+            "Experimental",
+            "World Map Wall Follows Head",
+            false,
+            "Whether the wall turns to stay in front of you. Off, it is pinned where you were "
+            + "facing when the map opened and stays there while you look around it and lean into "
+            + "it — which is what makes it a hologram rather than a screen, and is where the "
+            + "stereo comes from, since a wall that moves with your head cannot move against it. "
+            + "Close and reopen the map to re-hang it in front of you. On, it stays ahead of you "
+            + "the way the game's flat map does, at the cost of everything leaning would tell you.");
+
+        FollowGameMap = config.Bind(
+            "Experimental",
+            "World Map Follows The Game Map",
+            true,
+            "Whether the model is panned and zoomed by the game's own map controls. On, this "
+            + "model shows whatever the flat map is showing: the map scroll keys move it, Zoom "
+            + "View zooms it, dragging with the mouse drags it, and jumping the map jumps it — "
+            + "not by reading the same keys and hoping to agree, but by reading where the flat map "
+            + "ended up, so every way it can move works, including ones added later. It applies "
+            + "only while the game's map is actually open full-size, which is the only time those "
+            + "controls do anything; the rest of the time the thumbsticks drive. Off, the "
+            + "thumbsticks and the flight axes always drive.");
 
         Orientation = config.Bind(
             "Experimental",

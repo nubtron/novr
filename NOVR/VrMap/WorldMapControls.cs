@@ -45,6 +45,17 @@ internal static class WorldMapControls
     /// <summary>Where the model is panned to, in map metres, relative to the aircraft.</summary>
     public static Vector2 Pan { get; private set; }
 
+    /// <summary>
+    /// Where the map is centred in absolute map metres, when that is known
+    /// outright rather than as an offset from the aircraft — which is the case
+    /// whenever the game's own map is driving (see <see cref="WorldMapGameMap"/>).
+    /// <see cref="Pan"/> is meaningless while this is set.
+    /// </summary>
+    public static Vector2? Centre { get; private set; }
+
+    /// <summary>True while the game's own map is what moves this one.</summary>
+    public static bool Mirroring => Centre.HasValue;
+
     /// <summary>How far the model is spun about the point under the head, in degrees.</summary>
     public static float Spin { get; private set; }
 
@@ -76,6 +87,7 @@ internal static class WorldMapControls
 
     private static bool _capturing;
     private static bool _takesControls = true;
+    private static bool _mirrorReported;
 
     /// <summary>Which way the stick was last seen held far enough to have snapped.</summary>
     private static int _snapHeld;
@@ -83,21 +95,51 @@ internal static class WorldMapControls
     /// <summary>
     /// True while the map is open and set to take the controls — read by the
     /// patch, which runs whether or not this mod's map exists.
+    ///
+    /// <para>Never on the wall. Taking the stick is right for the table, where
+    /// the cockpit and the world are gone and you are demonstrably not flying;
+    /// the wall is a panel in front of a pilot who still is, and levelling the
+    /// aeroplane under someone who is looking at a map while flying it is the
+    /// opposite of safe.</para>
     /// </summary>
     public static bool Capturing =>
-        _capturing && _takesControls &&
+        _capturing && _takesControls && !OnTheWall &&
         VrMapConfig.CaptureControls != null && VrMapConfig.CaptureControls.Value;
 
+    private static bool OnTheWall =>
+        VrMapConfig.Placement != null && VrMapConfig.Placement.Value == WorldMapPlacement.Wall;
+
     /// <summary>
-    /// The scale the model is actually drawn at: what the pilot configured,
-    /// divided by however far they have zoomed in since.
+    /// How wide the theatre is, in map metres — set by the map before the
+    /// controls are asked anything, because the wall is scaled to fit it rather
+    /// than to a ratio the pilot picked.
+    /// </summary>
+    public static float TheatreWidth { get; set; }
+
+    /// <summary>
+    /// The scale the model is actually drawn at, as map metres per room metre.
+    ///
+    /// <para>The table is a ratio the pilot chose, divided by however far they
+    /// have zoomed in since. The wall is the other way round: the width is what
+    /// was chosen and the ratio falls out of it, so the whole theatre spans the
+    /// wall at zoom 1 whatever map the mission is on — which is what the flat map
+    /// does, and mirroring its zoom only means anything if zoom 1 means the same
+    /// thing on both.</para>
     /// </summary>
     public static float MapScale
     {
         get
         {
+            var zoom = Mathf.Max(0.01f, Mirroring ? Zoom : Mathf.Clamp(Zoom, MinZoom, MaxZoom));
+
+            if (OnTheWall && TheatreWidth > 0f)
+            {
+                var width = VrMapConfig.WallWidth != null ? VrMapConfig.WallWidth.Value : 3f;
+                return Mathf.Max(1f, TheatreWidth / Mathf.Max(0.1f, width) / zoom);
+            }
+
             var configured = VrMapConfig.Scale != null ? VrMapConfig.Scale.Value : 1200f;
-            return Mathf.Max(1f, configured / Mathf.Clamp(Zoom, MinZoom, MaxZoom));
+            return Mathf.Max(1f, configured / zoom);
         }
     }
 
@@ -114,6 +156,24 @@ internal static class WorldMapControls
     {
         _capturing = true;
         _takesControls = takeControls;
+
+        // Whatever the game's own map is doing, this one does — when the pilot
+        // has asked for that and the game's map is actually open. It is the whole
+        // of pan and zoom, so the sticks only turn the model while it is on.
+        var following = VrMapConfig.FollowGameMap == null || VrMapConfig.FollowGameMap.Value;
+        var mirrored = false;
+        if (following && WorldMapGameMap.TryRead(out var centre, out var gameZoom))
+        {
+            mirrored = true;
+            Centre = centre;
+            Zoom = gameZoom;
+        }
+        else
+        {
+            Centre = null;
+        }
+
+        ReportMirror(mirrored);
 
         // The sticks work whether or not the map has the flight controls — they
         // are not the aeroplane's and there is nothing to hand back.
@@ -163,8 +223,13 @@ internal static class WorldMapControls
         var spun = Quaternion.Euler(0f, -Spin, 0f);
         var moved = spun * new Vector3(right2, 0f, forward);
 
-        Pan += new Vector2(moved.x, moved.z);
+        // Turning is ours in both cases: the flat map has no rotation to mirror,
+        // and a relief map you can spin is worth having whoever is panning it.
         Turn(yaw, turn);
+
+        if (mirrored) return;
+
+        Pan += new Vector2(moved.x, moved.z);
 
         // Geometric, not linear: a fixed number of doublings a second, so pulling
         // the model in from the whole theatre and pushing it back out take the
@@ -174,6 +239,22 @@ internal static class WorldMapControls
             Zoom = Mathf.Clamp(
                 Zoom * Mathf.Pow(2f, ZoomRate * zoom * Time.unscaledDeltaTime), MinZoom, MaxZoom);
         }
+    }
+
+    /// <summary>
+    /// Say once, each way, who is moving the map. "The sticks do nothing" and
+    /// "the scroll keys do nothing" are the same sentence from inside a headset,
+    /// and this is the line that tells them apart in a log.
+    /// </summary>
+    private static void ReportMirror(bool mirroring)
+    {
+        if (mirroring == _mirrorReported) return;
+        _mirrorReported = mirroring;
+        Debug.Log(mirroring
+            ? "[NOVR] World map: following the game's own map — the map scroll keys pan it and " +
+              "Zoom View zooms it, exactly as they move the flat one."
+            : "[NOVR] World map: the game's map is not open, so this one is driven by the " +
+              "thumbsticks and the flight axes.");
     }
 
     /// <summary>
@@ -218,7 +299,9 @@ internal static class WorldMapControls
         _capturing = false;
         _takesControls = true;
         _snapHeld = 0;
+        _mirrorReported = false;
         Pan = Vector2.zero;
+        Centre = null;
         Spin = 0f;
         Zoom = 1f;
     }
