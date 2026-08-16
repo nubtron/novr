@@ -1,0 +1,496 @@
+using UnityEngine;
+using UnityEngine.XR;
+using NOVR.VrUi;
+
+namespace NOVR.VrMap;
+
+/// <summary>
+/// Pointing at the model: a reticle that runs over the ground, a ring round
+/// whatever symbol you are on, and a trigger that means the same thing it means
+/// on the flat map.
+///
+/// <para><b>The ray needs no new tracking.</b> The controller models are already
+/// posed relative to <c>APIBus.CockpitHudCamera</c> — the same overlay room the
+/// model is drawn in — so the pose read for the laser is a ray in the model's own
+/// space with no conversion at all. It follows the mod's existing cursor hand and
+/// head-gaze setting rather than inventing its own.</para>
+///
+/// <para><b>Picking is angular, not a quad intersection.</b> A symbol is a
+/// centimetre or two across at arm's length and the hand shakes; asking for an
+/// exact hit on the rectangle would make the airbase harder to click in VR than
+/// it is with a mouse. So each symbol is given its own angular size and the one
+/// the ray is furthest *inside* wins — which makes the big symbols easy, the
+/// small ones still reachable through a floor on the tolerance, and an overlap
+/// resolve towards whatever the pointer is most nearly centred on.</para>
+///
+/// <para><b>What a click does is the game's decision, with one exception.</b> An
+/// airbase goes straight to <c>MapIcon.ClickIcon</c>, which is the same call a
+/// mouse makes — including its rule that you may only choose a spawn while you
+/// have no aircraft. Units cannot: <c>UnitMapIcon.ClickIcon</c> begins with
+/// <c>IsCursorInMapRectangle()</c>, which asks whether the *mouse* is inside the
+/// flat map's rectangle, and this map hides that rectangle and has no mouse. So
+/// the three lines behind that gate are reproduced instead — select through the
+/// HUD while flying, through the map otherwise, and never a unit the target list
+/// excludes. That is the one place this layer does not hand the decision back,
+/// and the reason is that the gate is about a pointer that does not exist rather
+/// than about what the pilot may do.</para>
+/// </summary>
+internal sealed class WorldMapPointer
+{
+    /// <summary>Smallest angular half-size any symbol gets, so a footprint is still clickable.</summary>
+    private const float MinimumReachDegrees = 1.5f;
+
+    /// <summary>Extra tolerance on top of a symbol's own size, for a hand that is not a mouse.</summary>
+    private const float ExtraReachDegrees = 0.75f;
+
+    private const float RingRectSize = 100f;
+    private const float GroundRingRadius = 0.05f;
+
+    private readonly Transform _room;
+    private GameObject? _ring;
+    private UnityEngine.UI.Image? _ringImage;
+    private Sprite? _ringSprite;
+    private Texture2D? _ringTexture;
+    private Material? _ringMaterial;
+    private MapIcon? _hovered;
+    private bool _triggerDown;
+    private bool _sweptOnce;
+    private bool _ringLogged;
+    private bool _clickChecked;
+
+    public WorldMapPointer(Transform room) => _room = room;
+
+    public MapIcon? Hovered => _hovered;
+
+    /// <summary>
+    /// Whether the mod's own UI cursor is on screen — which it is whenever the
+    /// game wants a mouse, the spawn selection being the case that matters here.
+    ///
+    /// <para>Two free-floating cursors in one view is one too many: during airbase
+    /// selection the UI cursor sits on the spawn panel and this one runs over the
+    /// ground, both of them round, both of them following your head, and neither
+    /// of them obviously the one that is going to act. So while the UI cursor is
+    /// up, this pointer stops drawing a second free cursor and keeps only the ring
+    /// it puts <i>around a symbol</i> — which is not a cursor but a statement
+    /// about what is under the one you already have. Both are driven from the
+    /// centre of the view in gaze mode, so they agree about where that is.</para>
+    /// </summary>
+    private static bool SomethingElseIsDrawingACursor =>
+        VrUiCursor.I != null && VrUiCursor.I.IsActive;
+
+    public void Refresh(WorldMapIcons icons, Transform model, float seaLevelY)
+    {
+        if (!TryRay(out var ray, out var trigger, out var handTracked))
+        {
+            Hide();
+            return;
+        }
+
+        // With the self test on and no hand to point with — which is every
+        // harness run, because the mock runtime produces no controllers — aim at
+        // the biggest symbol instead of the horizon. Not a simulation of the
+        // pick: it is the same ray going into the same code, so the ring, its
+        // size and whether it draws over the terrain all end up in the frame.
+        // The trigger stays where it is, so nothing is clicked.
+        if (!handTracked && VrMapConfig.SelfTest != null && VrMapConfig.SelfTest.Value)
+        {
+            ray = AtBiggest(icons, ray);
+        }
+
+        var pick = Pick(icons, ray);
+        _hovered = pick.Source;
+
+        // Where on the ground the pointer is, whether or not it is on a symbol:
+        // the model's own sea plane, in the room, is the surface being pointed at.
+        var plane = new Plane(model.up, model.TransformPoint(new Vector3(0f, seaLevelY, 0f)));
+        var onGround = plane.Raycast(new Ray(ray.origin, ray.direction), out var distance) && distance > 0f;
+
+        if (pick.Source != null && pick.Transform != null)
+        {
+            DrawRing(pick.Transform.position, pick.Radius * 1.4f);
+        }
+        else if (onGround && !SomethingElseIsDrawingACursor)
+        {
+            // Constant angular size, so the reticle stays the same thing to look
+            // at whether it is on the near edge of the model or the far one.
+            DrawRing(ray.GetPoint(distance), Mathf.Max(GroundRingRadius, distance * 0.02f));
+        }
+        else
+        {
+            Hide();
+        }
+
+        var pressed = trigger > 0.6f;
+        var clicked = pressed && !_triggerDown;
+        _triggerDown = pressed && trigger > 0.4f;
+        if (clicked && _hovered != null) Click(_hovered);
+    }
+
+    /// <summary>
+    /// The pointing ray, in the room the model lives in. Head gaze when that is
+    /// the mod's cursor mode, otherwise the hand that drives the cursor, with the
+    /// same head-relative reconstruction the controller models use — which is
+    /// what puts the ray in the same space as the model without a conversion.
+    /// </summary>
+    private static bool TryRay(out Ray ray, out float trigger, out bool handTracked)
+    {
+        ray = default;
+        trigger = 0f;
+        handTracked = false;
+
+        var camera = APIBus.CockpitHudCamera;
+        if (camera == null) return false;
+
+        var configuration = ModConfiguration.Instance;
+        var gaze = configuration != null && configuration.HeadGazeCursor.Value;
+        var hand = configuration != null && configuration.CursorInputSource.Value == "Left Hand"
+            ? XRNode.LeftHand
+            : XRNode.RightHand;
+
+        // The trigger is read from whichever hand has one, so a click still works
+        // in head-gaze mode.
+        if (MotionControllerPose.TryRead(XRNode.RightHand, out _, out _, out _, out _, out var right)) trigger = Mathf.Max(trigger, right);
+        if (MotionControllerPose.TryRead(XRNode.LeftHand, out _, out _, out _, out _, out var left)) trigger = Mathf.Max(trigger, left);
+
+        if (!gaze &&
+            MotionControllerPose.TryRead(hand, out var position, out var rotation, out var headRotation, out var headPosition, out _))
+        {
+            var relativeRotation = Quaternion.Inverse(headRotation) * rotation;
+            var relativePosition = Quaternion.Inverse(headRotation) * (position - headPosition);
+            ray = new Ray(
+                camera.transform.TransformPoint(relativePosition),
+                camera.transform.rotation * relativeRotation * Vector3.forward);
+            handTracked = true;
+            return true;
+        }
+
+        ray = new Ray(camera.transform.position, camera.transform.forward);
+        return true;
+    }
+
+    /// <summary>
+    /// The ray from where we are to the largest symbol on the model that is
+    /// actually in the picture.
+    ///
+    /// <para>In view matters, and not for cosmetic reasons: the first version
+    /// aimed at the largest symbol anywhere, which was the airbase at 59 degrees
+    /// below the horizon — correct, on a frame that only reaches 31. The reticle
+    /// was drawn exactly where it should be and off the bottom of every dump,
+    /// which from outside is indistinguishable from not drawing at all.</para>
+    /// </summary>
+    private static Ray AtBiggest(WorldMapIcons icons, Ray ray)
+    {
+        var camera = APIBus.CockpitHudCamera;
+        var biggest = default(WorldMapIcons.Placed);
+        var biggestInView = false;
+
+        foreach (var symbol in icons.Symbols())
+        {
+            if (symbol.Transform == null) continue;
+
+            var inView = false;
+            if (camera != null)
+            {
+                var viewport = camera.WorldToViewportPoint(symbol.Transform.position);
+                inView = viewport.z > 0f &&
+                         viewport.x > 0.08f && viewport.x < 0.92f &&
+                         viewport.y > 0.08f && viewport.y < 0.92f;
+            }
+
+            if (biggest.Transform != null)
+            {
+                if (biggestInView && !inView) continue;
+                if (biggestInView == inView && symbol.Radius <= biggest.Radius) continue;
+            }
+
+            biggest = symbol;
+            biggestInView = inView;
+        }
+
+        if (biggestInView && biggest.Transform != null)
+        {
+            var direction = biggest.Transform.position - ray.origin;
+            if (direction.sqrMagnitude > 1e-6f) return new Ray(ray.origin, direction.normalized);
+        }
+
+        // Nothing in view to aim at — which is the usual case, because the
+        // symbols cluster around the aircraft and the aircraft is straight down.
+        // Look 20 degrees below the horizon instead, where the model is, so the
+        // ground reticle at least lands in the picture.
+        return camera != null
+            ? new Ray(ray.origin, camera.transform.rotation * (Quaternion.Euler(20f, 0f, 0f) * Vector3.forward))
+            : ray;
+    }
+
+    /// <summary>
+    /// The symbol the ray is furthest inside, by angle. Nothing if the ray is
+    /// inside none of them — a near miss is a miss, or the ground cursor would
+    /// snap to whatever is vaguely over there.
+    /// </summary>
+    private static WorldMapIcons.Placed Pick(WorldMapIcons icons, Ray ray)
+    {
+        var best = default(WorldMapIcons.Placed);
+        var bestSlack = float.MaxValue;
+
+        foreach (var symbol in icons.Symbols())
+        {
+            if (symbol.Transform == null) continue;
+            var toIcon = symbol.Transform.position - ray.origin;
+            var distance = toIcon.magnitude;
+            if (distance < 1e-3f || Vector3.Dot(toIcon, ray.direction) <= 0f) continue;
+
+            var reach = Mathf.Max(MinimumReachDegrees, Mathf.Atan2(symbol.Radius, distance) * Mathf.Rad2Deg)
+                        + ExtraReachDegrees;
+            var slack = Vector3.Angle(ray.direction, toIcon) - reach;
+            if (slack > 0f || slack >= bestSlack) continue;
+
+            bestSlack = slack;
+            best = symbol;
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Hand the click back to the game. See the class remarks for why an airbase
+    /// can go through <c>ClickIcon</c> and a unit cannot.
+    /// </summary>
+    private static void Click(MapIcon icon)
+    {
+        if (icon is AirbaseMapIcon)
+        {
+            icon.ClickIcon(MapIcon.ClickSource.Controller);
+            return;
+        }
+
+        if (icon is not UnitMapIcon unitIcon || unitIcon.unit == null) return;
+
+        var map = SceneSingleton<global::DynamicMap>.i;
+        var hud = SceneSingleton<CombatHUD>.i;
+        var selector = SceneSingleton<TargetListSelector>.i;
+        var aircraft = hud != null ? hud.aircraft : null;
+
+        if (aircraft != null && !aircraft.disabled)
+        {
+            if (unitIcon.unit == aircraft) return;
+            if (selector != null && selector.CheckExclusions(unitIcon.unit)) return;
+
+            // The target list, not selectedIcons. CombatHUD.SelectUnit selects the
+            // HUD marker and calls weaponManager.AddTargetList — it never touches
+            // the map's selection, so asking the map whether this unit is selected
+            // always answers no while flying, and a second press would designate
+            // it again instead of dropping it.
+            var targets = hud.GetTargetList();
+            if (targets != null && targets.Contains(unitIcon.unit)) hud.DeSelectUnit(unitIcon.unit);
+            else hud.SelectUnit(unitIcon.unit);
+            return;
+        }
+
+        if (map == null) return;
+        if (map.selectedIcons.Contains(icon)) map.DeselectIcon(unitIcon.unit);
+        else map.SelectIcon(unitIcon.unit);
+    }
+
+    /// <summary>
+    /// Press the trigger on a real unit, twice, and ask the game what happened.
+    ///
+    /// <para>Half the click path can be tested here and half cannot. An airbase
+    /// needs a pilot with no aircraft, and the harness is always flying — that is
+    /// the game's own rule and it cannot be worked around from this side. A unit
+    /// is the opposite: designating one is exactly what you do while flying, so
+    /// the whole dispatch runs for real against <c>CombatHUD</c> and the target
+    /// list says whether it took.</para>
+    /// </summary>
+    public void VerifyClick(WorldMapIcons icons)
+    {
+        if (_clickChecked) return;
+
+        var hud = SceneSingleton<CombatHUD>.i;
+        if (hud == null || hud.aircraft == null || hud.aircraft.disabled) return;
+
+        UnitMapIcon? target = null;
+        foreach (var symbol in icons.Symbols())
+        {
+            if (symbol.Source is not UnitMapIcon candidate || candidate.unit == null) continue;
+            if (candidate.unit == hud.aircraft) continue;
+            target = candidate;
+            break;
+        }
+
+        if (target == null) return;
+        _clickChecked = true;
+
+        var before = hud.GetTargetList()?.Count ?? -1;
+        Click(target);
+        var afterSelect = hud.GetTargetList()?.Count ?? -1;
+        Click(target);
+        var afterDeselect = hud.GetTargetList()?.Count ?? -1;
+
+        Debug.Log(
+            $"[NOVR] World map click check: '{target.unit.unitName}' — target list {before} " +
+            $"-> {afterSelect} on the first press -> {afterDeselect} on the second " +
+            $"({(afterSelect == before + 1 && afterDeselect == before ? "select and deselect both took" : "NOT the expected select/deselect")}).");
+    }
+
+    /// <summary>
+    /// Put the reticle on a point and face it at the head.
+    ///
+    /// <para>It is an <c>Image</c> on a world-space canvas rather than a
+    /// <c>LineRenderer</c>, which is the second thing tried. The line was drawn —
+    /// right place, right radius, right layer, right colour, all of it in the log
+    /// — and never appeared, because a built-in UI shader on a plain renderer is
+    /// not a path URP draws. The symbols already prove this path works, depth
+    /// rule included, so the reticle uses it instead of a second one.</para>
+    /// </summary>
+    private void DrawRing(Vector3 centre, float radius)
+    {
+        EnsureRing();
+        if (_ring == null || _ringImage == null) return;
+
+        _ring.SetActive(true);
+
+        var camera = APIBus.CockpitHudCamera;
+        var toHead = camera != null ? camera.transform.position - centre : Vector3.up;
+
+        var t = _ringImage.transform;
+        t.position = centre;
+        t.localScale = Vector3.one * (radius * 2f / RingRectSize);
+        if (toHead.sqrMagnitude > 1e-6f) t.rotation = Quaternion.LookRotation(-toHead, Vector3.up);
+
+        if (_ringLogged) return;
+        _ringLogged = true;
+        Debug.Log(
+            $"[NOVR] World map pointer ring: centre={centre} radius={radius:F3}m " +
+            $"distance={toHead.magnitude:F2}m layer={_ringImage.gameObject.layer} " +
+            $"active={_ringImage.gameObject.activeInHierarchy} " +
+            $"material={(_ringImage.material == null ? "<none>" : _ringImage.material.shader.name)} " +
+            $"sprite={(_ringImage.sprite == null ? "<none>" : _ringImage.sprite.name)}");
+    }
+
+    private void EnsureRing()
+    {
+        if (_ring != null) return;
+
+        _ring = new GameObject("NOVR World Map Pointer");
+        _ring.transform.SetParent(_room, false);
+
+        var canvas = _ring.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.worldCamera = APIBus.CockpitHudCamera;
+        ((RectTransform)_ring.transform).sizeDelta = new Vector2(RingRectSize, RingRectSize);
+
+        var go = new GameObject("Ring");
+        go.transform.SetParent(_ring.transform, false);
+        _ringImage = go.AddComponent<UnityEngine.UI.Image>();
+        _ringImage.raycastTarget = false;
+        _ringImage.color = new Color(0.2f, 0.9f, 1f, 0.95f);
+        ((RectTransform)go.transform).sizeDelta = new Vector2(RingRectSize, RingRectSize);
+        _ringImage.sprite = RingSprite();
+
+        // Over the model, not into it — the same rule the symbols follow, and for
+        // the same reason: a reticle a ridge can hide is a reticle you cannot use.
+        var shader = Shader.Find("UI/Default");
+        if (shader != null)
+        {
+            _ringMaterial = new Material(shader) { name = "NOVR World Map Pointer" };
+            _ringMaterial.SetInt("unity_GUIZTestMode", (int)UnityEngine.Rendering.CompareFunction.Always);
+            _ringImage.material = _ringMaterial;
+        }
+
+        LayerHelper.SetLayerRecursive(_ring.transform, LayerHelper.GetVrUiLayer());
+    }
+
+    /// <summary>An annulus, drawn once, because nothing in the game ships one.</summary>
+    private Sprite RingSprite()
+    {
+        if (_ringSprite != null) return _ringSprite;
+
+        const int size = 128;
+        const float outer = 62f;
+        const float inner = 52f;
+        _ringTexture = new Texture2D(size, size, TextureFormat.RGBA32, false) { name = "NOVR Ring" };
+        var pixels = new Color32[size * size];
+        var centre = (size - 1) * 0.5f;
+
+        for (var y = 0; y < size; y++)
+        {
+            for (var x = 0; x < size; x++)
+            {
+                var distance = Mathf.Sqrt((x - centre) * (x - centre) + (y - centre) * (y - centre));
+                // One texel of feather on each edge, so the ring does not crawl.
+                var alpha = Mathf.Clamp01(Mathf.Min(outer - distance, distance - inner));
+                pixels[y * size + x] = new Color32(255, 255, 255, (byte)(alpha * 255f));
+            }
+        }
+
+        _ringTexture.SetPixels32(pixels);
+        _ringTexture.Apply();
+        _ringSprite = Sprite.Create(_ringTexture, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f));
+        _ringSprite.name = "NOVR Ring";
+        return _ringSprite;
+    }
+
+    public void Hide()
+    {
+        _hovered = null;
+        if (_ring != null && _ring.activeSelf) _ring.SetActive(false);
+    }
+
+    public void Destroy()
+    {
+        if (_ring != null) Object.Destroy(_ring);
+        if (_ringMaterial != null) Object.Destroy(_ringMaterial);
+        if (_ringSprite != null) Object.Destroy(_ringSprite);
+        if (_ringTexture != null) Object.Destroy(_ringTexture);
+        _ring = null;
+        _ringImage = null;
+        _ringMaterial = null;
+        _ringSprite = null;
+        _ringTexture = null;
+    }
+
+    /// <summary>
+    /// What the pick would choose, swept down through the model, once.
+    ///
+    /// <para>There is no other way to test this without a headset: the harness
+    /// runs against a mock runtime that produces no controllers at all — the log
+    /// says so every launch — so the live path cannot fire and the head looks at
+    /// the horizon. Sweeping a synthetic ray through the pitches the model
+    /// occupies exercises the same <see cref="Pick"/> the trigger uses and says
+    /// which symbol each angle lands on.</para>
+    /// </summary>
+    public void Sweep(WorldMapIcons icons)
+    {
+        if (_sweptOnce) return;
+        _sweptOnce = true;
+
+        var camera = APIBus.CockpitHudCamera;
+        if (camera == null) return;
+
+        var origin = camera.transform.position;
+        var found = 0;
+        var report = new System.Text.StringBuilder();
+
+        for (var pitch = 0f; pitch <= 89f; pitch += 0.5f)
+        {
+            for (var yaw = -60f; yaw <= 60f; yaw += 0.5f)
+            {
+                var direction = camera.transform.rotation * (Quaternion.Euler(pitch, yaw, 0f) * Vector3.forward);
+                var pick = Pick(icons, new Ray(origin, direction));
+                if (pick.Source == null) continue;
+
+                found++;
+                report.Append(found == 1 ? "" : ", ")
+                      .Append($"{pick.Source.name} at pitch {pitch:F1} yaw {yaw:F1}");
+                // One hit per symbol is the useful part; stop the inner sweep so
+                // a big symbol does not fill the line with its own name.
+                yaw = 60f;
+                pitch += 2f;
+            }
+        }
+
+        Debug.Log(found == 0
+            ? "[NOVR] World map pointer sweep: nothing pickable in a 120x89 degree sweep below the head."
+            : $"[NOVR] World map pointer sweep: {found} hit(s) — {report}.");
+    }
+}

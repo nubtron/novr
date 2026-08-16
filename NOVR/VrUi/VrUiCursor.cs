@@ -158,6 +158,33 @@ public class VrUiCursor: NOVRBehaviour
         return true;
     }
 
+    private int _viewCentreGazeFrame = -1;
+
+    /// <summary>
+    /// Ask, for this frame, that head gaze put the cursor exactly where the user
+    /// is looking: no amplification, and no clamp to the extent of a panel.
+    ///
+    /// <para>Amplification exists so that a menu pinned in front of you can be
+    /// covered without craning your neck, and it is the right trade for a menu.
+    /// It is the wrong one whenever the surface being pointed at is the whole
+    /// world around you — the 3D map is a model you turn your head over, and
+    /// against it a 2x multiplier means the cursor leaves the middle of the view
+    /// twice as fast as you do and then stops dead at the ±65° yaw clamp, pinned
+    /// to the edge of a rectangle that is no longer in front of you. That is the
+    /// "locked away from the front" failure: nothing is broken, the cursor is
+    /// exactly where an amplified, clamped cursor has to be.</para>
+    ///
+    /// <para>Requested per frame rather than set as a mode, so the caller cannot
+    /// leave it on by dying: stop asking and the next frame is amplified again.
+    /// The previous frame counts too, because nothing orders Update calls.</para>
+    /// </summary>
+    public void UseViewCentreGaze()
+    {
+        _viewCentreGazeFrame = Time.frameCount;
+    }
+
+    private bool ViewCentreGazeRequested => _viewCentreGazeFrame >= Time.frameCount - 1;
+
     public void SetProjectionReferenceRotation(Quaternion referenceRotation)
     {
         _projectionReferenceRotation = referenceRotation;
@@ -263,7 +290,15 @@ public class VrUiCursor: NOVRBehaviour
         }
 
         Vector3 worldDirection;
-        if (_hmdGazeActive)
+        if (_hmdGazeActive && ViewCentreGazeRequested)
+        {
+            // Whatever owns the view this frame wants the cursor in the middle of
+            // it. Nothing else to compute: this is what the amplified branch below
+            // reduces to at 1x with no clamp, and saying so directly means it
+            // cannot be knocked off centre by a stale anchor either.
+            worldDirection = camera.transform.forward;
+        }
+        else if (_hmdGazeActive)
         {
             // Head-gaze: the cursor follows where the user looks, optionally
             // amplified by Head Gaze Multiplier so small head turns cover
