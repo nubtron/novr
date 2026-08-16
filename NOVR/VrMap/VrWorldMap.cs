@@ -5,8 +5,11 @@ using UnityEngine;
 namespace NOVR.VrMap;
 
 /// <summary>
-/// The 3D world map: the whole theatre as a solid model hanging below you, and
-/// the shortcut that shows and hides it.
+/// The 3D world map: the whole theatre as a solid model of the real terrain —
+/// standing in front of you in the place the game's own map goes, or laid out
+/// below you as a diorama you fly over — and the shortcut that shows and hides
+/// it. See <see cref="WorldMapPlacement"/>: those are not two ways of drawing
+/// the same thing, and most of what this class does depends on which is up.
 ///
 /// <para><b>Why a model and not a camera pointed at the world.</b> The obvious
 /// way to get a map like this is to fly a camera to 40 km and look down, which
@@ -23,12 +26,13 @@ namespace NOVR.VrMap;
 /// cutting through it. It also puts the model behind the HUD panels rather than
 /// over them, since the model is opaque geometry and they are transparent.</para>
 ///
-/// <para><b>Why it does not follow your head.</b> The model is placed against
-/// the airframe mount, not the head: a model anchored to the head moves when you
-/// lean, and a world that moves when you lean is the single most reliable way to
-/// make someone sick. It is world-aligned too — north stays north as you turn,
-/// so the model behaves like an object you are flying over rather than a thing
-/// strapped to the aircraft.</para>
+/// <para><b>Why it does not follow your head.</b> Neither placement is anchored
+/// to the head: a model anchored to the head moves when you lean, and it is the
+/// leaning that makes it solid — a wall that moves with you shows both eyes and
+/// both head positions the same picture, which is the flat map again. The table
+/// is placed against the airframe mount and the wall is pinned where you were
+/// facing when it opened; both stay put while you look around them, and north
+/// stays north on both unless you ask otherwise.</para>
 /// </summary>
 public class VrWorldMap : NOVRBehaviour
 {
@@ -63,6 +67,15 @@ public class VrWorldMap : NOVRBehaviour
     private readonly Dictionary<Camera, int> _maskedCameras = new();
     private readonly List<HiddenPanel> _hiddenPanels = new();
     private bool _helmetTaken;
+    private bool _hidingMapOnly;
+    private bool _gameMapWasUp;
+
+    /// <summary>
+    /// Which way the wall faces, in room coordinates — latched when the map opens
+    /// so the model stays where it was hung while you look around it.
+    /// </summary>
+    private Vector3? _wallFacing;
+
     private bool _iconsSeen;
     private float _iconsEmptySince;
 
@@ -80,16 +93,25 @@ public class VrWorldMap : NOVRBehaviour
     /// </summary>
     private readonly struct HiddenPanel
     {
-        public HiddenPanel(GameObject go, Behaviour? component)
+        public HiddenPanel(GameObject go, Behaviour? component, bool isMap)
         {
             Go = go;
             Component = component;
+            IsMap = isMap;
             WasActive = go.activeSelf;
             WasEnabled = component != null && component.enabled;
         }
 
         public readonly GameObject Go;
         public readonly Behaviour? Component;
+
+        /// <summary>
+        /// The flat map itself or its backing, as opposed to the weapon readout.
+        /// The wall replaces the map and only the map: the pilot is still flying,
+        /// and taking their weapon state away to show them a map is not a trade
+        /// anyone asked for.
+        /// </summary>
+        public readonly bool IsMap;
         public readonly bool WasActive;
         public readonly bool WasEnabled;
 
@@ -143,8 +165,29 @@ public class VrWorldMap : NOVRBehaviour
             VrMapConfig.Open.Value = !VrMapConfig.Open.Value;
         }
 
+        // The game's own map is a second switch, not just a second source of pan
+        // and zoom: on the wall this model stands where the flat map stands and
+        // hides it, so "the map is open" has to mean the same thing for both or
+        // the pilot gets one of them without the other. It also fixes the way the
+        // two used to drift apart — F10 minimizing the game's map while this
+        // mod's own Open flag stayed set, which is how a flight ended up looking
+        // at the ground through a map that was still notionally up.
+        var gameMapUp = TheGameOpenedIt();
+
+        // Closing the game's map closes this one, however it was closed —
+        // Escape, a rebound key, or the game deciding for itself. Without this the
+        // two switches drift apart in the one direction the shortcut cannot fix,
+        // and the map is left notionally open with nothing in it, which is the
+        // state a flight reported as "F10 showed me the ground".
+        if (_gameMapWasUp && !gameMapUp && VrMapConfig.Open != null && VrMapConfig.Open.Value)
+        {
+            VrMapConfig.Open.Value = false;
+        }
+
+        _gameMapWasUp = gameMapUp;
+
         var open = VrMapConfig.Enabled != null && VrMapConfig.Enabled.Value &&
-                   VrMapConfig.Open != null && VrMapConfig.Open.Value;
+                   (VrMapConfig.Open != null && VrMapConfig.Open.Value || gameMapUp);
 
         // Before the early return, so the closed phase is timed too — the whole
         // point of the self test is the comparison between the two.
@@ -169,20 +212,36 @@ public class VrWorldMap : NOVRBehaviour
         // yaw clamp, pinned to the edge of a rectangle that is no longer in front
         // of you. Asked for every frame, so closing the map — or something else
         // asking for the pointer — gives it straight back.
-        if (!sharing) VrUiCursor.I?.UseViewCentreGaze();
+        // Only the table, which is a place you have gone to: the cursor is meant
+        // to be able to reach anywhere around you there. The wall is a panel in a
+        // cockpit you never left, and the pilot's cursor is still the game's to
+        // aim at the game's own screens.
+        if (!sharing && !OnTheWall) VrUiCursor.I?.UseViewCentreGaze();
 
         var model = EnsureModel();
         if (model == null) return;
 
         // Before the model is placed, because it is what decides where — and how
-        // big, since the sticks zoom as well as pan.
+        // big, since the sticks zoom as well as pan. The theatre's width goes with
+        // it because the wall is scaled to fit the map rather than to a ratio.
+        WorldMapControls.TheatreWidth = Mathf.Max(model.MapSize.x, model.MapSize.y);
         WorldMapControls.Refresh(takeControls: !sharing);
 
         Place(model);
         model.Root.SetActive(true);
         RefreshIcons(model, sharing);
 
-        if (sharing)
+        if (OnTheWall)
+        {
+            // The wall replaces the flat map and nothing else. You have not left
+            // the aircraft — the cockpit stays, the outside stays, and the stick
+            // stays yours — so the only thing taken is the map this one is
+            // standing in for. That holds whether or not something else wants the
+            // pointer: a menu in front of the wall is a menu in front of a wall.
+            ShowCockpit();
+            HideHelmetPanels(mapOnly: true);
+        }
+        else if (sharing)
         {
             // Everything that takes something away from the rest of the game is
             // given back: the game's own screen has to look exactly as it does
@@ -306,10 +365,19 @@ public class VrWorldMap : NOVRBehaviour
     /// </summary>
     private void RefreshPointer(WorldMapModel model, Transform room, bool sharing)
     {
-        // Not while the game wants the pointer for itself. A ring running over the
-        // terrain is the half of this feature that competes with a button: it is
-        // the second thing claiming what the trigger means.
-        if (sharing || VrMapConfig.Pointer == null || !VrMapConfig.Pointer.Value || _iconLayer == null)
+        // Not while the game wants the pointer for itself — on the table. A ring
+        // running over the terrain is the half of this feature that competes with
+        // a button: it is the second thing claiming what the trigger means.
+        //
+        // The wall is the other way round, and has to be: it hides the flat map,
+        // so the icons on the flat map cannot be clicked while it is up, and this
+        // ring is then the only way to reach a symbol at all. It does not compete
+        // with the mouse either — it is on the VR trigger, and the wall leaves the
+        // pilot's cursor exactly where the game put it. Note that the wall is
+        // almost always "sharing": opening the game's map sets the cursor's own
+        // Map flag, so the question answers yes for the whole time the wall is up.
+        if (sharing && !OnTheWall ||
+            VrMapConfig.Pointer == null || !VrMapConfig.Pointer.Value || _iconLayer == null)
         {
             _pointer?.Hide();
             return;
@@ -371,7 +439,13 @@ public class VrWorldMap : NOVRBehaviour
     /// the objects instead stopped <c>DynamicMap.Update</c>, which is what keeps
     /// the unit icons this map draws alive. See <see cref="HiddenPanel"/>.</para>
     /// </summary>
-    private void HideHelmetPanels()
+    /// <param name="mapOnly">
+    /// Take the flat map and its backing and leave the weapon readout alone —
+    /// what the wall wants, because the wall replaces the map without taking the
+    /// pilot out of the aircraft. The table takes both: there is no aircraft
+    /// around you to read a weapon state off.
+    /// </param>
+    private void HideHelmetPanels(bool mapOnly = false)
     {
         if (VrMapConfig.HideHelmetPanels == null || !VrMapConfig.HideHelmetPanels.Value)
         {
@@ -381,9 +455,27 @@ public class VrWorldMap : NOVRBehaviour
 
         if (!_helmetTaken) TakeHelmetPanels();
 
+        // Once, on the frame the answer changes — not every frame, which would be
+        // this feature and the game both writing the same flag forever.
+        if (mapOnly != _hidingMapOnly)
+        {
+            _hidingMapOnly = mapOnly;
+            if (mapOnly)
+            {
+                foreach (var panel in _hiddenPanels)
+                {
+                    if (!panel.IsMap) panel.Restore();
+                }
+            }
+        }
+
         // Every frame, not once. The game turns the map's GameObject back on by
         // itself, so a single hide is undone before it is ever seen.
-        foreach (var panel in _hiddenPanels) panel.Hide();
+        foreach (var panel in _hiddenPanels)
+        {
+            if (mapOnly && !panel.IsMap) continue;
+            panel.Hide();
+        }
     }
 
     /// <summary>
@@ -406,12 +498,12 @@ public class VrWorldMap : NOVRBehaviour
         foreach (Transform child in helmet)
         {
             if (child.GetComponentInChildren<WeaponStatus>(true) == null) continue;
-            Take(child.gameObject, null, "weapon readout");
+            Take(child.gameObject, null, "weapon readout", isMap: false);
         }
 
         // The map itself: its Canvas, so DynamicMap keeps updating underneath —
         // it is where the unit icons come from.
-        Take(map.gameObject, map.GetComponent<Canvas>(), "tactical map");
+        Take(map.gameObject, map.GetComponent<Canvas>(), "tactical map", isMap: true);
 
         // The dark backing: not part of the map object and not `mapBackground`
         // either (measured — disabling that changed nothing). It is drawn by the
@@ -424,7 +516,7 @@ public class VrWorldMap : NOVRBehaviour
             foreach (var graphic in child.GetComponentsInChildren<UnityEngine.UI.Graphic>(true))
             {
                 if (graphic == null || graphic.transform.IsChildOf(map.transform)) continue;
-                Take(graphic.gameObject, graphic, "tactical map backing");
+                Take(graphic.gameObject, graphic, "tactical map backing", isMap: true);
             }
 
             break;
@@ -433,14 +525,14 @@ public class VrWorldMap : NOVRBehaviour
         _helmetTaken = true;
     }
 
-    private void Take(GameObject panel, Behaviour? component, string what)
+    private void Take(GameObject panel, Behaviour? component, string what, bool isMap)
     {
         foreach (var known in _hiddenPanels)
         {
             if (known.Go == panel) return;
         }
 
-        _hiddenPanels.Add(new HiddenPanel(panel, component));
+        _hiddenPanels.Add(new HiddenPanel(panel, component, isMap));
         Debug.Log(
             $"[NOVR] World map: hiding the {what} ('{panel.name}') by " +
             (component != null ? "disabling its " + component.GetType().Name : "deactivating it") + ".");
@@ -449,6 +541,7 @@ public class VrWorldMap : NOVRBehaviour
     private void ShowHelmetPanels()
     {
         _helmetTaken = false;
+        _hidingMapOnly = false;
         if (_hiddenPanels.Count == 0) return;
         foreach (var panel in _hiddenPanels) panel.Restore();
         VerifyRestored();
@@ -584,29 +677,12 @@ public class VrWorldMap : NOVRBehaviour
         _haze?.SetVisible(false);
         ShowCockpit();
         ShowHelmetPanels();
+        // Forgotten on close so reopening re-hangs the wall in front of wherever
+        // the pilot is facing then. That is the whole recentre gesture.
+        _wallFacing = null;
         _reported = false;
     }
 
-    /// <summary>
-    /// Put the model under the aircraft, at scale, with the piece of map you are
-    /// actually over directly below you — so the model slides beneath you as you
-    /// fly, the way the ground does.
-    ///
-    /// <para><b>The frame this happens in is not the world's.</b> Everything on
-    /// the VR UI layer is drawn by <c>VrCockpitHudCamera</c>, which is not in the
-    /// aircraft at all: it hangs off the mod's own root near the world origin and
-    /// is driven by the raw headset pose. The layer is a private room with the
-    /// head at its centre, composited over the world afterwards. Measured: with
-    /// the aircraft at (24.0, 18.8, -13.3) that camera was at (0.0, 0.0, 0.05).
-    /// A model placed in world coordinates is therefore placed in the wrong room
-    /// and simply is not there — which is exactly what the first build did.</para>
-    ///
-    /// <para>So the model goes into the room, and the aircraft's attitude has to
-    /// be put back by hand: the room does not have it (the same thing the view
-    /// icons were caught by on 08-13), so a model left at identity would be
-    /// welded to the airframe and would roll with it. Countering the mount's
-    /// rotation is what makes it behave like ground you are flying over.</para>
-    /// </summary>
     /// <summary>
     /// The rotation that takes map directions into the room, for the orientation
     /// the pilot asked for. <c>WorldFixed</c> is the inverse of the whole aircraft
@@ -743,6 +819,25 @@ public class VrWorldMap : NOVRBehaviour
         return new Color(0.72f, 0.82f, 0.90f, 1f);
     }
 
+    /// <summary>
+    /// Put the model where the pilot asked for it — standing in front of them or
+    /// lying below them — at scale, with the piece of map they are reading in the
+    /// middle of it.
+    ///
+    /// <para><b>The frame this happens in is not the world's.</b> Everything on
+    /// the VR UI layer is drawn by <c>VrCockpitHudCamera</c>, which is not in the
+    /// aircraft at all: it hangs off the mod's own root near the world origin and
+    /// is driven by the raw headset pose. The layer is a private room with the
+    /// head at its centre, composited over the world afterwards. Measured: with
+    /// the aircraft at (24.0, 18.8, -13.3) that camera was at (0.0, 0.0, 0.05).
+    /// A model placed in world coordinates is therefore placed in the wrong room
+    /// and simply is not there — which is exactly what the first build did.</para>
+    ///
+    /// <para>So the model goes into the room, and anything the aircraft is meant
+    /// to contribute has to be put back by hand: the room does not have the
+    /// airframe's attitude (the same thing the view icons were caught by on
+    /// 08-13), which is why the orientation modes exist at all.</para>
+    /// </summary>
     private void Place(WorldMapModel model)
     {
         var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
@@ -754,6 +849,100 @@ public class VrWorldMap : NOVRBehaviour
         var exaggeration = Mathf.Max(1f, VrMapConfig.ReliefExaggeration.Value);
         var modelScale = new Vector3(scale, scale * exaggeration, scale);
 
+        // Where we are on the map, in map metres: world position less the floating
+        // origin, flattened to sea level — then wherever the map has been panned
+        // to from there. When the game's own map is driving it hands over the
+        // centre outright instead, because that is what it knows: its offsets are
+        // absolute and have already had the aircraft's position folded in.
+        var here = mount.position - global::Datum.originPosition;
+        var centre = WorldMapControls.Centre is { } absolute
+            ? new Vector3(absolute.x, 0f, absolute.y)
+            : new Vector3(here.x + WorldMapControls.Pan.x, 0f, here.z + WorldMapControls.Pan.y);
+
+        if (OnTheWall) PlaceWall(model, room, head.transform, mount, modelScale, centre);
+        else PlaceTable(model, room, head.transform, mount, modelScale, centre);
+
+        // The marker still belongs on the aircraft, not on wherever the map has
+        // been pushed to.
+        PlaceMarker(model.Root.transform, new Vector3(here.x, 0f, here.z), modelScale);
+    }
+
+    /// <summary>
+    /// Stand the model up in front of the pilot: north up the wall, east across
+    /// it, and the terrain's own vertical pointing back out at them, so the
+    /// mountains stand out of the map the way they stand out of the ground.
+    ///
+    /// <para><b>Why there is no frame and nothing is clipped.</b> The flat map is
+    /// a picture inside a rectangle, so zooming in has to crop. This is not a
+    /// picture — it is geometry — and the model's materials are the game's own
+    /// terrain shader, which has no clip plane to hand and cannot be given one
+    /// without giving up the art that makes the model worth looking at. So
+    /// zooming enlarges the model about the point in the middle of the wall and
+    /// the rest simply extends past the edge of what you can see, which is what a
+    /// hologram would do and costs nothing to draw: a vertical plane grows
+    /// sideways, never towards you, so however far it is zoomed it cannot end up
+    /// in the cockpit with you.</para>
+    /// </summary>
+    private void PlaceWall(
+        WorldMapModel model, Transform room, Transform head, Transform mount,
+        Vector3 modelScale, Vector3 centre)
+    {
+        var facing = WallFacing(room, head);
+
+        // The orientation modes and the stick's spin are both a yaw about the
+        // map's own vertical, which is the axis pointing out of the wall — so they
+        // are applied in map space, inside the rotation that stands it up, rather
+        // than in the room.
+        var yaw = Turn(mount).eulerAngles.y + WorldMapControls.Spin;
+        var rot = Quaternion.LookRotation(Vector3.up, -facing) * Quaternion.Euler(0f, yaw, 0f);
+
+        var root = model.Root.transform;
+        if (root.parent != room) root.SetParent(room, false);
+        root.localScale = modelScale;
+        root.localRotation = rot;
+
+        var distance = VrMapConfig.WallDistance != null ? VrMapConfig.WallDistance.Value : 3f;
+        var wallCentre = room.InverseTransformPoint(head.position) + facing * distance;
+        root.localPosition = wallCentre - rot * Vector3.Scale(centre, modelScale);
+    }
+
+    /// <summary>
+    /// Which way the wall faces, in room coordinates: level, and — unless the
+    /// pilot has asked otherwise — latched the first frame the map is up.
+    ///
+    /// <para>A wall that follows the head cannot be leaned into, and leaning into
+    /// it is the whole difference between a hologram and a screen: a model that
+    /// moves with you gives your two eyes and your two head positions the same
+    /// picture, which is the flat map again with extra steps. Pinned, it stays
+    /// where it was hung and you look around it. Closing and reopening re-hangs
+    /// it, which is the same recentre gesture the rest of this feature uses.</para>
+    /// </summary>
+    private Vector3 WallFacing(Transform room, Transform head)
+    {
+        var follows = VrMapConfig.WallFollowsHead != null && VrMapConfig.WallFollowsHead.Value;
+        if (!follows && _wallFacing.HasValue) return _wallFacing.Value;
+
+        var forward = room.InverseTransformDirection(head.forward);
+        var flat = new Vector3(forward.x, 0f, forward.z);
+        if (flat.sqrMagnitude < 1e-6f)
+        {
+            // Head tipped straight up or straight down: where the nose points says
+            // nothing about which way is ahead, so take it from the top of the
+            // head, the same way the track-up orientation does in a vertical.
+            var up = room.InverseTransformDirection(head.up) * -Mathf.Sign(forward.y);
+            flat = new Vector3(up.x, 0f, up.z);
+            if (flat.sqrMagnitude < 1e-6f) flat = Vector3.forward;
+        }
+
+        var facing = flat.normalized;
+        if (!follows) _wallFacing = facing;
+        return facing;
+    }
+
+    private void PlaceTable(
+        WorldMapModel model, Transform room, Transform head, Transform mount,
+        Vector3 modelScale, Vector3 centre)
+    {
         // How the model is turned inside the room. Local scale is applied before
         // this rotation, so the vertical exaggeration still runs along the map's
         // own up rather than the aircraft's.
@@ -780,23 +969,13 @@ public class VrWorldMap : NOVRBehaviour
         root.localScale = modelScale;
         root.localRotation = turn;
 
-        // Where we are on the map, in map metres: world position less the floating
-        // origin, flattened to sea level — then wherever the map has been panned
-        // to from there. This point is the one held under the head, so it is both
-        // what panning moves and what spinning turns about.
-        var here = mount.position - global::Datum.originPosition;
-        var pan = WorldMapControls.Pan;
-        var beneathUs = new Vector3(here.x + pan.x, 0f, here.z + pan.y);
-
-        var headInRoom = room.InverseTransformPoint(head.transform.position);
+        // The centre is the point held under the head, so it is both what panning
+        // moves and what spinning turns about.
+        var headInRoom = room.InverseTransformPoint(head.position);
         var down = turn * Vector3.down;
         root.localPosition = headInRoom
                              + down * VrMapConfig.EyeHeight.Value
-                             - turn * Vector3.Scale(beneathUs, modelScale);
-
-        // The marker still belongs on the aircraft, not on wherever the map has
-        // been pushed to.
-        PlaceMarker(root, new Vector3(here.x, 0f, here.z), modelScale);
+                             - turn * Vector3.Scale(centre, modelScale);
     }
 
     /// <summary>
@@ -879,6 +1058,25 @@ public class VrWorldMap : NOVRBehaviour
     /// panel from. Its position says where on the map we are; its rotation is
     /// the aircraft's attitude, which the model has to undo.
     /// </summary>
+    /// <summary>
+    /// Whether the model stands in front of the pilot rather than lying below
+    /// them — the one question the rest of this class branches on.
+    /// </summary>
+    private static bool OnTheWall =>
+        VrMapConfig.Placement != null && VrMapConfig.Placement.Value == WorldMapPlacement.Wall;
+
+    /// <summary>
+    /// Whether the game's own map being open is what is showing this one. Only on
+    /// the wall: that is the placement that stands where the flat map stands and
+    /// hides it, so the two have to open and close together. The table is
+    /// somewhere the pilot chooses to go, and being sent there by a map key is not
+    /// the same thing at all.
+    /// </summary>
+    private static bool TheGameOpenedIt() =>
+        OnTheWall &&
+        (VrMapConfig.FollowGameMap == null || VrMapConfig.FollowGameMap.Value) &&
+        WorldMapGameMap.Maximized;
+
     private static Transform? Mount()
     {
         var mainCamera = APIBus.MainCamera;
