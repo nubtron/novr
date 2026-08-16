@@ -46,12 +46,6 @@ internal static class AirbaseOverlayProbe
             // landing decision is made in a 2 s slow update from private state,
             // and reconstructing that decision from outside was not enough —
             // every input measured true while the decision itself stayed false.
-            if (!landing && Time.unscaledTime >= _nextStateLog)
-            {
-                _nextStateLog = Time.unscaledTime + 3f;
-                Debug.Log(DescribeDecision(__instance));
-            }
-
             var state = $"{landing}/{ViewLayerBackend.IsActive}/{FlightHudCaptureBackend.IsActive}";
             if (state == _lastState) return;
             _lastState = state;
@@ -68,6 +62,7 @@ internal static class AirbaseOverlayProbe
     }
 
     private static int _slowUpdateCalls;
+    private static float _nextSlowLog;
 
     // Is the decision even being made? takeoffTime never moving off 0 says
     // either "never called" or "called, and the HUD's aircraft was null every
@@ -75,14 +70,19 @@ internal static class AirbaseOverlayProbe
     [HarmonyPatch(typeof(global::AirbaseOverlay), "UpdateNearestAirbase")]
     private static class SlowUpdateProbe
     {
+        // Logged from here rather than from LateUpdate: the slow update fires
+        // whether or not the overlay's GameObject is active, and the overlay
+        // has been observed inactive at exactly the moments worth seeing.
         [HarmonyPrefix]
-        private static void Prefix()
+        private static void Prefix(global::AirbaseOverlay __instance)
         {
-            if (_slowUpdateCalls++ >= 6) return;
-            var combatHud = SceneSingleton<CombatHUD>.i;
-            Debug.Log($"[NOVR-PROBE] UpdateNearestAirbase call {_slowUpdateCalls} " +
-                      $"at levelTime={Time.timeSinceLevelLoad:0.0} " +
-                      $"hudAircraft={(combatHud != null && combatHud.aircraft != null ? combatHud.aircraft.unitName : "<null>")}");
+            _slowUpdateCalls++;
+            if (Time.unscaledTime < _nextSlowLog) return;
+            _nextSlowLog = Time.unscaledTime + 3f;
+            Debug.Log($"[NOVR-PROBE] UpdateNearestAirbase #{_slowUpdateCalls} " +
+                      $"levelTime={Time.timeSinceLevelLoad:0.0} timeScale={Time.timeScale:0.##} " +
+                      $"overlayActive={__instance.gameObject.activeInHierarchy} " +
+                      DescribeDecision(__instance));
         }
     }
 
