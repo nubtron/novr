@@ -37,6 +37,7 @@ public class ModConfiguration
     public readonly ConfigEntry<int> AutoDumpCount;
     public readonly ConfigEntry<float> AutoDumpDelay;
     public readonly ConfigEntry<string> AutoDumpYaws;
+    public readonly ConfigEntry<bool> AutoApproach;
     public readonly ConfigEntry<bool> HarnessMute;
 
     public ModConfiguration(ConfigFile config)
@@ -234,6 +235,12 @@ public class ModConfiguration
             "Auto Dump Yaws",
             "",
             "Comma-separated head yaw angles in degrees to dump at, e.g. '-75,0,75' (negative looks left). One dump per angle, and the count replaces Auto Dump Count. Empty dumps straight ahead. Only works under the harness's OpenXR mock runtime, which is the only runtime whose head pose we are allowed to move; with a real headset the angles are ignored and the run dumps wherever the pilot is looking.");
+
+        AutoApproach = config.Bind(
+            "Debug",
+            "Auto Approach",
+            false,
+            "Test harness: once the aircraft has spawned, put it on final approach to the nearest friendly airbase — on the extended centreline, on the glideslope, gear down, marked as having taken off — and hold it there for the rest of the run. The landing symbology (runway outline, glideslope line, airbase marker) only draws while the game believes you are landing, and a harness that spawns parked in a hangar can never see any of it. Ignored unless Auto Start Mission is on.");
 
         HarnessMute = config.Bind(
             "Debug",
