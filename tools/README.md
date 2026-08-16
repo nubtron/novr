@@ -5,14 +5,29 @@ mission, capture both the mod's own state and the GPU's view of a frame, and
 shut down. The point is to replace "wear the headset, fly, squint at the HUD,
 form an opinion" with output you can diff.
 
+The launch, teardown, mod-loaded check, mock runtime and RenderDoc plumbing all
+come from the shared [vr-harness](https://github.com/nubtron/vr-harness) package
+now, not from this repo. What stays here is what only makes sense for Nuclear
+Option: `capture.py`, and the HUD analyses under `rd/`.
+
 Everything machine-specific lives in `~/.vr-harness.toml`, which is **not**
-committed. Copy `vr-harness.example.toml` there and edit the paths.
+committed.
 
 ## Setup
 
 ```bash
-cp tools/vr-harness.example.toml ~/.vr-harness.toml
+cp ../vr-harness/vr-harness.example.toml ~/.vr-harness.toml
 $EDITOR ~/.vr-harness.toml          # game_dir, renderdoc dir, work_dir, player_log
+```
+
+Run the tools through `uv`, not a bare `python3` — the shared package is not
+installed into the system interpreter:
+
+```bash
+uv run tools/capture.py --renderdoc          # a full capture run
+vrh doctor -p novr                           # resolve and check every path
+vrh rd --list -p novr                        # analyses, shared + this repo's
+vrh rd hud_order capture.rdc -p novr
 ```
 
 Requirements: WSL with Windows interop (checked at startup, with a clear error
@@ -77,7 +92,7 @@ docstrings of `vr_harness/game.py` and `vr_harness/mockxr.py`; the summary:
 proxy sits in the module list whether or not Doorstop does anything — measured
 by setting `enabled = false` in `doorstop_config.ini`, which yields a module
 list identical to a good run. The old check looked only at that module, so
-every mod-less run on 2026-08-14 was reported as `hooks: doorstop/BepInEx: yes`
+a mod-less run used to be reported as `hooks: doorstop/BepInEx: yes`
 and the harness went on to measure an unmodded game. The verdict now comes from
 `BepInEx/LogOutput.log` growing after launch and naming the plugin it loaded.
 

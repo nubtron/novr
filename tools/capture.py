@@ -1,4 +1,11 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --quiet
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["vr-harness"]
+#
+# [tool.uv.sources]
+# vr-harness = { git = "https://github.com/nubtron/vr-harness" }
+# ///
 """Unattended capture run: launch headless, fly a mission, dump, tear down.
 
     tools/capture.py                     # full run, default settings
@@ -8,7 +15,7 @@
     tools/capture.py --renderdoc         # also take a GPU capture
 
 What it does, and why each step exists, is documented in vr_harness/game.py and
-vr_harness/mockxr.py. The short version: the OpenXR mock runtime supplies stereo
+the shared vr-harness package's mockxr.py. The short version: the OpenXR mock runtime supplies stereo
 with no headset, the game is launched and BepInEx is *proved* to have loaded
 before anything is measured (retrying with the other launcher if it did not),
 and NOVR's AutoStartMission flies a mission and fires the dumps. Output lands in
@@ -27,10 +34,8 @@ import time
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from vr_harness import HarnessError, load_project, powershell, to_win  # noqa: E402
-from vr_harness import bepinex_cfg, game, mockxr  # noqa: E402
+from vr_harness import HarnessError, load_project, powershell, to_win
+from vr_harness import bepinex_cfg, game, mockxr
 
 PROJECT = "novr"
 DONE_MARKER = "harness.done"
@@ -69,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaw", default="", metavar="DEG[,DEG,...]",
                         help="dump at these head yaw angles instead of straight ahead, e.g. "
                              "--yaw=-75,0,75 (negative looks left); one dump per angle, replacing --dumps")
-    # Opt-in since 2026-08-14. A GPU capture needs RenderDoc hooked before Unity
+    # Opt-in. A GPU capture needs RenderDoc hooked before Unity
     # creates the D3D device, i.e. injected into a process that is seconds from
     # loading the mod, and a bad renderdoc.dll injected there stops Doorstop
     # loading BepInEx at all. That is survivable now that the run proves the mod
@@ -235,10 +240,10 @@ def launch_until_modded(project, env: dict[str, str], inject=None, inject_at: st
             f"{project.plugin_dir} and read {project.bepinex_log} for the load error."
         )
     elif inject is not None and inject_at == "early":
-        # The measured cause of exactly this, on 2026-08-14: a locally built
-        # renderdoc.dll injected before Doorstop finished gave 0 of 8 launches
-        # with the mod, while the official 1.45 release gave 3 of 3 at the same
-        # instant. The build in use is the first thing to suspect, not the timing.
+        # A locally built renderdoc.dll injected into a fresh process stops
+        # Doorstop loading BepInEx, while an official release build injected at
+        # the same instant does not. So the build in use is the first thing to
+        # suspect here, not the timing.
         hint = (
             "BepInEx never ran, and RenderDoc was injected before Doorstop had "
             "finished — which is what stops it.\n"
@@ -379,7 +384,12 @@ def main() -> int:
 
     game.kill(project)
 
-    with bepinex_cfg.temporarily(project.config_file_wsl, updates):
+    # The keys that must never survive a run are per-project now, in
+    # [projects.novr.unsafe_keys]. Passing them is not optional: without
+    # them a run that dies leaves auto-start and frame dumps armed, and the
+    # next launch is a headset session that starts a mission by itself.
+    with bepinex_cfg.temporarily(project.config_file_wsl, updates,
+                                 project.unsafe_config_keys):
         # Injection timing is a real trade and the run says which side it took:
         # 'early' is the only point that beats Unity's D3D device, and also the
         # point where a bad renderdoc.dll can stop Doorstop loading the mod. The
