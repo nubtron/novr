@@ -320,9 +320,43 @@ public class AutoStartMission : MonoBehaviour
 
     private bool IsLanding()
     {
-        if (_airbaseOverlay == null) _airbaseOverlay = FindObjectOfType<AirbaseOverlay>();
+        if (_airbaseOverlay == null) _airbaseOverlay = FindOverlay();
         if (_airbaseOverlay == null || LandingField == null) return false;
         return (bool)LandingField.GetValue(_airbaseOverlay);
+    }
+
+    /// <summary>
+    /// Finds the overlay whether or not it is switched on. <c>FindObjectOfType</c>
+    /// skips inactive objects, so an overlay that is present but disabled reads
+    /// as absent — which is the difference between "the game decided not to
+    /// call this a landing" and "the thing that makes that decision is not
+    /// running", and those need opposite fixes.
+    /// </summary>
+    private static AirbaseOverlay FindOverlay()
+    {
+        foreach (var candidate in Resources.FindObjectsOfTypeAll<AirbaseOverlay>())
+        {
+            if (candidate != null && candidate.gameObject.scene.IsValid()) return candidate;
+        }
+
+        return null;
+    }
+
+    private static string DescribeOverlay()
+    {
+        var found = Resources.FindObjectsOfTypeAll<AirbaseOverlay>();
+        var parts = new List<string>();
+        foreach (var candidate in found)
+        {
+            if (candidate == null || !candidate.gameObject.scene.IsValid()) continue;
+
+            var path = candidate.name;
+            for (var t = candidate.transform.parent; t != null; t = t.parent) path = t.name + "/" + path;
+            parts.Add($"{path} active={candidate.gameObject.activeInHierarchy} " +
+                      $"selfActive={candidate.gameObject.activeSelf} enabled={candidate.enabled}");
+        }
+
+        return parts.Count == 0 ? "overlay=<none in any loaded scene>" : "overlay: " + string.Join(" | ", parts);
     }
 
     /// <summary>
@@ -348,7 +382,7 @@ public class AutoStartMission : MonoBehaviour
                    $"alignment={Mathf.Abs(Vector3.Dot(aircraft.transform.forward, direction)):0.00} (needs >0.80) " +
                    $"toStart={Vector3.Distance(aircraft.transform.position, runway.Start.position):0} m " +
                    $"toEnd={Vector3.Distance(aircraft.transform.position, runway.End.position):0} m " +
-                   $"overlayFound={_airbaseOverlay != null}";
+                   DescribeOverlay();
         }
         catch (Exception e)
         {
