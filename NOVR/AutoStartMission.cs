@@ -223,6 +223,7 @@ public class AutoStartMission : MonoBehaviour
     private float _approachDeadline;
     private Airbase.Runway.RunwayUsage? _approachUsage;
     private AirbaseOverlay _airbaseOverlay;
+    private Aircraft _placedAircraft;
     private string _lastApproachBlocker;
 
     private static bool ApproachRequested => ModConfiguration.Instance.AutoApproach.Value;
@@ -251,9 +252,14 @@ public class AutoStartMission : MonoBehaviour
             return NotApproaching("no local aircraft");
         }
 
-        if (!_approachPlaced)
+        // Re-place when the aircraft is a different one. A mission that spawns
+        // its own airframe (the tutorials do, once their briefing is answered)
+        // replaces the one the harness spawned, and a run pinned to a
+        // destroyed aircraft holds nothing.
+        if (!_approachPlaced || !ReferenceEquals(aircraft, _placedAircraft))
         {
             if (!PlaceOnApproach(aircraft)) return false;
+            _placedAircraft = aircraft;
             _approachPlaced = true;
             _approachDeadline = Time.unscaledTime + ApproachTimeout;
         }
