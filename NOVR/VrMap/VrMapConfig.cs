@@ -216,10 +216,14 @@ public static class VrMapConfig
             new ConfigDescription(
                 "Vertical stretch applied to the model. 1 is honest terrain — the ground at the "
                 + "same scale as everything else — and is the default because a stereo model does "
-                + "not need the trick a printed relief map needs: at 1:1200 a 2 km mountain is "
-                + "1.7 m tall, which is small on paper and perfectly readable when both eyes can "
-                + "see it. Above 1 the terrain is a lie you have chosen, and the peaks climb "
-                + "towards you: at 2x a 2 km summit reaches 3.3 m against an 8 m eye.",
+                + "not need the trick a printed relief map needs: on the table at 1:2400 a 2 km "
+                + "mountain is 0.8 m tall against a 4 m eye, which is small on paper and perfectly "
+                + "readable when both eyes can see it. The wall is the case where the trick earns "
+                + "its keep. Fitting a whole 82 km theatre into 3 m is 1:27000, so the same "
+                + "mountain stands 7 cm out of the wall — about 1.7 arcminutes of disparity at 3 m, "
+                + "which is right at the edge of what stereo resolves. Raise this to 3 or 4 there "
+                + "and the terrain is unmistakably solid; the ground is then a lie you have "
+                + "chosen, which on a map read for shape rather than for height is a cheap one.",
                 new AcceptableValueRange<float>(1f, 10f)));
 
         Detail = config.Bind(
