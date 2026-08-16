@@ -215,6 +215,9 @@ public class AutoStartMission : MonoBehaviour
     /// </summary>
     private const float ApproachTimeout = 20f;
 
+    /// <summary>Grace after the HUD binds before the aircraft is moved.</summary>
+    private const float CockpitSettleSeconds = 3f;
+
     private static readonly FieldInfo LandingField =
         AccessTools.Field(typeof(AirbaseOverlay), "landing");
 
@@ -224,6 +227,7 @@ public class AutoStartMission : MonoBehaviour
     private Airbase.Runway.RunwayUsage? _approachUsage;
     private AirbaseOverlay _airbaseOverlay;
     private Aircraft _placedAircraft;
+    private float _hudBoundAt;
     private string _lastApproachBlocker;
 
     private static bool ApproachRequested => ModConfiguration.Instance.AutoApproach.Value;
@@ -258,6 +262,8 @@ public class AutoStartMission : MonoBehaviour
         // destroyed aircraft holds nothing.
         if (!_approachPlaced || !ReferenceEquals(aircraft, _placedAircraft))
         {
+            if (!SettledInCockpit(aircraft)) return false;
+
             if (!PlaceOnApproach(aircraft)) return false;
             _placedAircraft = aircraft;
             _approachPlaced = true;
@@ -286,6 +292,33 @@ public class AutoStartMission : MonoBehaviour
         _nextDumpAt = Time.unscaledTime + ModConfiguration.Instance.AutoDumpDelay.Value;
         Debug.LogWarning(
             "[NOVR-HARNESS] Approach was never accepted as a landing; dumping anyway. " + DescribeApproach(aircraft));
+        return true;
+    }
+
+    /// <summary>
+    /// True once the game has finished putting the player in this cockpit and
+    /// had a moment to settle.
+    ///
+    /// <para>Measured, and the reason this gate exists: teleporting on the
+    /// first frame <c>GetLocalAircraft</c> succeeds — which is during the spawn
+    /// sequence, not after it — leaves <c>CombatHUD.aircraft</c> null and the
+    /// whole HUD canvas deactivated for the rest of the run. Same run without
+    /// the teleport: bound at level time 2.1 s with the airbase overlay live
+    /// and its takeoff timer counting. Owning an aircraft and being seated in
+    /// it are not the same event, and only the second one is safe to move.</para>
+    /// </summary>
+    private bool SettledInCockpit(Aircraft aircraft)
+    {
+        var combatHud = SceneSingleton<CombatHUD>.i;
+        if (combatHud == null || combatHud.aircraft != aircraft)
+        {
+            _hudBoundAt = 0f;
+            return NotApproaching("the flight HUD has not been given this aircraft yet");
+        }
+
+        if (_hudBoundAt <= 0f) _hudBoundAt = Time.unscaledTime;
+        if (Time.unscaledTime < _hudBoundAt + CockpitSettleSeconds) return false;
+
         return true;
     }
 
