@@ -67,6 +67,25 @@ internal static class AirbaseOverlayProbe
         }
     }
 
+    private static int _slowUpdateCalls;
+
+    // Is the decision even being made? takeoffTime never moving off 0 says
+    // either "never called" or "called, and the HUD's aircraft was null every
+    // time" — opposite causes, and only the call site can tell them apart.
+    [HarmonyPatch(typeof(global::AirbaseOverlay), "UpdateNearestAirbase")]
+    private static class SlowUpdateProbe
+    {
+        [HarmonyPrefix]
+        private static void Prefix()
+        {
+            if (_slowUpdateCalls++ >= 6) return;
+            var combatHud = SceneSingleton<CombatHUD>.i;
+            Debug.Log($"[NOVR-PROBE] UpdateNearestAirbase call {_slowUpdateCalls} " +
+                      $"at levelTime={Time.timeSinceLevelLoad:0.0} " +
+                      $"hudAircraft={(combatHud != null && combatHud.aircraft != null ? combatHud.aircraft.unitName : "<null>")}");
+        }
+    }
+
     private static string DescribeDecision(global::AirbaseOverlay overlay)
     {
         try
@@ -79,7 +98,9 @@ internal static class AirbaseOverlayProbe
             var takeoffTime = TakeoffTimeField != null ? (float)TakeoffTimeField.GetValue(overlay) : -1f;
 
             var sb = new StringBuilder("[NOVR-PROBE] landing decision: ");
-            sb.Append("hudAircraft=").Append(aircraft != null ? aircraft.unitName : "<null>")
+            sb.Append("levelTime=").Append(Time.timeSinceLevelLoad.ToString("0.0"))
+              .Append(" slowUpdateCalls=").Append(_slowUpdateCalls)
+              .Append(" hudAircraft=").Append(aircraft != null ? aircraft.unitName : "<null>")
               .Append(" nearestAirbase=").Append(nearest != null ? nearest.name : "<null>")
               .Append(" usage=").Append(usage.HasValue ? usage.Value.GetName() : "<none>")
               .Append(" taxiing=").Append(taxiing)
