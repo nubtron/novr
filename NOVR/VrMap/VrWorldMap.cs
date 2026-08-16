@@ -349,10 +349,7 @@ public class VrWorldMap : NOVRBehaviour
         }
 
         _iconLayer ??= new WorldMapIcons(room);
-        _iconLayer.Refresh(
-            model.Root.transform,
-            head.transform,
-            Mathf.Max(0.01f, VrMapConfig.IconSize.Value));
+        _iconLayer.Refresh(model.Root.transform, head.transform, IconSize());
 
         ReportIcons(_iconLayer.Count);
         RefreshPointer(model, room, sharing);
@@ -391,6 +388,27 @@ public class VrWorldMap : NOVRBehaviour
             _pointer.Sweep(_iconLayer);
             _pointer.VerifyClick(_iconLayer);
         }
+    }
+
+    /// <summary>
+    /// How big a symbol is drawn, in room metres.
+    ///
+    /// <para>On the table that is the setting as written: you are close to one
+    /// part of a large model, and a symbol is a real object of a real size sitting
+    /// on the ground. The wall shows the whole theatre at once and is a few metres
+    /// across, so a symbol sized in metres swallows it — measured, the airbase
+    /// symbol came out a fifth of the map wide. There a symbol is what it is on
+    /// the flat map: a fraction of the map, holding its size while the map is
+    /// zoomed. Three percent of the wall's width at the default, with the setting
+    /// scaling it from there.</para>
+    /// </summary>
+    private static float IconSize()
+    {
+        var configured = Mathf.Max(0.01f, VrMapConfig.IconSize != null ? VrMapConfig.IconSize.Value : 0.18f);
+        if (!OnTheWall) return configured;
+
+        var width = VrMapConfig.WallWidth != null ? VrMapConfig.WallWidth.Value : 3f;
+        return Mathf.Max(0.005f, width * 0.03f * (configured / 0.18f));
     }
 
     /// <summary>
@@ -533,9 +551,13 @@ public class VrWorldMap : NOVRBehaviour
         }
 
         _hiddenPanels.Add(new HiddenPanel(panel, component, isMap));
+        // "Found", not "hiding": the wall takes only the map ones, so a line
+        // saying the weapon readout was hidden when it is still on the helmet is
+        // a line that sends the next reader looking for a bug that is not there.
         Debug.Log(
-            $"[NOVR] World map: hiding the {what} ('{panel.name}') by " +
-            (component != null ? "disabling its " + component.GetType().Name : "deactivating it") + ".");
+            $"[NOVR] World map: found the {what} ('{panel.name}'), to be taken by " +
+            (component != null ? "disabling its " + component.GetType().Name : "deactivating it") +
+            $" — {(isMap ? "the wall and the table both take it" : "the table only")}.");
     }
 
     private void ShowHelmetPanels()
@@ -781,7 +803,14 @@ public class VrWorldMap : NOVRBehaviour
     /// </summary>
     private void ApplyHaze(WorldMapModel model, Transform head)
     {
-        if (VrMapConfig.Haze == null || !VrMapConfig.Haze.Value)
+        // Not on the wall, and not as a setting either: the haze models the air
+        // between an eye and ground it is a long way above, and on a wall there is
+        // no such distance to model — every point of the map is the same three
+        // metres away. Left on, what it drew was a vignette centred on whatever
+        // the middle of the wall happened to be, which fades the map towards its
+        // corners and means nothing. The altitude tint underneath it is a
+        // different instrument — a hypsometric wash — and nobody asked for one.
+        if (OnTheWall || VrMapConfig.Haze == null || !VrMapConfig.Haze.Value)
         {
             _haze?.SetVisible(false);
             return;
