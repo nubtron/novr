@@ -34,7 +34,8 @@ import time
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
-from vr_harness import HarnessError, load_project, powershell, to_win
+from vr_harness import HarnessError, load_project
+from vr_harness import captures as captures_mod
 from vr_harness import bepinex_cfg, game, mockxr
 
 PROJECT = "novr"
@@ -265,38 +266,6 @@ def launch_until_modded(project, env: dict[str, str], inject=None, inject_at: st
     )
 
 
-def wait_for_captures_to_settle(captures_dir: Path, deadline: float) -> None:
-    """Wait until RenderDoc has finished writing its .rdc files.
-
-    RenderDoc serialises the capture asynchronously, well after the frame that
-    triggered it. Killing the game the moment the mod says it is done truncates
-    that write, and the result is a file of plausible size that fails to open
-    with "File is corrupted: Unrecognised section type" — which looks like a
-    RenderDoc bug rather than our teardown. Wait for the sizes to stop changing.
-    """
-    stable_rounds = 0
-    previous: dict[Path, int] = {}
-    # A run that produced no capture at all has nothing to settle, and waiting
-    # the full window for it turns "RenderDoc captured nothing" into a minute
-    # and a half of silence followed by a warning about truncation.
-    empty_deadline = time.monotonic() + 15
-
-    while time.monotonic() < deadline:
-        current = {p: p.stat().st_size for p in captures_dir.glob("*.rdc")}
-        if not current and time.monotonic() > empty_deadline:
-            return
-        if current and current == previous:
-            stable_rounds += 1
-            # Three quiet rounds: one can happen mid-write between buffers.
-            if stable_rounds >= 3:
-                return
-        else:
-            stable_rounds = 0
-        previous = current
-        time.sleep(1.5)
-
-    print("  warning: capture files still changing at timeout; may be truncated")
-
 
 def newest_dump_dir(plugin_dir: Path) -> Path | None:
     root = plugin_dir / DUMPS_DIR
@@ -305,28 +274,6 @@ def newest_dump_dir(plugin_dir: Path) -> Path | None:
     dirs = [d for d in root.iterdir() if d.is_dir()]
     return max(dirs, key=lambda d: d.stat().st_mtime) if dirs else None
 
-
-def extract_thumbnails(project, captures: list[Path]) -> list[Path]:
-    """renderdoccmd thumb — headless proof that a capture has real content.
-
-    Cheap sanity check that does not need the Qt UI: a black or missing
-    thumbnail means the capture is not worth opening.
-    """
-    thumbs = []
-    for rdc in captures:
-        png = rdc.with_suffix(".thumb.png")
-        result = powershell(
-            f"& '{project.renderdoccmd}' thumb '{to_win(rdc)}' --out '{to_win(png)}'"
-        )
-        if png.exists():
-            thumbs.append(png)
-        else:
-            # renderdoccmd reports a corrupt capture on stdout and still exits
-            # 0, so the return code cannot be trusted here — the missing file is
-            # the real signal, and the message is the useful part.
-            detail = (result.stdout + result.stderr).strip().replace("\n", " ")
-            print(f"  warning: no thumbnail for {rdc.name}: {detail[:200]}")
-    return thumbs
 
 
 def main() -> int:
@@ -417,14 +364,18 @@ def main() -> int:
             if args.renderdoc:
                 # Allow a little past the ceiling: aborting mid-write is
                 # what produces a corrupt capture in the first place.
-                wait_for_captures_to_settle(captures_dir, min(deadline + 60, time.monotonic() + 90))
+                settled = captures_mod.wait_for_settle(
+                    captures_dir, min(deadline + 60, time.monotonic() + 90))
+                if not settled:
+                    print("  warning: capture files still changing at timeout; "
+                          "may be truncated")
             if not args.keep_running:
                 game.kill(project)
                 print("game closed")
 
     dump_dir = newest_dump_dir(project.plugin_dir_wsl)
     captures = sorted(captures_dir.glob("*.rdc"))
-    thumbs = extract_thumbnails(project, captures) if captures else []
+    thumbs = captures_mod.extract_thumbnails(project, captures) if captures else []
 
     print("\n== results ==")
     print(f"buffer dump:  {dump_dir if dump_dir else '(none)'}")
