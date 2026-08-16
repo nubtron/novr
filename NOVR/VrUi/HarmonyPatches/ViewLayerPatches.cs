@@ -43,6 +43,16 @@ namespace NOVR.VrUi.HarmonyPatches;
 /// with the distances those positions stand for. The boresight-state
 /// equivalent is left alone (its target-box position is a method local); its
 /// designator simply stays visible.
+///
+/// **Labels are the exception to "run it unmodified".** The icons are written
+/// straight from this frame's projection; the *text* beside them is not. The
+/// game places each label from something one step removed — the previous
+/// frame's arrow tail, or a smoothing lerp towards the target — because on a
+/// screen that never moves, a frame of lag costs a few pixels and buys
+/// stability. On a head-locked screen the whole layer sweeps at head rate, so
+/// the same lag is a whole head-turn step and the label visibly comes unstuck
+/// from the icon it belongs to. Both are corrected at the seam where they are
+/// written, not by moving the labels somewhere else.
 /// </summary>
 internal static class ViewLayerPatches
 {
@@ -203,6 +213,10 @@ internal static class ViewLayerPatches
     {
         private static readonly FieldInfo? TargetArrowField =
             AccessTools.Field(typeof(CombatHUD), "targetArrow");
+        private static readonly FieldInfo? TargetArrowTailField =
+            AccessTools.Field(typeof(CombatHUD), "targetArrowTail");
+        private static readonly FieldInfo? TargetTextField =
+            AccessTools.Field(typeof(CombatHUD), "targetText");
 
         [HarmonyPostfix]
         private static void Postfix(CombatHUD __instance, bool enabled, Vector3 position)
@@ -213,6 +227,21 @@ internal static class ViewLayerPatches
             if (arrow == null) return;
 
             arrow.transform.position = ViewLayerBackend.RemapPixels(position);
+
+            // The label goes on the arrow's tail — but the game reads the tail
+            // *before* it moves the arrow, so the label carries the position the
+            // arrow had last frame. On a fixed screen that is invisible: the
+            // arrow moves a few pixels a frame and nothing else moves at all. On
+            // a head-locked screen the whole layer sweeps across the view at head
+            // rate, so one frame of staleness is a whole head-turn step — the
+            // label visibly trails its own arrow, which is what "the icons hold
+            // and the text does not" looks like. Re-place it now that the arrow
+            // is where this frame says it should be.
+            var tail = TargetArrowTailField?.GetValue(__instance) as Transform;
+            var text = TargetTextField?.GetValue(__instance) as Component;
+            if (tail == null || text == null) return;
+
+            text.transform.position = tail.position;
         }
     }
 
@@ -380,6 +409,51 @@ internal static class ViewLayerPatches
                     new Vector3(noOverlap.TargetPosition.x, noOverlap.TargetPosition.y, 0f));
                 noOverlap.TargetPosition = new Vector2(target.x, target.y);
             }
+        }
+    }
+
+    /// <summary>
+    /// The objective labels are placed by a screen-space smoothing pass —
+    /// <c>Lerp(previous, target + nudge, textLerp)</c> with <c>textLerp</c>
+    /// 0.8 — so a label reaches its target asymptotically rather than in the
+    /// frame it was computed. Its job is the de-overlap nudge: two objectives
+    /// close together push each other apart, and the smoothing keeps that push
+    /// from snapping.
+    ///
+    /// On a fixed screen the only thing that ever moves is the nudge, so 0.8 is
+    /// a slow, invisible settle. On the head-locked screen the target moves at
+    /// head rate, and 0.8 leaves a quarter of a frame's head motion outstanding
+    /// every frame — a standing lag through the whole turn, on top of the
+    /// several frames it takes to catch up at the end. The pointer is written
+    /// directly and holds; the label swims behind it.
+    ///
+    /// So the smoothing is taken out while this layer owns the screen: with the
+    /// factor at 1 the game's own loop lands the label on <c>target + nudge</c>
+    /// exactly, undecayed nudge and all, and every other line of it runs
+    /// unchanged. The field is put back in the finalizer, so a teardown mid-call
+    /// cannot leave the game permanently unsmoothed.
+    /// </summary>
+    [HarmonyPatch(typeof(ObjectiveOverlayManager), "StopTextOverlap")]
+    private static class ObjectiveTextSmoothingPatch
+    {
+        private static readonly FieldInfo? TextLerpField =
+            AccessTools.Field(typeof(ObjectiveOverlayManager), "textLerp");
+
+        [HarmonyPrefix]
+        private static void Prefix(ObjectiveOverlayManager __instance, out float __state)
+        {
+            __state = float.NaN;
+            if (!ViewLayerBackend.IsActive || TextLerpField == null) return;
+
+            __state = (float)TextLerpField.GetValue(__instance);
+            TextLerpField.SetValue(__instance, 1f);
+        }
+
+        [HarmonyFinalizer]
+        private static void Finalizer(ObjectiveOverlayManager __instance, float __state)
+        {
+            if (float.IsNaN(__state) || TextLerpField == null) return;
+            TextLerpField.SetValue(__instance, __state);
         }
     }
 
