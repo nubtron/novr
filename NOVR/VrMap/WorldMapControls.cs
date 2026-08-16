@@ -87,7 +87,7 @@ internal static class WorldMapControls
 
     private static bool _capturing;
     private static bool _takesControls = true;
-    private static bool _mirrorReported;
+    private static bool? _mirrorReported;
 
     /// <summary>Which way the stick was last seen held far enough to have snapped.</summary>
     private static int _snapHeld;
@@ -248,7 +248,12 @@ internal static class WorldMapControls
     /// </summary>
     private static void ReportMirror(bool mirroring)
     {
-        if (mirroring == _mirrorReported) return;
+        // Nullable, so the first frame always says something. A plain bool
+        // starting false meant the ordinary case — the map open with the game's
+        // map shut — reported nothing at all, and a log that is silent cannot be
+        // told from a code path that never ran. It was silent on the first two
+        // wall runs, which is how this was noticed.
+        if (_mirrorReported.HasValue && mirroring == _mirrorReported.Value) return;
         _mirrorReported = mirroring;
         Debug.Log(mirroring
             ? "[NOVR] World map: following the game's own map — the map scroll keys pan it and " +
@@ -299,7 +304,7 @@ internal static class WorldMapControls
         _capturing = false;
         _takesControls = true;
         _snapHeld = 0;
-        _mirrorReported = false;
+        _mirrorReported = null;
         Pan = Vector2.zero;
         Centre = null;
         Spin = 0f;
