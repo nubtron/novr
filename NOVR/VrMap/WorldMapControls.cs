@@ -65,14 +65,27 @@ internal static class WorldMapControls
     /// <summary>Doublings of the model's size per second at full stick.</summary>
     private const float ZoomRate = 1.2f;
 
+    /// <summary>
+    /// How far the stick has to go to fire a snap turn, and how far back it has to
+    /// come before it will fire again. Two thresholds rather than one because a
+    /// thumbstick held at a corner wanders by a few percent, and a single one
+    /// turns that wander into a stream of turns.
+    /// </summary>
+    private const float SnapPress = 0.6f;
+    private const float SnapRelease = 0.35f;
+
     private static bool _capturing;
+    private static bool _takesControls = true;
+
+    /// <summary>Which way the stick was last seen held far enough to have snapped.</summary>
+    private static int _snapHeld;
 
     /// <summary>
     /// True while the map is open and set to take the controls — read by the
     /// patch, which runs whether or not this mod's map exists.
     /// </summary>
     public static bool Capturing =>
-        _capturing &&
+        _capturing && _takesControls &&
         VrMapConfig.CaptureControls != null && VrMapConfig.CaptureControls.Value;
 
     /// <summary>
@@ -91,9 +104,16 @@ internal static class WorldMapControls
     /// <summary>
     /// Called every frame the map is open, before the model is placed.
     /// </summary>
-    public static void Refresh()
+    /// <param name="takeControls">
+    /// False while the game's own pointer UI is up. The thumbsticks still move the
+    /// map — they are nobody else's — but the aeroplane keeps its stick, because
+    /// the pilot is choosing an airbase rather than flying and the map is only
+    /// sharing the view.
+    /// </param>
+    public static void Refresh(bool takeControls = true)
     {
         _capturing = true;
+        _takesControls = takeControls;
 
         // The sticks work whether or not the map has the flight controls — they
         // are not the aeroplane's and there is nothing to hand back.
@@ -102,7 +122,12 @@ internal static class WorldMapControls
 
         var pitch = -left.y;
         var roll = left.x;
-        var yaw = right.x;
+        // Negated: pushing the stick right should turn *you* to the right, which
+        // means the model turns to the left under you. The first version turned
+        // the model the way the stick went, which is what a flight reported as
+        // "reversed left right" — and it is, for the same reason a rear-view
+        // mirror is: the thing you are steering is the viewpoint, not the map.
+        var yaw = -right.x;
         var zoom = right.y;
 
         if (Capturing)
@@ -112,7 +137,7 @@ internal static class WorldMapControls
             {
                 pitch += input.GetAxis("Pitch");
                 roll += input.GetAxis("Roll");
-                yaw += input.GetAxis("Yaw");
+                yaw -= input.GetAxis("Yaw");
             }
         }
 
@@ -139,7 +164,7 @@ internal static class WorldMapControls
         var moved = spun * new Vector3(right2, 0f, forward);
 
         Pan += new Vector2(moved.x, moved.z);
-        Spin += yaw * turn;
+        Turn(yaw, turn);
 
         // Geometric, not linear: a fixed number of doublings a second, so pulling
         // the model in from the whole theatre and pushing it back out take the
@@ -151,10 +176,48 @@ internal static class WorldMapControls
         }
     }
 
+    /// <summary>
+    /// Turn the model — in steps if a step size is set, smoothly if it is zero.
+    ///
+    /// <para><b>Why steps are the default.</b> Turning the world around a seated
+    /// head at a steady rate is the classic way to make someone sick: the eyes
+    /// report a rotation the inner ear does not, and the mismatch lasts exactly as
+    /// long as the stick is held. A snap gives the same mismatch for one frame
+    /// instead of several seconds, which is why every VR title that lets you turn
+    /// offers it. The map is a model rather than a world, so this is milder here
+    /// than it would be standing on the ground — but it is a model that fills the
+    /// lower half of your view, and a flight asked for snaps by name.</para>
+    ///
+    /// <para>Fires once per push and re-arms only when the stick comes back below
+    /// <see cref="SnapRelease"/>, so holding it over turns once rather than
+    /// spinning.</para>
+    /// </summary>
+    private static void Turn(float yaw, float smoothStep)
+    {
+        var step = VrMapConfig.TurnStep != null ? VrMapConfig.TurnStep.Value : 30f;
+        if (step <= 0f)
+        {
+            _snapHeld = 0;
+            Spin += yaw * smoothStep;
+            return;
+        }
+
+        if (Mathf.Abs(yaw) <= SnapRelease) _snapHeld = 0;
+        if (Mathf.Abs(yaw) < SnapPress) return;
+
+        var direction = yaw > 0f ? 1 : -1;
+        if (_snapHeld == direction) return;
+
+        _snapHeld = direction;
+        Spin += direction * step;
+    }
+
     /// <summary>Give the controls back, and forget where the map was pushed to.</summary>
     public static void Release()
     {
         _capturing = false;
+        _takesControls = true;
+        _snapHeld = 0;
         Pan = Vector2.zero;
         Spin = 0f;
         Zoom = 1f;

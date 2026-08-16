@@ -38,6 +38,7 @@ public static class VrMapConfig
     public static ConfigEntry<bool> CaptureControls;
     public static ConfigEntry<float> PanSpeed;
     public static ConfigEntry<float> TurnSpeed;
+    public static ConfigEntry<float> TurnStep;
     public static ConfigEntry<bool> HideCockpit;
     public static ConfigEntry<bool> HideWorld;
     public static ConfigEntry<bool> HideHelmetPanels;
@@ -105,26 +106,34 @@ public static class VrMapConfig
         Scale = config.Bind(
             "Experimental",
             "World Map Scale",
-            1200f,
+            2400f,
             new ConfigDescription(
-                "How much the world is shrunk by: 1200 means 1:1200, which turns an 82 km map "
-                + "into a 68 m model. Smaller numbers give a bigger model with more relief and "
+                "How much the world is shrunk by: 2400 means 1:2400, which turns an 82 km map "
+                + "into a 34 m model. Smaller numbers give a bigger model with more relief and "
                 + "less of it in view at once. This is the control that decides whether you are "
-                + "looking at a table or flying over a landscape. It works with Eye Height: at "
-                + "1:1200 and 8 m the model's edge sits about 13 degrees below the horizon, so it "
-                + "fills the lower half of your view; at 1:2000 and 12 m the edge falls to 30 "
-                + "degrees down and you have to look for it.",
+                + "looking at a table or flying over a landscape. "
+                + "It only means anything alongside Eye Height, and the pair of them is what "
+                + "sets how much the model moves when you move your head. Scale and Eye Height "
+                + "halved together leave the framing identical and double the stereo: the model's "
+                + "edge stays about 13 degrees below the horizon either way, but at 1:1200 and 8 m "
+                + "the ground below you is 8 metres off and reads nearly flat, while at 1:2400 and "
+                + "4 m it is a model on a table you can lean over. Halve both again for a smaller "
+                + "one still; change one without the other and you are moving the model in or out "
+                + "of your view instead.",
                 new AcceptableValueRange<float>(200f, 20000f)));
 
         EyeHeight = config.Bind(
             "Experimental",
             "World Map Eye Height",
-            8f,
+            4f,
             new ConfigDescription(
                 "How far below you the model's sea level sits, in real metres. This is your "
                 + "altitude over the model, and together with the scale it is what sets how much "
                 + "stereo depth you get: too far and it flattens into a picture, too close and "
-                + "you are inside the terrain.",
+                + "you are inside the terrain. It is the half of the pair that does the work — "
+                + "eye separation and head movement are both fixed real distances, so everything "
+                + "that makes the model look solid is a ratio against this number. See Scale above "
+                + "for how to move the two together.",
                 new AcceptableValueRange<float>(1f, 100f)));
 
         ReliefExaggeration = config.Bind(
@@ -143,14 +152,17 @@ public static class VrMapConfig
         Detail = config.Bind(
             "Experimental",
             "World Map Detail",
-            WorldMapDetail.Surfaces,
+            WorldMapDetail.Everything,
             "How much of the map the model is made of. Terrain is the ground tiles alone, which "
             + "is cheapest but leaves the map see-through wherever there is asphalt: roads, city "
             + "surfaces and fields are separate meshes filling cut-outs in the tiles, and only "
             + "256 of the map's ~2700 renderers are tiles. Surfaces adds everything lying on the "
-            + "ground and nothing standing on it, which is the one that looks like a map. "
-            + "Everything adds the buildings too, at thousands of renderers — try it if you have "
-            + "the frames for it. Changing this rebuilds the model.");
+            + "ground and nothing standing on it. Everything adds the buildings as well, which is "
+            + "446 renderers against 2648 and what cities look like from the air. Measured on one "
+            + "map, headless: median frame 6.3 ms without them and 8.8 ms with, against 8.7 ms "
+            + "with the map shut — so the buildings cost about 2.5 ms and the map as a whole "
+            + "still costs nothing, because what it hides while it is up is the real world. Drop "
+            + "to Surfaces if your frames say otherwise. Changing this rebuilds the model.");
 
         Sea = config.Bind(
             "Experimental",
@@ -212,14 +224,15 @@ public static class VrMapConfig
         HazeStrength = config.Bind(
             "Experimental",
             "World Map Haze Strength",
-            0.7f,
+            0.5f,
             new ConfigDescription(
-                "How much of the ground is lost at the far end of the range: 0.7 means the "
-                + "furthest terrain still shows through at 30%. Together with the range this is "
-                + "deliberately thinner than a real 60 km day, which would take about 70% of the "
-                + "contrast out of ground only 20 km away — measured, and it looks like it: the "
+                "How much of the ground is lost at the far end of the range: 0.5 means the "
+                + "furthest terrain still shows through at half. Together with the range this is "
+                + "deliberately much thinner than a real 60 km day, which would take about 70% of "
+                + "the contrast out of ground only 20 km away — measured, and it looks like it: the "
                 + "map goes blue and stops being a map. What is wanted here is enough air to say "
-                + "which ridge is in front of which, and no more. Raise it towards 1 for weather.",
+                + "which ridge is in front of which, and no more; two flights running have asked "
+                + "for less of it. Raise it towards 1 for weather.",
                 new AcceptableValueRange<float>(0.1f, 1f)));
 
         Icons = config.Bind(
@@ -242,13 +255,14 @@ public static class VrMapConfig
         IconSize = config.Bind(
             "Experimental",
             "World Map Icon Size",
-            0.35f,
+            0.18f,
             new ConfigDescription(
                 "How big an ordinary unit's symbol is, in real metres. Everything else is sized "
                 + "relative to that by the same ratios the flat map uses, so an airbase comes out "
                 + "about three times an aircraft and stays findable. They are a fixed size in the "
                 + "room rather than on the map, so zooming the model in and out does not change "
-                + "how readable they are.",
+                + "how readable they are — which also means this has to move with Eye Height to "
+                + "keep looking the same. 0.18 m at a 4 m eye subtends what 0.35 m did at 8 m.",
                 new AcceptableValueRange<float>(0.05f, 2f)));
 
         IconMask = config.Bind(
@@ -293,12 +307,16 @@ public static class VrMapConfig
             "Experimental",
             "World Map Takes The Controls",
             true,
-            "While the map is up, pitch, roll and yaw move the map instead of the aeroplane: push "
+            "While the map is up and you are flying it, pitch, roll and yaw move the map instead "
+            + "of the aeroplane: push "
             + "to send the model away from you, roll to slide it sideways, yaw to spin it about "
             + "the point under your head. This is on top of the controller thumbsticks, which "
             + "always move the map and are not affected by this setting — left stick to slide, "
-            + "right stick left and right to spin, right stick forward and back to zoom — because "
-            + "they are nobody else's: the game has no VR bindings at all. All of it is cleared "
+            + "right stick left and right to turn (a snap turn: see Turn Step), right stick "
+            + "forward and back to zoom — because "
+            + "they are nobody else's: the game has no VR bindings at all. The flight controls are "
+            + "left alone while the game's own pointer is up, because then you are choosing an "
+            + "airbase rather than flying and the map is only sharing the view. All of it is cleared "
             + "when the map closes, so closing and reopening recentres it on the aircraft. Taking "
             + "the flight controls is safer than the alternative rather "
             + "than braver: what the aircraft gets while the map is up is zero stick, and zero "
@@ -316,9 +334,24 @@ public static class VrMapConfig
             new ConfigDescription(
                 "How fast the stick slides the map, in real metres per second — so the model "
                 + "moves past you at the same apparent speed however much the world is shrunk "
-                + "by. At 3 m/s and 1:1200 that is 3.6 km of theatre a second, and about 23 "
+                + "by. At 3 m/s and 1:2400 that is 7.2 km of theatre a second, and about 11 "
                 + "seconds from one edge of the map to the other.",
                 new AcceptableValueRange<float>(0.2f, 20f)));
+
+        TurnStep = config.Bind(
+            "Experimental",
+            "World Map Turn Step",
+            30f,
+            new ConfigDescription(
+                "How far one flick of the stick turns the map, in degrees — a snap turn. Turning "
+                + "the world around a seated head at a steady rate is the classic way to make "
+                + "someone sick: your eyes report a rotation your inner ear does not, and the "
+                + "argument lasts exactly as long as you hold the stick. A snap compresses it into "
+                + "one frame, which is why every VR title that lets you turn offers it. It fires "
+                + "once per push and re-arms when the stick comes back to centre, so holding it "
+                + "over turns once rather than spinning. Set it to 0 for the old smooth turn, at "
+                + "Turn Speed below.",
+                new AcceptableValueRange<float>(0f, 90f)));
 
         TurnSpeed = config.Bind(
             "Experimental",
@@ -327,7 +360,7 @@ public static class VrMapConfig
             new ConfigDescription(
                 "How fast yaw spins the map, in degrees per second, about the point under your "
                 + "head — which is the point you are looking down at, and so the one worth "
-                + "turning around.",
+                + "turning around. Only used when Turn Step above is 0.",
                 new AcceptableValueRange<float>(5f, 180f)));
 
         HideCockpit = config.Bind(
