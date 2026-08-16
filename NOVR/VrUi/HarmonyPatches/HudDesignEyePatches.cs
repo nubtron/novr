@@ -64,6 +64,45 @@ internal static class HudDesignEyePatches
         private static void Finalizer(Camera? __state) => Restore(__state);
     }
 
+    /// <summary>
+    /// The landing symbology — the runway outline, the glideslope line and its
+    /// aim point, the airbase marker and label — is world-referenced in exactly
+    /// the same way as everything above, and was the one updater left off this
+    /// list.
+    ///
+    /// <para>Measured mid-approach with the capture running: the field was
+    /// being projected through <c>CameraStateManager.mainCamera</c>, which by
+    /// then is still the game's original "Main Camera" — hundreds of metres
+    /// from the aircraft and pointing somewhere else — while every other symbol
+    /// on the panel went through the design eye. All four runway corners and
+    /// both ends of the glideslope landed within ten pixels of the centre of a
+    /// 2560x1440 screen, and the glideslope's length scale came out
+    /// <i>negative</i> (-7.9), which is its aim point projecting behind the
+    /// camera. A runway box too small to see and a glideslope drawn inside
+    /// out.</para>
+    /// </summary>
+    [HarmonyPatch(typeof(AirbaseOverlay), "LateUpdate")]
+    private static class AirbaseOverlayLateUpdatePatch
+    {
+        [HarmonyPrefix]
+        private static void Prefix(out Camera? __state) => Swap(out __state);
+
+        [HarmonyFinalizer]
+        private static void Finalizer(Camera? __state) => Restore(__state);
+    }
+
+    /// <summary>
+    /// The design eye while a swap is in effect, else null.
+    ///
+    /// <para>Read by <see cref="ViewLayerPatches"/>. The screen-space helpers
+    /// it redirects — <c>HUDFunctions.PinToScreenEdge</c> above all — are
+    /// shared, and are called from inside these swaps as well as from the view
+    /// layer's own. Inside one of these the right reference is the design eye
+    /// and the real screen; the view layer's virtual screen would put the
+    /// airbase marker in a third coordinate system belonging to neither.</para>
+    /// </summary>
+    public static Camera? ActiveDesignEye { get; private set; }
+
     private static void Swap(out Camera? previous)
     {
         previous = null;
@@ -76,12 +115,14 @@ internal static class HudDesignEyePatches
 
         previous = manager.mainCamera;
         manager.mainCamera = designEye;
+        ActiveDesignEye = designEye;
     }
 
     private static void Restore(Camera? previous)
     {
         if (previous == null) return;
 
+        ActiveDesignEye = null;
         var manager = SceneSingleton<CameraStateManager>.i;
         if (manager != null) manager.mainCamera = previous;
     }
