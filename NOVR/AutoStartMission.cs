@@ -119,6 +119,8 @@ public class AutoStartMission : MonoBehaviour
             return;
         }
 
+        DismissDialogue();
+
         // Held every frame, including through the dumps: left alone, a
         // teleported aircraft with idle engines is on the ground within seconds
         // and the yaw sweep's later frames would show a different situation
@@ -128,6 +130,67 @@ public class AutoStartMission : MonoBehaviour
         if (Time.unscaledTime < _nextDumpAt) return;
 
         FireDump();
+    }
+
+    // ------------------------------------------------------------ briefing dialogue
+
+    private static readonly MethodInfo DialoguePressMethod =
+        AccessTools.Method(typeof(DialogueBox), "InvokeButtonPress");
+
+    private const float DialogueRetryInterval = 0.5f;
+
+    private float _nextDialogueAttempt;
+    private int _dialoguesDismissed;
+
+    /// <summary>
+    /// Press the button on any briefing dialogue the mission puts up.
+    ///
+    /// <para>This is not cosmetic. <c>DialogueBox.EnableBox</c> sets
+    /// <c>Time.timeScale = 0</c> in single player, so a mission that opens with
+    /// a briefing leaves an unattended run in a **paused game** for its entire
+    /// length — physics stopped, animation stopped, and the game's slow-update
+    /// system dead, because its scheduler compares against
+    /// <c>Time.timeSinceLevelLoad</c>, which does not advance at timescale zero.
+    /// Anything decided on a slow update (which includes every landing and
+    /// takeoff decision the airbase overlay makes) therefore never happens.
+    /// Every harness frame captured before this was a frame of a paused
+    /// game.</para>
+    ///
+    /// <para>The button is pressed rather than the box hidden: pressing raises
+    /// <c>ButtonPressed</c> with the dialogue's id, which is how the mission
+    /// advances its own script. <c>Hide()</c> would clear the box and restore
+    /// the timescale while leaving the mission waiting forever for an answer.</para>
+    /// </summary>
+    private void DismissDialogue()
+    {
+        if (DialoguePressMethod == null) return;
+
+        // Only while actually stopped. Pressing raises the event but does not
+        // clear CurrentId — the mission's own handler does — so without this
+        // the harness would keep pressing a dialogue that has already been
+        // answered and is only waiting to be replaced.
+        if (Time.timeScale > 0f) return;
+        if (Time.unscaledTime < _nextDialogueAttempt) return;
+        _nextDialogueAttempt = Time.unscaledTime + DialogueRetryInterval;
+
+        foreach (var box in Resources.FindObjectsOfTypeAll<DialogueBox>())
+        {
+            if (box == null || !box.gameObject.scene.IsValid() || !box.CurrentId.HasValue) continue;
+
+            try
+            {
+                DialoguePressMethod.Invoke(box, null);
+                _dialoguesDismissed++;
+                Debug.Log($"[NOVR-HARNESS] Dismissed briefing dialogue {_dialoguesDismissed} " +
+                          $"(id {box.CurrentId}); timescale is now {Time.timeScale:0.##}.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[NOVR-HARNESS] Could not dismiss a briefing dialogue: {e.Message}");
+            }
+
+            return;
+        }
     }
 
     // ------------------------------------------------------------ approach mode
