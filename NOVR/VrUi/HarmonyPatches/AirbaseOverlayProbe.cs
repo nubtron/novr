@@ -21,8 +21,7 @@ internal static class AirbaseOverlayProbe
     private static readonly FieldInfo? AimPointField = AccessTools.Field(typeof(global::AirbaseOverlay), "glideslopeAimPoint");
     private static readonly FieldInfo? LandingField = AccessTools.Field(typeof(global::AirbaseOverlay), "landing");
 
-    private static bool _reported;
-    private static bool _reportedLanding;
+    private static string? _lastState;
 
     [HarmonyPatch(typeof(global::AirbaseOverlay), "LateUpdate")]
     private static class Probe
@@ -31,9 +30,15 @@ internal static class AirbaseOverlayProbe
         private static void Postfix(global::AirbaseOverlay __instance)
         {
             var landing = LandingField != null && (bool)LandingField.GetValue(__instance);
-            if (_reported && (!landing || _reportedLanding)) return;
-            _reported = true;
-            if (landing) _reportedLanding = true;
+
+            // Report on every change of the three things that decide what this
+            // overlay's numbers mean, not once: the first LateUpdate of a
+            // session runs before either capture backend exists, so a
+            // report-once probe answers the question for a configuration that
+            // is never the one being asked about.
+            var state = $"{landing}/{ViewLayerBackend.IsActive}/{FlightHudCaptureBackend.IsActive}";
+            if (state == _lastState) return;
+            _lastState = state;
 
             try
             {
