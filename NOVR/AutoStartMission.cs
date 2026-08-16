@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using Cysharp.Threading.Tasks;
+using HarmonyLib;
 using NOVR.VrCamera;
 using NuclearOption.Networking;
 using NuclearOption.SavedMission;
@@ -106,14 +108,263 @@ public class AutoStartMission : MonoBehaviour
             }
 
             _missionRunning = true;
+            if (ApproachRequested)
+            {
+                Debug.Log("[NOVR-HARNESS] Mission running, local aircraft acquired. Placing it on final approach.");
+                return;
+            }
+
             _nextDumpAt = Time.unscaledTime + ModConfiguration.Instance.AutoDumpDelay.Value;
             Debug.Log($"[NOVR-HARNESS] Mission running, local aircraft acquired. First dump in {ModConfiguration.Instance.AutoDumpDelay.Value:0.#}s.");
             return;
         }
 
+        // Held every frame, including through the dumps: left alone, a
+        // teleported aircraft with idle engines is on the ground within seconds
+        // and the yaw sweep's later frames would show a different situation
+        // from its first.
+        if (ApproachRequested && !UpdateApproach()) return;
+
         if (Time.unscaledTime < _nextDumpAt) return;
 
         FireDump();
+    }
+
+    // ------------------------------------------------------------ approach mode
+
+    /// <summary>How far out on the extended centreline the aircraft is held.</summary>
+    private const float ApproachDistance = 2000f;
+
+    /// <summary>
+    /// The gradient the game's own glideslope symbology is drawn on
+    /// (<c>RunwayUsage.GetGlideslopeAimpoint</c> builds its direction from
+    /// <c>-direction + up * Length * 0.06</c>). Using the same number puts the
+    /// aircraft on the glideslope rather than merely near it, so the glideslope
+    /// line is at its neutral position instead of pinned to one extreme.
+    /// </summary>
+    private const float GlideslopeGradient = 0.06f;
+
+    /// <summary>
+    /// How long to wait for the game to agree that this is a landing before
+    /// giving up and dumping anyway. It is a slow update on a 0.5 s tick, so
+    /// this is generous by two orders of magnitude — if it has not happened by
+    /// now it is not going to, and the diagnosis is worth more than the wait.
+    /// </summary>
+    private const float ApproachTimeout = 20f;
+
+    private static readonly FieldInfo LandingField =
+        AccessTools.Field(typeof(AirbaseOverlay), "landing");
+
+    private bool _approachPlaced;
+    private bool _approachSettled;
+    private float _approachDeadline;
+    private Airbase.Runway.RunwayUsage? _approachUsage;
+    private AirbaseOverlay _airbaseOverlay;
+    private string _lastApproachBlocker;
+
+    private static bool ApproachRequested => ModConfiguration.Instance.AutoApproach.Value;
+
+    /// <summary>
+    /// Put the aircraft on final and keep it there. Returns true once the game
+    /// has accepted it as a landing (or once waiting for that has been given
+    /// up on), which is when the dumps may start.
+    ///
+    /// <para>The landing symbology — runway outline, glideslope, airbase marker
+    /// — is drawn only while <c>AirbaseOverlay</c> has decided the player is
+    /// landing, and that decision has five separate conditions. A harness that
+    /// spawns parked in a hangar meets none of them, so none of that symbology
+    /// has ever appeared in a harness frame. This is what puts it on screen.</para>
+    ///
+    /// <para>The aircraft is not flown there; it is placed and pinned. Flying
+    /// an approach would need an autopilot and would make every run a different
+    /// frame. Pinning costs realism the harness does not need — nothing here
+    /// depends on the airframe's dynamics, only on where it is and what the
+    /// game believes about it.</para>
+    /// </summary>
+    private bool UpdateApproach()
+    {
+        if (!GameManager.GetLocalAircraft(out var aircraft) || aircraft == null)
+        {
+            return NotApproaching("no local aircraft");
+        }
+
+        if (!_approachPlaced)
+        {
+            if (!PlaceOnApproach(aircraft)) return false;
+            _approachPlaced = true;
+            _approachDeadline = Time.unscaledTime + ApproachTimeout;
+        }
+
+        HoldOnApproach(aircraft);
+
+        if (_approachSettled) return true;
+
+        if (IsLanding())
+        {
+            _approachSettled = true;
+            _nextDumpAt = Time.unscaledTime + ModConfiguration.Instance.AutoDumpDelay.Value;
+            Debug.Log(
+                "[NOVR-HARNESS] Approach accepted — the game is drawing the landing symbology. " +
+                $"First dump in {ModConfiguration.Instance.AutoDumpDelay.Value:0.#}s.");
+            return true;
+        }
+
+        if (Time.unscaledTime < _approachDeadline) return false;
+
+        // Dump anyway. A run that produces frames and a reason is worth more
+        // than one that times out with neither.
+        _approachSettled = true;
+        _nextDumpAt = Time.unscaledTime + ModConfiguration.Instance.AutoDumpDelay.Value;
+        Debug.LogWarning(
+            "[NOVR-HARNESS] Approach was never accepted as a landing; dumping anyway. " + DescribeApproach(aircraft));
+        return true;
+    }
+
+    private bool PlaceOnApproach(Aircraft aircraft)
+    {
+        try
+        {
+            var hq = aircraft.NetworkHQ;
+            if (hq == null) return NotApproaching("aircraft has no faction HQ yet");
+
+            // The same query AirbaseOverlay builds, so the runway this picks is
+            // the runway the overlay will pick a moment later. A different query
+            // could select a different runway and the placement would then be an
+            // approach to somewhere the game is not watching.
+            var parameters = aircraft.GetAircraftParameters();
+            var maxWeight = aircraft.definition.aircraftInfo.maxWeight;
+            var query = new RunwayQuery
+            {
+                RunwayType = RunwayQueryType.Any,
+                MinSize = parameters.takeoffDistance,
+                TailHook = aircraft.weaponManager != null && aircraft.weaponManager.HasTailHook(),
+                LandingSpeed = maxWeight > 0f
+                    ? Mathf.Sqrt(aircraft.GetMass() / maxWeight) * parameters.takeoffSpeed
+                    : parameters.takeoffSpeed,
+            };
+
+            var airbase = hq.GetNearestAirbase(aircraft.transform.position, query);
+            if (airbase == null) return NotApproaching("no friendly airbase with a suitable runway");
+
+            var usage = airbase.RequestLanding(aircraft, query);
+            if (!usage.HasValue) return NotApproaching($"airbase '{airbase.name}' offered no landing runway");
+
+            _approachUsage = usage;
+
+            aircraft.transform.SetPositionAndRotation(ApproachPosition(aircraft), ApproachRotation());
+            if (aircraft.rb != null)
+            {
+                aircraft.rb.velocity = ApproachVelocity(query.LandingSpeed);
+                aircraft.rb.angularVelocity = Vector3.zero;
+            }
+
+            aircraft.SetGear(deployed: true);
+
+            // Everything the overlay does is gated on having taken off — before
+            // that it is drawing taxi guidance instead. Nothing sets it for an
+            // aircraft that was teleported into the air.
+            if (aircraft.pilots != null && aircraft.pilots.Length > 0 && aircraft.pilots[0] != null)
+            {
+                aircraft.pilots[0].flightInfo.HasTakenOff = true;
+            }
+
+            // Recomputes radarAlt from a downward linecast; without it the
+            // aircraft keeps the altitude it had in the hangar for a tick and
+            // the overlay's radarAlt > 20 test fails on the first slow update.
+            aircraft.SpawnedInPosition();
+
+            Debug.Log(
+                $"[NOVR-HARNESS] Placed on final: runway {usage.Value.GetName()} at '{airbase.name}', " +
+                $"{ApproachDistance:0} m out, {ApproachDistance * GlideslopeGradient:0} m above the threshold, " +
+                $"gear down, {ApproachVelocity(query.LandingSpeed).magnitude:0} m/s.");
+            return true;
+        }
+        catch (Exception e)
+        {
+            return NotApproaching($"placement threw: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Recomputed from the runway's own transform every frame rather than
+    /// stored, so a floating-origin shift moves the hold point with the world
+    /// instead of leaving it a kilometre behind.
+    /// </summary>
+    private Vector3 ApproachPosition(Aircraft aircraft)
+    {
+        var usage = _approachUsage.Value;
+        var threshold = usage.GetStart().position;
+        var height = ApproachDistance * GlideslopeGradient + aircraft.definition.spawnOffset.y;
+        return threshold - usage.GetDirection().normalized * ApproachDistance + Vector3.up * height;
+    }
+
+    private Quaternion ApproachRotation() =>
+        Quaternion.LookRotation(_approachUsage.Value.GetDirection().normalized, Vector3.up);
+
+    private Vector3 ApproachVelocity(float landingSpeed) =>
+        _approachUsage.Value.GetDirection().normalized * Mathf.Max(60f, landingSpeed * 1.3f);
+
+    private void HoldOnApproach(Aircraft aircraft)
+    {
+        if (_approachUsage == null) return;
+
+        aircraft.transform.SetPositionAndRotation(ApproachPosition(aircraft), ApproachRotation());
+        if (aircraft.rb != null)
+        {
+            aircraft.rb.velocity = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
+            aircraft.rb.angularVelocity = Vector3.zero;
+        }
+
+        if (!aircraft.gearDeployed) aircraft.SetGear(deployed: true);
+    }
+
+    private bool IsLanding()
+    {
+        if (_airbaseOverlay == null) _airbaseOverlay = FindObjectOfType<AirbaseOverlay>();
+        if (_airbaseOverlay == null || LandingField == null) return false;
+        return (bool)LandingField.GetValue(_airbaseOverlay);
+    }
+
+    /// <summary>
+    /// Every condition <c>AirbaseOverlay.UpdateNearestAirbase</c> tests before
+    /// it will call this a landing, with its actual value. Five conditions and
+    /// one log line: a "landing never started" that does not say which of the
+    /// five failed costs a full run to narrow down.
+    /// </summary>
+    private string DescribeApproach(Aircraft aircraft)
+    {
+        try
+        {
+            var usage = _approachUsage!.Value;
+            var runway = usage.Runway;
+            var direction = usage.GetDirection().normalized;
+            var takenOff = aircraft.pilots != null && aircraft.pilots.Length > 0 && aircraft.pilots[0] != null &&
+                           aircraft.pilots[0].flightInfo.HasTakenOff;
+
+            return $"hasTakenOff={takenOff} radarAlt={aircraft.radarAlt:0.0} (needs >20) " +
+                   $"gearDeployed={aircraft.gearDeployed} " +
+                   $"verticalLanding={aircraft.GetAircraftParameters().verticalLanding} " +
+                   $"onApproach={runway.AircraftOnApproach(aircraft, 2500f, excludeBetweenEndpoints: true)} " +
+                   $"alignment={Mathf.Abs(Vector3.Dot(aircraft.transform.forward, direction)):0.00} (needs >0.80) " +
+                   $"toStart={Vector3.Distance(aircraft.transform.position, runway.Start.position):0} m " +
+                   $"toEnd={Vector3.Distance(aircraft.transform.position, runway.End.position):0} m " +
+                   $"overlayFound={_airbaseOverlay != null}";
+        }
+        catch (Exception e)
+        {
+            return $"(could not describe the approach: {e.Message})";
+        }
+    }
+
+    private bool NotApproaching(string reason)
+    {
+        if (reason != _lastApproachBlocker)
+        {
+            _lastApproachBlocker = reason;
+            Debug.Log($"[NOVR-HARNESS] Waiting to place on approach: {reason}.");
+        }
+
+        return false;
     }
 
     private void TryLaunchMission()
