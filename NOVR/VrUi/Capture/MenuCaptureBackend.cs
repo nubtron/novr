@@ -1,3 +1,6 @@
+using System;
+using HarmonyLib;
+using Rewired.UI.ControlMapper;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.UI;
@@ -48,6 +51,12 @@ public class MenuCaptureBackend : NOVRBehaviour
     private Quaternion _anchorRotation = Quaternion.identity;
     private bool _anchorInitialized;
     private bool _loggedPlacement;
+    private bool _loggedMapper;
+    // What is being captured this frame, for the log. "The menu vanished from the
+    // headset" and "the menu was never captured" look identical from inside a
+    // headset and used to look identical in the log too, because setup said
+    // something and teardown said nothing at all.
+    private string? _reason;
     private float _nextRebind;
     private float _lastWantedCapture;
     private bool _capturing;
@@ -107,12 +116,121 @@ public class MenuCaptureBackend : NOVRBehaviour
                           _menuCanvas.isActiveAndEnabled &&
                           _menuCanvas.renderMode == RenderMode.ScreenSpaceOverlay;
 
+        _reason = wantCapture ? "the menu canvas" : null;
+        if (ControlMapperUp())
+        {
+            _reason = wantCapture ? "the menu canvas and the keybinding screen" : "the keybinding screen";
+            wantCapture = true;
+        }
+
         if (wantCapture) _lastWantedCapture = Time.unscaledTime;
 
         if (wantCapture && !_capturing) SetupCapture();
         else if (!wantCapture && _capturing && Time.unscaledTime - _lastWantedCapture > TeardownGrace) TeardownCapture();
 
         if (_capturing) UpdatePanel();
+    }
+
+    /// <summary>
+    /// Whether the keybinding screen is up — which is a menu, and is not on any
+    /// menu canvas.
+    ///
+    /// <para><b>Why it needs asking about separately.</b> The bindings UI is
+    /// Rewired's <c>ControlMapper</c>, and the game does not build it into a
+    /// scene: <c>MainMenu</c> loads a "Rewired" prefab from Resources at startup
+    /// and keeps the clone alive for the whole session, so its canvas belongs to
+    /// no scene's menu and is switched on and off in place by
+    /// <c>ControlMapper.Open</c>. A backend that triggers on a canvas called
+    /// <c>MainCanvas</c> therefore covers the bindings screen only by accident —
+    /// by the main menu happening to be up behind it — and in flight, where
+    /// <c>ControlsMenu.EditBindings</c> disables <c>GameplayUI.menuCanvas</c> on
+    /// the way in and there is no <c>MainCanvas</c> at all, by nothing. Reported
+    /// from a flight as the keybindings screen being missing in the headset and
+    /// drawn on the monitor instead.</para>
+    ///
+    /// <para>Claiming it here also takes it off the flight HUD backend, which
+    /// stands down whenever this one is capturing — so the bindings screen lands
+    /// on a panel in front of the player rather than squeezed into the HUD's
+    /// footprint on the cockpit.</para>
+    /// </summary>
+    private bool ControlMapperUp()
+    {
+        ControlMapper? mapper;
+        try
+        {
+            mapper = GameManager.controlMapper;
+            if (mapper == null || !mapper.isOpen) return false;
+        }
+        catch (Exception)
+        {
+            // Asked every frame, including before the prefab has finished
+            // loading and after the session has started tearing down.
+            return false;
+        }
+
+        EnsureMapperOverlay(mapper);
+        return true;
+    }
+
+    /// <summary>
+    /// The capture draws the engine's screen-space overlay pass, so a canvas that
+    /// is not in that pass is not in the capture — it goes to the game's own
+    /// output and nowhere else, which is exactly "missing in VR, fine on the
+    /// monitor". Nothing guarantees the Rewired prefab was authored as an overlay,
+    /// so it is checked once and said out loud either way.
+    /// </summary>
+    private void EnsureMapperOverlay(ControlMapper mapper)
+    {
+        if (_loggedMapper) return;
+
+        var canvas = FindMapperCanvas(mapper);
+        if (canvas == null)
+        {
+            _loggedMapper = true;
+            Debug.LogWarning("[NOVR] Captured-menu backend: the keybinding screen is open but has " +
+                             "no Canvas this could find. It will be captured only if it draws in " +
+                             "the overlay pass.");
+            return;
+        }
+
+        _loggedMapper = true;
+        if (canvas.renderMode == RenderMode.ScreenSpaceOverlay)
+        {
+            Debug.Log($"[NOVR] Captured-menu backend: the keybinding screen ('{canvas.name}') is a " +
+                      "ScreenSpaceOverlay canvas and comes through the overlay pass as it is.");
+            return;
+        }
+
+        var was = canvas.renderMode;
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        Debug.Log($"[NOVR] Captured-menu backend: the keybinding screen ('{canvas.name}') was " +
+                  $"{was}, which the overlay pass does not draw — moved to ScreenSpaceOverlay so " +
+                  "it lands on the panel instead of on the monitor.");
+    }
+
+    /// <summary>
+    /// The GameObject <c>ControlMapper.Open</c> activates, which is the one whose
+    /// <c>activeInHierarchy</c> its own <c>isOpen</c> reads. Taken by reflection
+    /// because it is private, with a search from the component as the fallback —
+    /// a rename there costs a log line, not the feature.
+    /// </summary>
+    private static Canvas? FindMapperCanvas(ControlMapper mapper)
+    {
+        try
+        {
+            var field = AccessTools.Field(typeof(ControlMapper), "canvas");
+            if (field?.GetValue(mapper) is GameObject go)
+            {
+                var own = go.GetComponent<Canvas>();
+                if (own != null) return own;
+            }
+        }
+        catch (Exception)
+        {
+            // Fall through to the search.
+        }
+
+        return mapper.GetComponentInChildren<Canvas>(true) ?? mapper.GetComponentInParent<Canvas>();
     }
 
     private static Canvas? FindMenuCanvas()
@@ -137,13 +255,22 @@ public class MenuCaptureBackend : NOVRBehaviour
         RecenterPanel();
 
         _capturing = true;
-        Debug.Log($"[NOVR] Captured-menu backend active: rendering '{MenuCanvasName}' " +
-                  $"through the overlay path into a {_targetWidth}x{_targetHeight} texture.");
+        Debug.Log($"[NOVR] Captured-menu backend active for {_reason ?? "'" + MenuCanvasName + "'"}: " +
+                  "rendering the overlay path into a " +
+                  $"{_targetWidth}x{_targetHeight} texture.");
     }
 
     private void TeardownCapture()
     {
+        if (_capturing)
+        {
+            Debug.Log("[NOVR] Captured-menu backend standing down: nothing left to capture " +
+                      $"(menu canvas {(_menuCanvas == null ? "gone" : _menuCanvas.isActiveAndEnabled ? "up" : "inactive")}, " +
+                      "keybinding screen closed). The game's menus go back to the eye buffers.");
+        }
+
         _capturing = false;
+        _reason = null;
 
         if (_panelCanvas != null)
         {
