@@ -144,8 +144,7 @@ public class VrWorldMap : NOVRBehaviour
         }
 
         var open = VrMapConfig.Enabled != null && VrMapConfig.Enabled.Value &&
-                   VrMapConfig.Open != null && VrMapConfig.Open.Value &&
-                   !SomethingElseOwnsTheScreen();
+                   VrMapConfig.Open != null && VrMapConfig.Open.Value;
 
         // Before the early return, so the closed phase is timed too — the whole
         // point of the self test is the comparison between the two.
@@ -160,44 +159,70 @@ public class VrWorldMap : NOVRBehaviour
             return;
         }
 
-        // While the map is up, the surface being pointed at is the whole model
-        // around you rather than a menu pinned in front of you, so head gaze goes
-        // to the middle of the view and stays there. Amplification is the right
-        // trade for a panel and the wrong one here: at 2x the cursor leaves the
-        // centre twice as fast as the head does and then stops at the yaw clamp,
-        // pinned to the edge of a rectangle that is no longer in front of you.
-        // Asked for every frame, so closing the map gives it straight back.
-        VrUiCursor.I?.UseViewCentreGaze();
+        var sharing = SomethingElseWantsThePointer();
+
+        // While the map has the view to itself, the surface being pointed at is
+        // the whole model around you rather than a menu pinned in front of you, so
+        // head gaze goes to the middle of the view and stays there. Amplification
+        // is the right trade for a panel and the wrong one here: at 2x the cursor
+        // leaves the centre twice as fast as the head does and then stops at the
+        // yaw clamp, pinned to the edge of a rectangle that is no longer in front
+        // of you. Asked for every frame, so closing the map — or something else
+        // asking for the pointer — gives it straight back.
+        if (!sharing) VrUiCursor.I?.UseViewCentreGaze();
 
         var model = EnsureModel();
         if (model == null) return;
 
         // Before the model is placed, because it is what decides where — and how
         // big, since the sticks zoom as well as pan.
-        WorldMapControls.Refresh();
+        WorldMapControls.Refresh(takeControls: !sharing);
 
         Place(model);
         model.Root.SetActive(true);
-        RefreshIcons(model);
-        HideCockpit();
-        HideHelmetPanels();
+        RefreshIcons(model, sharing);
+
+        if (sharing)
+        {
+            // Everything that takes something away from the rest of the game is
+            // given back: the game's own screen has to look exactly as it does
+            // without this map, because that is the screen being used.
+            ShowCockpit();
+            ShowHelmetPanels();
+        }
+        else
+        {
+            HideCockpit();
+            HideHelmetPanels();
+        }
+
         ReportOnce(model);
     }
 
     /// <summary>
-    /// Whether something else owns the screen, in which case the map stands down
-    /// until it does not.
+    /// Whether something else wants the pointer, in which case the map shares the
+    /// view rather than running it.
     ///
-    /// <para><b>Why it yields rather than sharing the view.</b> The map wants the
-    /// whole world around you and takes what it needs to get it: the cursor is
-    /// driven from the middle of your view so you can point anywhere, the helmet
-    /// panels are hidden, the cockpit and the outside are culled and the stick is
-    /// taken off the aeroplane. Pointer UI wants the opposite of all four — a
-    /// cursor amplified against a panel pinned in front of you, and everything
-    /// else left alone. Both at once is what a flight ran into after a crash: the
-    /// spawn screen came up with the map still open behind it, and the report was
+    /// <para><b>What is given up, and what is not.</b> The map normally takes four
+    /// things to be the world around you: the cursor is driven from the middle of
+    /// your view so you can point anywhere, the helmet panels are hidden, the
+    /// cockpit and the outside are culled, and the stick comes off the aeroplane.
+    /// Pointer UI wants the opposite of all four — a cursor amplified against a
+    /// panel pinned in front of you, and everything else exactly as the flat game
+    /// leaves it. So all four are handed back, and the model keeps being drawn.
+    /// The thumbsticks are not handed back, because they are nobody else's.</para>
+    ///
+    /// <para><b>Why not simply stand down, which is what the last version
+    /// did.</b> Because the model is the one thing here that does not conflict
+    /// with a pointer: it is geometry in a room, and a panel in front of it is a
+    /// panel in front of it. Hiding it took the map away exactly when it is most
+    /// wanted — a flight reported not being able to open it at all during airbase
+    /// selection, which is the moment you would most like to look at the theatre,
+    /// and the shortcut did nothing because the suspend re-closed it on the same
+    /// frame. The original complaint was never about the model being drawn: it was
     /// two cursors, one of which would select map symbols and neither of which
-    /// would press "select airbase".</para>
+    /// would press "select airbase". That is fixed by giving the cursor back, and
+    /// giving the cursor back does not need the map gone.</para>
     ///
     /// <para><b>Asked as "does the game want a mouse", which is the game's own
     /// question.</b> <c>CursorManager</c> carries a flag per reason — the map
@@ -207,14 +232,8 @@ public class VrWorldMap : NOVRBehaviour
     /// answer yes together, and nothing has to be enumerated. The captured-menu
     /// backend is asked as well, because it keys on the menu scene's own canvas
     /// and can be up in cases the cursor flags are not.</para>
-    ///
-    /// <para>This is a suspend and not a close: <c>Open</c> is left alone, so the
-    /// map comes back exactly where it was, and the pilot does not have to notice
-    /// that anything happened. Everything the map holds is given back through the
-    /// ordinary <see cref="Hide"/> path, which is the same one the toggle uses, so
-    /// there is no second teardown to keep correct.</para>
     /// </summary>
-    private bool SomethingElseOwnsTheScreen()
+    private bool SomethingElseWantsThePointer()
     {
         string? why = null;
         if (NOVR.VrUi.Capture.MenuCaptureBackend.IsActive) why = "a menu is up";
@@ -227,8 +246,9 @@ public class VrWorldMap : NOVRBehaviour
         if (VrMapConfig.Open != null && VrMapConfig.Open.Value)
         {
             Debug.Log(up
-                ? $"[NOVR] World map: {why} — standing down until it goes away."
-                : "[NOVR] World map: the screen is ours again — back up.");
+                ? $"[NOVR] World map: {why} — sharing the view: the model stays, the cursor, " +
+                  "the pointer, the cockpit and the stick go back to the game."
+                : "[NOVR] World map: the view is ours again — taking the cursor and the cockpit back.");
         }
 
         return up;
@@ -254,7 +274,7 @@ public class VrWorldMap : NOVRBehaviour
         return Cursor.visible && Cursor.lockState != CursorLockMode.Locked;
     }
 
-    private void RefreshIcons(WorldMapModel model)
+    private void RefreshIcons(WorldMapModel model, bool sharing)
     {
         var room = NOUIManager.I != null ? NOUIManager.I.transform : null;
         var head = NOUIManager.I != null ? NOUIManager.I.CockpitHudCamera : null;
@@ -276,7 +296,7 @@ public class VrWorldMap : NOVRBehaviour
             Mathf.Max(0.01f, VrMapConfig.IconSize.Value));
 
         ReportIcons(_iconLayer.Count);
-        RefreshPointer(model, room);
+        RefreshPointer(model, room, sharing);
     }
 
     /// <summary>
@@ -284,9 +304,12 @@ public class VrWorldMap : NOVRBehaviour
     /// model is map y = 0 by construction — map coordinates are world less the
     /// floating origin, and the datum's own y is the sea.
     /// </summary>
-    private void RefreshPointer(WorldMapModel model, Transform room)
+    private void RefreshPointer(WorldMapModel model, Transform room, bool sharing)
     {
-        if (VrMapConfig.Pointer == null || !VrMapConfig.Pointer.Value || _iconLayer == null)
+        // Not while the game wants the pointer for itself. A ring running over the
+        // terrain is the half of this feature that competes with a button: it is
+        // the second thing claiming what the trigger means.
+        if (sharing || VrMapConfig.Pointer == null || !VrMapConfig.Pointer.Value || _iconLayer == null)
         {
             _pointer?.Hide();
             return;

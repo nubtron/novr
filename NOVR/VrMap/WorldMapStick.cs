@@ -41,7 +41,12 @@ internal static class WorldMapStick
     /// </summary>
     private const float Deadzone = 0.15f;
 
-    private static bool _reported;
+    // Per hand, not once overall. The first version reported whichever stick moved
+    // first and then went quiet, so a session log saying "the right thumbstick is
+    // being read through InputDevices" left it unknown whether the left one was
+    // working — and the left one is the whole of panning.
+    private static bool _reportedLeft;
+    private static bool _reportedRight;
     private static string _source = "nothing";
 
     public static Vector2 Left => Read(XRNode.LeftHand);
@@ -51,7 +56,7 @@ internal static class WorldMapStick
     public static string Source => _source;
 
     /// <summary>True once either stick has been seen to move, so callers can say so.</summary>
-    public static bool Seen => _reported;
+    public static bool Seen => _reportedLeft || _reportedRight;
 
     private static Vector2 Read(XRNode node)
     {
@@ -87,11 +92,13 @@ internal static class WorldMapStick
 
         if (value.sqrMagnitude < Deadzone * Deadzone) return Vector2.zero;
 
-        if (!_reported)
+        var left = node == XRNode.LeftHand;
+        if (left ? !_reportedLeft : !_reportedRight)
         {
-            _reported = true;
+            if (left) _reportedLeft = true;
+            else _reportedRight = true;
             _source = source;
-            Debug.Log($"[NOVR] World map: the {(node == XRNode.LeftHand ? "left" : "right")} thumbstick " +
+            Debug.Log($"[NOVR] World map: the {(left ? "left" : "right")} thumbstick " +
                       $"is being read through {source}.");
         }
 
