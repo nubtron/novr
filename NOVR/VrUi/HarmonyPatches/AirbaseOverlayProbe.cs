@@ -21,7 +21,13 @@ internal static class AirbaseOverlayProbe
     private static readonly FieldInfo? AimPointField = AccessTools.Field(typeof(global::AirbaseOverlay), "glideslopeAimPoint");
     private static readonly FieldInfo? LandingField = AccessTools.Field(typeof(global::AirbaseOverlay), "landing");
 
+    private static readonly FieldInfo? NearestAirbaseField = AccessTools.Field(typeof(global::AirbaseOverlay), "nearestAirbase");
+    private static readonly FieldInfo? UsageField = AccessTools.Field(typeof(global::AirbaseOverlay), "runwayUsage");
+    private static readonly FieldInfo? TaxiingField = AccessTools.Field(typeof(global::AirbaseOverlay), "taxiingToRunway");
+    private static readonly FieldInfo? TakeoffTimeField = AccessTools.Field(typeof(global::AirbaseOverlay), "takeoffTime");
+
     private static string? _lastState;
+    private static float _nextStateLog;
 
     [HarmonyPatch(typeof(global::AirbaseOverlay), "LateUpdate")]
     private static class Probe
@@ -36,6 +42,16 @@ internal static class AirbaseOverlayProbe
             // session runs before either capture backend exists, so a
             // report-once probe answers the question for a configuration that
             // is never the one being asked about.
+            // The overlay's own view of the world, on a slower tick: its
+            // landing decision is made in a 2 s slow update from private state,
+            // and reconstructing that decision from outside was not enough —
+            // every input measured true while the decision itself stayed false.
+            if (!landing && Time.unscaledTime >= _nextStateLog)
+            {
+                _nextStateLog = Time.unscaledTime + 3f;
+                Debug.Log(DescribeDecision(__instance));
+            }
+
             var state = $"{landing}/{ViewLayerBackend.IsActive}/{FlightHudCaptureBackend.IsActive}";
             if (state == _lastState) return;
             _lastState = state;
@@ -48,6 +64,61 @@ internal static class AirbaseOverlayProbe
             {
                 Debug.LogWarning($"[NOVR-PROBE] airbase overlay probe failed: {e}");
             }
+        }
+    }
+
+    private static string DescribeDecision(global::AirbaseOverlay overlay)
+    {
+        try
+        {
+            var combatHud = SceneSingleton<CombatHUD>.i;
+            var aircraft = combatHud != null ? combatHud.aircraft : null;
+            var nearest = NearestAirbaseField?.GetValue(overlay) as Airbase;
+            var usage = (Airbase.Runway.RunwayUsage?)UsageField?.GetValue(overlay);
+            var taxiing = TaxiingField != null && (bool)TaxiingField.GetValue(overlay);
+            var takeoffTime = TakeoffTimeField != null ? (float)TakeoffTimeField.GetValue(overlay) : -1f;
+
+            var sb = new StringBuilder("[NOVR-PROBE] landing decision: ");
+            sb.Append("hudAircraft=").Append(aircraft != null ? aircraft.unitName : "<null>")
+              .Append(" nearestAirbase=").Append(nearest != null ? nearest.name : "<null>")
+              .Append(" usage=").Append(usage.HasValue ? usage.Value.GetName() : "<none>")
+              .Append(" taxiing=").Append(taxiing)
+              .Append(" takeoffTime=").Append(takeoffTime.ToString("0.0"));
+
+            if (aircraft == null) return sb.ToString();
+
+            sb.Append(" hasTakenOff=")
+              .Append(aircraft.pilots != null && aircraft.pilots.Length > 0 && aircraft.pilots[0] != null
+                  ? aircraft.pilots[0].flightInfo.HasTakenOff.ToString()
+                  : "<no pilot>")
+              .Append(" radarAlt=").Append(aircraft.radarAlt.ToString("0.0"))
+              .Append(" gear=").Append(aircraft.gearDeployed)
+              .Append(" vertical=").Append(aircraft.GetAircraftParameters().verticalLanding);
+
+            if (nearest != null)
+            {
+                sb.Append(" inRange=").Append(FastMath.InRange(
+                    nearest.center.position, aircraft.transform.position, nearest.GetRadius() + 5000f))
+                  .Append(" (r=").Append(nearest.GetRadius().ToString("0"))
+                  .Append(" d=").Append(Vector3.Distance(nearest.center.position, aircraft.transform.position).ToString("0"))
+                  .Append(')');
+            }
+
+            if (usage.HasValue)
+            {
+                var runway = usage.Value.Runway;
+                sb.Append(" onApproach=").Append(runway.AircraftOnApproach(aircraft, 2500f, excludeBetweenEndpoints: true))
+                  .Append(" align=").Append(Mathf.Abs(Vector3.Dot(
+                      aircraft.transform.forward, usage.Value.GetDirection().normalized)).ToString("0.00"))
+                  .Append(" toStart=").Append(Vector3.Distance(aircraft.transform.position, runway.Start.position).ToString("0"))
+                  .Append(" toEnd=").Append(Vector3.Distance(aircraft.transform.position, runway.End.position).ToString("0"));
+            }
+
+            return sb.ToString();
+        }
+        catch (Exception e)
+        {
+            return $"[NOVR-PROBE] landing decision unavailable: {e.Message}";
         }
     }
 
