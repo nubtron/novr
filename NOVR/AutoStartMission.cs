@@ -538,6 +538,25 @@ public class AutoStartMission : MonoBehaviour
             // is out in clear air.
             if (aircraft.rb != null)
             {
+                // Kinematic for the duration.
+                //
+                // Held as a dynamic body, the aircraft and the hold fight each
+                // other every step: the flight model integrates aero and
+                // gravity, the hold overwrites the result, and the difference
+                // is read by everything that differentiates velocity. The HUD
+                // in that state showed G -115.3 with a running maximum of
+                // 2242.9, a 3693 fpm descent while pinned at a constant
+                // altitude, and both engines on fire — the pilot survived only
+                // because their G damage had been suppressed, and the airframe
+                // was still being destroyed around them.
+                //
+                // A kinematic body is not simulated, so there is nothing to
+                // fight. Position and rotation are ours outright, and the
+                // velocity is still written because the game reads it: the
+                // glideslope's own length comes from
+                // Dot(rb.velocity, toTouchdown), and a zero there divides by
+                // zero and hides the line.
+                aircraft.rb.isKinematic = true;
                 aircraft.rb.position = position;
                 aircraft.rb.rotation = rotation;
                 aircraft.rb.velocity = Vector3.zero;
