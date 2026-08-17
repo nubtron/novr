@@ -251,6 +251,37 @@ public class AutoStartMission : MonoBehaviour
     private static readonly FieldInfo PilotHitPointsField =
         AccessTools.Field(typeof(Pilot), "hitPoints");
 
+    private static readonly FieldInfo PilotVelocityPrevField =
+        AccessTools.Field(typeof(Pilot), "velocityPrev");
+
+    /// <summary>
+    /// Tell every pilot on this aircraft that it has always been travelling at
+    /// this velocity, so the step in which the harness changed it does not read
+    /// as acceleration.
+    ///
+    /// <para>This is what was killing the pilot. <c>Pilot</c>'s fixed-step job
+    /// computes <c>accel = (rb.velocity - velocityPrev) / (fixedDeltaTime *
+    /// 9.81)</c> and calls <c>TakeGForceDamage</c> above 20 g. A teleport sets
+    /// velocity discontinuously, which is by definition infinite acceleration:
+    /// going from parked to 93 m/s in one 0.02 s step reads as roughly 470 g,
+    /// and the damage term is quadratic in it. Hit points went from 100 to
+    /// -65404 in a single step, and every frame afterwards was a free camera
+    /// outside a dead pilot's aeroplane with the flight HUD switched off.</para>
+    ///
+    /// <para>Only the placement and the hold do this, and only to the aircraft
+    /// they are already teleporting. A real change of velocity still hurts.</para>
+    /// </summary>
+    private static void ForgetAcceleration(Aircraft aircraft, Vector3 velocity)
+    {
+        if (PilotVelocityPrevField == null || aircraft.pilots == null) return;
+
+        foreach (var pilot in aircraft.pilots)
+        {
+            if (pilot == null) continue;
+            PilotVelocityPrevField.SetValue(pilot, velocity);
+        }
+    }
+
     private bool _approachPlaced;
     private bool _approachSettled;
     private float _approachDeadline;
@@ -422,6 +453,7 @@ public class AutoStartMission : MonoBehaviour
                 aircraft.rb.angularVelocity = Vector3.zero;
             }
 
+            ForgetAcceleration(aircraft, Vector3.zero);
             aircraft.transform.SetPositionAndRotation(position, rotation);
             Physics.SyncTransforms();
 
@@ -558,8 +590,10 @@ public class AutoStartMission : MonoBehaviour
         {
             aircraft.rb.position = position;
             aircraft.rb.rotation = rotation;
-            aircraft.rb.velocity = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
+            var velocity = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
+            aircraft.rb.velocity = velocity;
             aircraft.rb.angularVelocity = Vector3.zero;
+            ForgetAcceleration(aircraft, velocity);
         }
 
         aircraft.transform.SetPositionAndRotation(position, rotation);
