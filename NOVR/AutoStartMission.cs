@@ -1153,12 +1153,37 @@ public class AutoStartMission : MonoBehaviour
                 lines.Add("no runway usage on the overlay");
             }
 
+            // Who is actually attached. A transform holding screen pixels with
+            // z exactly 0 is the game's own DrawGlideslope output; the VR path
+            // writes a world point on a 1000-unit sphere. If the numbers say
+            // one thing and the patch list says the reprojection is installed,
+            // the reprojection is running and losing, which is a different bug
+            // from it never running.
+            var target = AccessTools.Method(typeof(AirbaseOverlay), "LateUpdate");
+            var info = target != null ? Harmony.GetPatchInfo(target) : null;
+            if (info == null)
+            {
+                lines.Add("AirbaseOverlay.LateUpdate carries no Harmony patches at all");
+            }
+            else
+            {
+                lines.Add($"LateUpdate patches: prefixes=[{Owners(info.Prefixes)}] " +
+                          $"postfixes=[{Owners(info.Postfixes)}] finalizers=[{Owners(info.Finalizers)}]");
+            }
+
             return string.Join("\n    ", lines);
         }
         catch (Exception e)
         {
             return $"(could not describe the glideslope: {e.Message})";
         }
+    }
+
+    private static string Owners(IEnumerable<Patch>? patches)
+    {
+        if (patches == null) return "";
+        return string.Join(", ", patches.Select(p =>
+            $"{p.PatchMethod?.DeclaringType?.Name}.{p.PatchMethod?.Name}@{p.priority}"));
     }
 
     private static string DescribeCameraPose(string label, Camera? camera, Transform aircraft)
