@@ -951,6 +951,77 @@ public class AutoStartMission : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// <para>The pose comparison no dump could make. Every VR HUD projection is
+    /// computed in <c>APIBus.MainCamera</c> — the game's original "Main Camera",
+    /// whose <c>Camera</c> component NOVR disables when it parents "NOVR Main
+    /// Camera" underneath — and <c>Camera.GetAllCameras</c> returns only enabled
+    /// cameras, so that transform has never appeared in a dump.</para>
+    /// <para>Basis vectors, not euler angles: two cameras' eulers cannot be
+    /// compared by eye near gimbal lock. The last line is the one that matters —
+    /// a point 1 km straight off the nose, pushed through the real projection
+    /// path, must land within a degree of the HUD centre. Whatever it reads is
+    /// the error, and which camera carries it says whose bug it is.</para>
+    /// </summary>
+    private static string DescribeProjection(Aircraft aircraft)
+    {
+        try
+        {
+            var t = aircraft.transform;
+            var lines = new List<string>
+            {
+                $"aircraft pos={Vec3(t.position)} fwd={Vec3(t.forward)} right={Vec3(t.right)} up={Vec3(t.up)}",
+            };
+
+            var main = APIBus.MainCamera;
+            lines.Add(DescribeCameraPose("MainCamera", main, t));
+            if (main != null)
+            {
+                var child = main.transform.Find("NOVR Main Camera");
+                lines.Add(DescribeCameraPose("NOVR Main Camera",
+                    child != null ? child.GetComponent<Camera>() : null, t));
+            }
+
+            var hudCamera = APIBus.CockpitHudCamera;
+            lines.Add(DescribeCameraPose("CockpitHudCamera", hudCamera, t));
+
+            if (hudCamera == null)
+            {
+                lines.Add("nose point not projected: no cockpit HUD camera");
+            }
+            else if (VrUi.HarmonyPatches.VrHudProjection.TryProjectToCockpitHud(
+                         t.position + t.forward * 1000.0f, out var hudPosition))
+            {
+                var local = hudCamera.transform.InverseTransformPoint(hudPosition);
+                var yaw = Mathf.Atan2(local.x, local.z) * Mathf.Rad2Deg;
+                var pitch = Mathf.Atan2(local.y, new Vector2(local.x, local.z).magnitude) * Mathf.Rad2Deg;
+                lines.Add($"nose point 1 km ahead lands yaw={yaw:0.0} deg pitch={pitch:0.0} deg off HUD centre");
+            }
+            else
+            {
+                lines.Add("nose point 1 km ahead did not project at all");
+            }
+
+            return string.Join("\n    ", lines);
+        }
+        catch (Exception e)
+        {
+            return $"(could not describe the projection: {e.Message})";
+        }
+    }
+
+    private static string DescribeCameraPose(string label, Camera? camera, Transform aircraft)
+    {
+        if (camera == null) return $"{label} <null>";
+        var ct = camera.transform;
+        return $"{label} '{ct.name}' enabled={camera.enabled} active={camera.gameObject.activeInHierarchy} " +
+               $"pos={Vec3(ct.position)} fwd={Vec3(ct.forward)} right={Vec3(ct.right)} " +
+               $"| off nose {Vector3.Angle(aircraft.forward, ct.forward):0.0} deg, " +
+               $"roll {Vector3.Angle(aircraft.right, ct.right):0.0} deg";
+    }
+
+    private static string Vec3(Vector3 v) => $"({v.x:0.00},{v.y:0.00},{v.z:0.00})";
+
     private bool NotApproaching(string reason)
     {
         if (reason != _lastApproachBlocker)
@@ -1345,6 +1416,7 @@ public class AutoStartMission : MonoBehaviour
         {
             Debug.Log($"[NOVR-HARNESS] Airframe at dump {index}: {DescribeAirframe(dumped)} " +
                       $"landing={IsLanding()}");
+            Debug.Log($"[NOVR-HARNESS] Projection at dump {index}:\n    {DescribeProjection(dumped)}");
         }
 
         if (_dumpsRemaining > 0)

@@ -372,15 +372,22 @@ public static class VrDebugDump
 
     private static void SweepCameras()
     {
-        var cameras = new Camera[Camera.allCamerasCount];
-        Camera.GetAllCameras(cameras);
+        // Camera.GetAllCameras returns only enabled, active cameras. The one
+        // camera every VR HUD projection is computed in is the game's original
+        // "Main Camera", whose Camera component NOVR disables when it parents
+        // "NOVR Main Camera" under it — so it never appeared in a dump, and its
+        // pose has never been measured. Same trap as the canvas sweep: absent
+        // and switched off have to read differently.
+        var cameras = Resources.FindObjectsOfTypeAll<Camera>();
         foreach (var camera in cameras)
         {
+            if (camera == null || !camera.gameObject.scene.IsValid()) continue;
             var entry = new CameraEntry { Camera = camera };
             try
             {
-                entry.Name = camera.name;
+                entry.Name = FullPath(camera.transform);
                 entry.Enabled = camera.enabled;
+                entry.ActiveInHierarchy = camera.gameObject.activeInHierarchy;
                 entry.Depth = camera.depth;
                 entry.PixelWidth = camera.pixelWidth;
                 entry.PixelHeight = camera.pixelHeight;
@@ -388,6 +395,9 @@ public static class VrDebugDump
                 entry.StereoEnabled = camera.stereoEnabled;
                 entry.Position = camera.transform.position;
                 entry.Euler = camera.transform.eulerAngles;
+                entry.Right = camera.transform.right;
+                entry.Up = camera.transform.up;
+                entry.Forward = camera.transform.forward;
                 entry.TargetTexture = camera.targetTexture == null
                     ? null
                     : $"{camera.targetTexture.name} (id={camera.targetTexture.GetInstanceID()}) " +
@@ -837,9 +847,10 @@ public static class VrDebugDump
         txt.AppendLine("--- cameras ---");
         foreach (var c in CameraEntries)
         {
-            txt.AppendLine($"{c.Name}: enabled={c.Enabled} depth={c.Depth} {c.PixelWidth}x{c.PixelHeight} " +
+            txt.AppendLine($"{c.Name}: enabled={c.Enabled} active={c.ActiveInHierarchy} depth={c.Depth} {c.PixelWidth}x{c.PixelHeight} " +
                            $"stereo={(int)c.StereoTargetEye} targetTexture={(c.TargetTexture ?? "<null>")} rendered={c.Rendered}");
             txt.AppendLine($"  pos={Vec(c.Position)} euler={Vec(c.Euler)}");
+            txt.AppendLine($"  right={Vec(c.Right)} up={Vec(c.Up)} forward={Vec(c.Forward)}");
             if (c.Urp != null) txt.AppendLine($"  urp: {c.Urp}");
             if (c.WorldToCamera != null) txt.AppendLine($"  worldToCamera:\n{c.WorldToCamera}");
             if (c.Projection != null) txt.AppendLine($"  projection:\n{c.Projection}");
@@ -1081,6 +1092,7 @@ public static class VrDebugDump
         public Camera? Camera;
         public string Name = "";
         public bool Enabled;
+        public bool ActiveInHierarchy;
         public float Depth;
         public int PixelWidth;
         public int PixelHeight;
@@ -1089,6 +1101,11 @@ public static class VrDebugDump
         public string? TargetTexture;
         public Vector3 Position;
         public Vector3 Euler;
+        // Euler angles are ambiguous near gimbal lock and cannot be compared
+        // between two cameras by eye; the basis vectors can.
+        public Vector3 Right;
+        public Vector3 Up;
+        public Vector3 Forward;
         public Matrix4x4? WorldToCamera;
         public Matrix4x4? Projection;
         public Matrix4x4? StereoViewL;
