@@ -60,7 +60,10 @@ internal static class AirbaseOverlayViewPositionPatch
             if (!taxiingToRunway || reachedRunway || !runwayUsage.HasValue)
                 return;
 
-            markerWorldPosition = runwayUsage.Value.GetEnd().position;
+            // GetStart(), as AirbaseOverlay.PositionMarkers uses: the end you
+            // taxi onto, not the one a mile away you are aiming to leave from.
+            // Same confusion as the glideslope anchor below.
+            markerWorldPosition = runwayUsage.Value.GetStart().position;
         }
 
         if (VrHudProjection.PinToScreenEdge(markerWorldPosition, out var markerHudPosition))
@@ -133,17 +136,26 @@ internal static class AirbaseOverlayViewPositionPatch
             cockpitHudCamera == null || !glideslope.enabled)
             return;
 
-        var runwayEndPosition = runwayUsage.Value.GetEnd().position;
-        var distanceToRunwayEnd = FastMath.Distance(aircraft.transform.position, runwayEndPosition);
+        // The touchdown point, not GetEnd(). These are opposite ends of the
+        // runway: GetTouchdownPoint() is the *approach* end plus up to 300 m
+        // down the strip, GetEnd() is the far end. AirbaseOverlay.DrawGlideslope
+        // anchors the line at the touchdown point and measures the aim-point
+        // distance to it, so using the far end put the anchor a runway length
+        // plus 300 m past where it belongs and made every distance that much
+        // too long — which drags the aim point back down the slope towards the
+        // aeroplane and drops it far below the runway box it should sit near.
+        var touchdownPoint = runwayUsage.Value.GetTouchdownPoint();
+        var touchdownPosition = touchdownPoint.ToLocalPosition();
+        var distanceToTouchdown = FastMath.Distance(aircraft.GlobalPosition(), touchdownPoint);
         var runwayVelocity = runwayUsage.Value.Runway.GetVelocity();
-        var closingSpeed = Vector3.Dot(aircraft.rb.velocity - runwayVelocity, (runwayEndPosition - aircraft.transform.position).normalized);
-        var timeToRunwayEnd = distanceToRunwayEnd / closingSpeed;
+        var closingSpeed = Vector3.Dot(aircraft.rb.velocity - runwayVelocity, (touchdownPosition - aircraft.transform.position).normalized);
+        var timeToTouchdown = distanceToTouchdown / closingSpeed;
         var aimPointWorldPosition = runwayUsage.Value.GetGlideslopeAimpoint(
             aircraft,
-            distanceToRunwayEnd * 0.9f,
-            timeToRunwayEnd * 0.9f);
+            distanceToTouchdown * 0.9f,
+            timeToTouchdown * 0.9f);
 
-        if (!VrHudProjection.TryProjectToCockpitHud(runwayEndPosition, out var runwayEndHudPosition) ||
+        if (!VrHudProjection.TryProjectToCockpitHud(touchdownPosition, out var touchdownHudPosition) ||
             !VrHudProjection.TryProjectToCockpitHud(aimPointWorldPosition, out var aimPointHudPosition))
         {
             glideslope.enabled = false;
@@ -151,7 +163,7 @@ internal static class AirbaseOverlayViewPositionPatch
             return;
         }
 
-        VrHudProjection.SetVerticalLine(glideslope.transform, runwayEndHudPosition, aimPointHudPosition, cockpitHudCamera, -8.0f);
+        VrHudProjection.SetVerticalLine(glideslope.transform, touchdownHudPosition, aimPointHudPosition, cockpitHudCamera, -8.0f);
         glideslopeAimPoint.transform.position = aimPointHudPosition;
         glideslopeAimPoint.transform.rotation = cockpitHudCamera.transform.rotation;
     }
