@@ -870,16 +870,17 @@ public static class VrDebugDump
         }
 
         txt.AppendLine();
-        txt.AppendLine("--- screen-space hud graphics (canvas pixels from bottom-left, drawn ones first) ---");
-        ScreenGraphicEntries.Sort((a, b) =>
-        {
-            if (a.Active != b.Active) return b.Active.CompareTo(a.Active);
-            return string.CompareOrdinal(a.Path, b.Path);
-        });
+        // Sorted by path, not by whether it is drawn. Sorting drawn-first
+        // buried the thing this section is usually opened to find — a symbol
+        // that should be on screen and is not — under four hundred entries that
+        // were fine, and then the cap cut it. Grouping by canvas keeps a
+        // subtree readable as a subtree.
+        txt.AppendLine("--- screen-space hud graphics (canvas pixels from bottom-left) ---");
+        ScreenGraphicEntries.Sort((a, b) => string.CompareOrdinal(a.Path, b.Path));
         var screenShown = 0;
         foreach (var g in ScreenGraphicEntries)
         {
-            if (screenShown++ >= 600) break;
+            if (screenShown++ >= 4000) break;
             txt.AppendLine($"({F(g.Pixels.x)},{F(g.Pixels.y)}) of {Vec(g.CanvasSize)}  {g.Type,-16} " +
                            $"active={g.Active} culled={g.Culled} " +
                            $"rgba=({F(g.Color.r)},{F(g.Color.g)},{F(g.Color.b)},{F(g.Color.a)}) " +
