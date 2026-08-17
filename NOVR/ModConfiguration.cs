@@ -39,6 +39,7 @@ public class ModConfiguration
     public readonly ConfigEntry<string> AutoDumpYaws;
     public readonly ConfigEntry<bool> AutoApproach;
     public readonly ConfigEntry<float> AutoApproachDistance;
+    public readonly ConfigEntry<string> AutoSpawnAircraft;
     public readonly ConfigEntry<bool> HarnessMute;
 
     public ModConfiguration(ConfigFile config)
@@ -248,6 +249,12 @@ public class ModConfiguration
             "Auto Approach Distance",
             1200f,
             "Test harness: how far out on the extended centreline Auto Approach holds the aircraft, in metres. The hold point is raised if the glideslope would put it inside terrain, so a short final at an airbase in a valley stays in the air. Worth varying: the glideslope symbology's length is drawn from the on-screen separation between the touchdown point and the aim point, and at 1200 m those are only a few pixels apart. Beyond about 2 km some missions treat the placement as leaving the mission area and fail the mission.");
+
+        AutoSpawnAircraft = config.Bind(
+            "Debug",
+            "Auto Spawn Aircraft",
+            "",
+            "Test harness: spawn an aircraft whose name contains this, instead of the first one any airbase offers. Empty takes the first. Worth setting for anything that tests the flight HUD: Free Flight's first offer is a CI-22 Cricket, a light aircraft with no HUD, and a run in one produces a frame with HUDCanvas inactive that reads exactly like a broken HUD. The log lists every aircraft on offer when nothing matches.");
 
         HarnessMute = config.Bind(
             "Debug",
