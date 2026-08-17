@@ -248,6 +248,9 @@ public class AutoStartMission : MonoBehaviour
     private static readonly FieldInfo FlightHudCanvasField =
         AccessTools.Field(typeof(FlightHud), "canvas");
 
+    private static readonly FieldInfo PilotHitPointsField =
+        AccessTools.Field(typeof(Pilot), "hitPoints");
+
     private bool _approachPlaced;
     private bool _approachSettled;
     private float _approachDeadline;
@@ -298,6 +301,7 @@ public class AutoStartMission : MonoBehaviour
         }
 
         HoldOnApproach(aircraft);
+        WatchPilot(aircraft);
 
         if (_approachSettled) return true;
 
@@ -578,7 +582,7 @@ public class AutoStartMission : MonoBehaviour
 
             return $"{health} ignition={aircraft.Ignition} thrust={thrust:0} " +
                    $"speed={(aircraft.rb != null ? aircraft.rb.velocity.magnitude : 0f):0} m/s " +
-                   $"radarAlt={aircraft.radarAlt:0} m {DescribeView()}";
+                   $"radarAlt={aircraft.radarAlt:0} m {DescribePilot(aircraft)} {DescribeView()}";
         }
         catch (Exception e)
         {
@@ -674,6 +678,45 @@ public class AutoStartMission : MonoBehaviour
             return $"(could not describe the approach: {e.Message})";
         }
     }
+
+    /// <summary>
+    /// The pilot's condition. <c>CameraCockpitState.UpdateState</c> switches to
+    /// the free camera the moment <c>pilot.dead</c> goes true, and every camera
+    /// state but the cockpit calls <c>FlightHud.EnableCanvas(false)</c> — so a
+    /// dead pilot silently ends the run's ability to see any HUD at all, and
+    /// hit points falling is the earliest warning of it.
+    /// </summary>
+    private static string DescribePilot(Aircraft aircraft)
+    {
+        var pilot = aircraft.pilots != null && aircraft.pilots.Length > 0 ? aircraft.pilots[0] : null;
+        if (pilot == null) return "pilot=<none>";
+
+        var hp = PilotHitPointsField?.GetValue(pilot) is float f ? f : float.NaN;
+        return $"pilot={(pilot.dead ? "DEAD" : "alive")} hp={hp:0} ejected={pilot.ejected}";
+    }
+
+    /// <summary>
+    /// Log the moment the pilot's condition changes, rather than only at the
+    /// dump. "The pilot was dead by the time we captured" and "the placement
+    /// killed the pilot" are different bugs, and only a timestamp separates
+    /// them.
+    /// </summary>
+    private void WatchPilot(Aircraft aircraft)
+    {
+        var pilot = aircraft.pilots != null && aircraft.pilots.Length > 0 ? aircraft.pilots[0] : null;
+        if (pilot == null) return;
+
+        var hp = PilotHitPointsField?.GetValue(pilot) is float f ? f : float.NaN;
+        if (Mathf.Approximately(hp, _lastPilotHitPoints) && pilot.dead == _lastPilotDead) return;
+
+        _lastPilotHitPoints = hp;
+        _lastPilotDead = pilot.dead;
+        Debug.LogWarning($"[NOVR-HARNESS] Pilot condition changed at {Time.timeSinceLevelLoad:0.00}s: " +
+                         $"{DescribePilot(aircraft)} {DescribeView()}");
+    }
+
+    private float _lastPilotHitPoints = float.NaN;
+    private bool _lastPilotDead;
 
     /// <summary>
     /// The camera state, and whether the flight HUD canvas is switched on.
