@@ -52,6 +52,7 @@ public class AutoStartMission : MonoBehaviour
     private float _nextDumpAt;
     private int _dumpsRemaining;
     private string _lastSpawnBlocker;
+    private bool _creditedAirframe;
     private bool _listedMissions;
 
     // Frames between setting the head pose and dumping. Three is empirical
@@ -784,6 +785,15 @@ public class AutoStartMission : MonoBehaviour
                 }
             }
 
+            // Every airbase has a hangar and every aircraft is offered, and the
+            // player simply owns none of them: that is Free Flight, where the
+            // airframes are handed out by the selection UI rather than by the
+            // mission. Credit one and let the next tick spawn it.
+            if (offered > 0 && noHangar == 0 && notOwned == offered && TryCreditAirframe(player))
+            {
+                return false;
+            }
+
             return NotReady(
                 $"no spawnable aircraft (airbases={airbases} ours={owned} " +
                 $"offered={offered} noHangar={noHangar} notOwned={notOwned})");
@@ -795,6 +805,61 @@ public class AutoStartMission : MonoBehaviour
             Debug.Log($"[NOVR-HARNESS] Spawn attempt failed (will retry): {e.Message}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Give the player one airframe so there is something to spawn.
+    ///
+    /// <para>This is what makes Free Flight usable, and Free Flight is the only
+    /// mission with nothing to fight: no script that replaces the aircraft, no
+    /// area bounds that read a teleport as desertion, no patience to run out
+    /// of. The harness had it written off as "no airbase hangar spawn", which
+    /// was the wrong reason — the count says <c>noHangar=0 notOwned=56</c>, so
+    /// every hangar was willing and the player just owned nothing. Free Flight
+    /// hands out airframes through the selection UI the harness deliberately
+    /// does not drive.</para>
+    ///
+    /// <para><c>Spawner.AllowedToSpawn</c> enforces ownership server-side, so
+    /// there is no filter to relax on our side; the airframe has to actually
+    /// exist. <c>CreditAirframe</c> is the game's own [Server] method for
+    /// granting one, and in single player the local player is the server.
+    /// Logged loudly because it changes what the game would otherwise
+    /// permit.</para>
+    /// </summary>
+    private bool TryCreditAirframe(Player player)
+    {
+        if (_creditedAirframe) return false;
+
+        try
+        {
+            foreach (var airbase in player.HQ.GetAirbases())
+            {
+                if (airbase == null || airbase.CurrentHQ != player.HQ) continue;
+
+                foreach (var definition in airbase.GetAvailableAircraft())
+                {
+                    if (definition == null) continue;
+                    if (!airbase.CanSpawnAircraft(definition)) continue;
+
+                    player.CreditAirframe(definition, 1, reserved: false);
+                    _creditedAirframe = true;
+                    Debug.Log(
+                        $"[NOVR-HARNESS] Nothing was owned, so credited one {definition.unitName} " +
+                        $"at {airbase.name}. This is the harness granting itself an airframe the " +
+                        "mission did not; it is how Free Flight is reachable at all.");
+                    return true;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            // Throws if we are not the server, which means this is not a
+            // single-player host and crediting was never ours to do.
+            Debug.Log($"[NOVR-HARNESS] Could not credit an airframe: {e.Message}");
+        }
+
+        _creditedAirframe = true;
+        return false;
     }
 
     /// <summary>
