@@ -1107,6 +1107,60 @@ public class AutoStartMission : MonoBehaviour
         }
     }
 
+    private static readonly FieldInfo GlideslopeField = AccessTools.Field(typeof(AirbaseOverlay), "glideslope");
+    private static readonly FieldInfo GlideslopeAimPointField = AccessTools.Field(typeof(AirbaseOverlay), "glideslopeAimPoint");
+    private static readonly FieldInfo OverlayRunwayUsageField = AccessTools.Field(typeof(AirbaseOverlay), "runwayUsage");
+
+    /// <summary>
+    /// <para>Where the glideslope graphics actually are, and how far apart the
+    /// two candidate anchors are.</para>
+    /// <para><c>AirbaseOverlayViewPositionPatch.UpdateGlideslope</c> returns
+    /// early unless <c>glideslope.enabled</c>, which the game's own
+    /// <c>DrawGlideslope</c> sets in the same LateUpdate just before the postfix
+    /// runs. If it is false the VR reprojection never happens, and what a dump
+    /// reports is the game's screen-space output — a different claim entirely
+    /// from "the VR path put it there".</para>
+    /// </summary>
+    private string DescribeGlideslope(Aircraft aircraft)
+    {
+        try
+        {
+            if (_airbaseOverlay == null) _airbaseOverlay = FindOverlay();
+            if (_airbaseOverlay == null) return "glideslope: no overlay";
+
+            var glideslope = GlideslopeField?.GetValue(_airbaseOverlay) as Behaviour;
+            var aimPoint = GlideslopeAimPointField?.GetValue(_airbaseOverlay) as Behaviour;
+            if (glideslope == null || aimPoint == null) return "glideslope: fields not found";
+
+            var lines = new List<string>
+            {
+                $"glideslope enabled={glideslope.enabled} pos={Vec3(glideslope.transform.position)} " +
+                $"scale={Vec3(glideslope.transform.localScale)}",
+                $"aimPoint   enabled={aimPoint.enabled} pos={Vec3(aimPoint.transform.position)}",
+            };
+
+            var usage = (Airbase.Runway.RunwayUsage?)OverlayRunwayUsageField?.GetValue(_airbaseOverlay);
+            if (usage.HasValue && usage.Value.Runway != null)
+            {
+                var touchdown = usage.Value.GetTouchdownPoint().ToLocalPosition();
+                var farEnd = usage.Value.GetEnd().position;
+                lines.Add($"touchdown={Vec3(touchdown)} farEnd={Vec3(farEnd)} | {Vector3.Distance(touchdown, farEnd):0} m apart; " +
+                          $"aircraft {Vector3.Distance(aircraft.transform.position, touchdown):0} m from touchdown, " +
+                          $"{Vector3.Distance(aircraft.transform.position, farEnd):0} m from the far end");
+            }
+            else
+            {
+                lines.Add("no runway usage on the overlay");
+            }
+
+            return string.Join("\n    ", lines);
+        }
+        catch (Exception e)
+        {
+            return $"(could not describe the glideslope: {e.Message})";
+        }
+    }
+
     private static string DescribeCameraPose(string label, Camera? camera, Transform aircraft)
     {
         if (camera == null) return $"{label} <null>";
@@ -1522,6 +1576,11 @@ public class AutoStartMission : MonoBehaviour
             // on. Logging it only when the hold is active makes the hold
             // unfalsifiable as the cause.
             Debug.Log($"[NOVR-HARNESS] Projection at dump {index}:\n    {DescribeProjection(dumped)}");
+
+            if (ApproachRequested)
+            {
+                Debug.Log($"[NOVR-HARNESS] Glideslope at dump {index}:\n    {DescribeGlideslope(dumped)}");
+            }
         }
 
         if (_dumpsRemaining > 0)
