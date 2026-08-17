@@ -290,6 +290,35 @@ public class AutoStartMission : MonoBehaviour
         }
     }
 
+    /// <summary>True while Auto Approach is holding an aircraft in place.</summary>
+    public static bool HoldingApproach { get; private set; }
+
+    /// <summary>
+    /// Suppress G-force damage while the harness is holding an approach.
+    ///
+    /// <para>Two gentler attempts failed and are worth recording. Zeroing the
+    /// pilot's remembered velocity got the damage from 65504 to 2486 in one run
+    /// and not at all in the next, because whether it helps depends on whether
+    /// the harness's FixedUpdate ran before or after <c>Pilot</c>'s fixed-step
+    /// job. Capping the per-step velocity change at 8 g did not help either:
+    /// the damage arrives 0.04 s after the placement, saturated at 65504 —
+    /// which is the largest half-precision float, so the acceleration being
+    /// measured is not merely large, it has overflowed. A teleport is a
+    /// discontinuity in position as well as velocity, and nothing that samples
+    /// a derivative across it will return a finite answer.</para>
+    ///
+    /// <para>So the discontinuity is not made survivable, it is excused. The
+    /// harness is not testing the G model; it is putting the aircraft where the
+    /// landing symbology draws. This is on only while a hold is in effect, and
+    /// a hold only happens under Auto Approach.</para>
+    /// </summary>
+    [HarmonyPatch(typeof(Pilot), nameof(Pilot.TakeGForceDamage))]
+    private static class SuppressHoldGForceDamage
+    {
+        [HarmonyPrefix]
+        private static bool Prefix() => !HoldingApproach;
+    }
+
     private bool _approachPlaced;
     private bool _approachSettled;
     private float _approachDeadline;
@@ -461,6 +490,10 @@ public class AutoStartMission : MonoBehaviour
                 aircraft.rb.angularVelocity = Vector3.zero;
             }
 
+            // Before the teleport, not after: the discontinuity is the thing
+            // being excused, and Pilot's job may run between this frame's
+            // Update and the next FixedUpdate.
+            HoldingApproach = true;
             ForgetAcceleration(aircraft, Vector3.zero);
             aircraft.transform.SetPositionAndRotation(position, rotation);
             Physics.SyncTransforms();
