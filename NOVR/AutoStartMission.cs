@@ -392,12 +392,38 @@ public class AutoStartMission : MonoBehaviour
             Debug.Log($"[NOVR-HARNESS] Airframe before placement: {DescribeAirframe(aircraft)}");
 
             var position = ApproachPosition(aircraft);
-            aircraft.transform.SetPositionAndRotation(position, ApproachRotation());
+            var rotation = ApproachRotation();
+
+            // Through the rigidbody, and at rest.
+            //
+            // Writing transform.position alone was killing the pilot outright:
+            // hit points went from 100 to -65404 in 0.03 s, one physics step
+            // after the placement. Physics.autoSyncTransforms is off, so a
+            // transform write does not reach the body until the next
+            // FixedUpdate — and the approach velocity was being set in the same
+            // breath. For one step the body was still parked in the hangar,
+            // doing 93 m/s. It hit the hangar, AeroPart's impact term divided
+            // the impulse by the fixed timestep, and the pilot was dead before
+            // the aircraft had visibly moved. Since
+            // CameraCockpitState.UpdateState leaves for the free camera on
+            // pilot.dead, and every state but the cockpit disables the flight
+            // HUD, every frame after that was a free camera outside the
+            // aeroplane with no HUD on it.
+            //
+            // rb.position/rb.rotation move the body immediately, so there is no
+            // step in which its pose and its velocity disagree. The approach
+            // velocity is left to the FixedUpdate hold, by which time the body
+            // is out in clear air.
             if (aircraft.rb != null)
             {
-                aircraft.rb.velocity = ApproachVelocity(query.LandingSpeed);
+                aircraft.rb.position = position;
+                aircraft.rb.rotation = rotation;
+                aircraft.rb.velocity = Vector3.zero;
                 aircraft.rb.angularVelocity = Vector3.zero;
             }
+
+            aircraft.transform.SetPositionAndRotation(position, rotation);
+            Physics.SyncTransforms();
 
             aircraft.SetGear(deployed: true);
 
@@ -417,7 +443,7 @@ public class AutoStartMission : MonoBehaviour
             Debug.Log(
                 $"[NOVR-HARNESS] Placed on final: runway {usage.Value.GetName()} at '{airbase.name}', " +
                 $"{ApproachDistance:0} m out, gear down, " +
-                $"{ApproachVelocity(query.LandingSpeed).magnitude:0} m/s, " +
+                $"{ApproachVelocity(query.LandingSpeed).magnitude:0} m/s once the hold takes over, " +
                 $"{TerrainClearance(position):0} m above the terrain under it " +
                 $"(lowest clearance along the final: {LowestClearanceOnFinal(aircraft):0} m).");
             return true;
