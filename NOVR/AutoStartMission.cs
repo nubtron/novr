@@ -378,6 +378,12 @@ public class AutoStartMission : MonoBehaviour
 
             _approachUsage = usage;
 
+            // Before, so a run that arrives at the hold point already broken is
+            // distinguishable from one the placement breaks. The first version
+            // of this mode produced dead engines and there was no way to tell
+            // which end of the teleport did it.
+            Debug.Log($"[NOVR-HARNESS] Airframe before placement: {DescribeAirframe(aircraft)}");
+
             var position = ApproachPosition(aircraft);
             aircraft.transform.SetPositionAndRotation(position, ApproachRotation());
             if (aircraft.rb != null)
@@ -458,23 +464,32 @@ public class AutoStartMission : MonoBehaviour
     }
 
     /// <summary>
-    /// The worst clearance anywhere between the hold point and the threshold,
-    /// sampled every 100 m. The hold point clearing the ground says nothing
-    /// about the rest of the final, and a run whose approach path goes through a
-    /// ridge is a run whose frames are not of an approach — so the number goes
-    /// in the log where it can be read afterwards rather than inferred.
+    /// The worst clearance along the final, sampled every 100 m, ignoring the
+    /// last 200 m before the threshold.
+    ///
+    /// <para>The exclusion is the whole point of the number. A glideslope ends
+    /// on the runway, so sampling all the way in always reports a clearance near
+    /// zero and the metric says "the approach path is in the ground" on every
+    /// approach ever flown — a measurement that is alarming, constant, and
+    /// therefore worthless. What is worth knowing is whether the path clips
+    /// something on the way in.</para>
     /// </summary>
     private float LowestClearanceOnFinal(Aircraft aircraft)
     {
+        const float ignoreNearThreshold = 200f;
+
         var threshold = _approachUsage.Value.GetStart().position;
         var hold = ApproachPosition(aircraft);
-        var steps = Mathf.Max(1, Mathf.CeilToInt(ApproachDistance / 100f));
+        var distance = ApproachDistance;
+        if (distance <= ignoreNearThreshold) return TerrainClearance(hold);
 
+        var steps = Mathf.Max(1, Mathf.CeilToInt(distance / 100f));
         var lowest = float.PositiveInfinity;
         for (var step = 0; step <= steps; step++)
         {
-            var point = Vector3.Lerp(threshold, hold, step / (float)steps);
-            lowest = Mathf.Min(lowest, TerrainClearance(point));
+            var along = step / (float)steps;
+            if (along * distance < ignoreNearThreshold) continue;
+            lowest = Mathf.Min(lowest, TerrainClearance(Vector3.Lerp(threshold, hold, along)));
         }
 
         return lowest;
@@ -761,7 +776,7 @@ public class AutoStartMission : MonoBehaviour
             // Counted rather than just filtered: "nothing is spawnable" has
             // four different causes and they need different fixes, so the log
             // has to say which one it was.
-            int airbases = 0, owned = 0, offered = 0, noHangar = 0, notOwned = 0;
+            int airbases = 0, owned = 0, offered = 0, noHangar = 0, notOwned = 0, wrongType = 0;
 
             foreach (var airbase in player.HQ.GetAirbases())
             {
@@ -775,6 +790,7 @@ public class AutoStartMission : MonoBehaviour
                     offered++;
 
                     if (!airbase.CanSpawnAircraft(definition)) { noHangar++; continue; }
+                    if (!WantedAircraft(definition)) { wrongType++; continue; }
                     if (!player.OwnsAirframe(definition, includeReserved: true)) { notOwned++; continue; }
 
                     spawner
@@ -789,14 +805,16 @@ public class AutoStartMission : MonoBehaviour
             // player simply owns none of them: that is Free Flight, where the
             // airframes are handed out by the selection UI rather than by the
             // mission. Credit one and let the next tick spawn it.
-            if (offered > 0 && noHangar == 0 && notOwned == offered && TryCreditAirframe(player))
+            if (offered > 0 && noHangar == 0 && notOwned > 0 && notOwned + wrongType == offered &&
+                TryCreditAirframe(player))
             {
                 return false;
             }
 
             return NotReady(
                 $"no spawnable aircraft (airbases={airbases} ours={owned} " +
-                $"offered={offered} noHangar={noHangar} notOwned={notOwned})");
+                $"offered={offered} noHangar={noHangar} wrongType={wrongType} notOwned={notOwned}). " +
+                DescribeOffered(player));
         }
         catch (Exception e)
         {
@@ -804,6 +822,54 @@ public class AutoStartMission : MonoBehaviour
             // starts; treat anything thrown here as "not ready".
             Debug.Log($"[NOVR-HARNESS] Spawn attempt failed (will retry): {e.Message}");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether this is the aircraft the run asked for.
+    ///
+    /// <para>Taking whatever the first airbase offered was fine while the only
+    /// question was "is there a cockpit", and stopped being fine the moment the
+    /// harness started testing the flight HUD. Free Flight's first offer at
+    /// airbase_city is a CI-22 Cricket, a light aircraft with no HUD at all:
+    /// the run reached a cockpit, held a textbook approach, and dumped a frame
+    /// with <c>HUDCanvas</c> inactive — an empty result that looks exactly like
+    /// a broken HUD.</para>
+    /// </summary>
+    private static bool WantedAircraft(AircraftDefinition definition)
+    {
+        var wanted = ModConfiguration.Instance.AutoSpawnAircraft.Value;
+        if (string.IsNullOrWhiteSpace(wanted)) return true;
+
+        return definition.unitName != null &&
+               definition.unitName.IndexOf(wanted, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    /// <summary>
+    /// Every aircraft any of our airbases will offer, so a run that asked for
+    /// one by a name nothing matches says what it could have had instead of
+    /// timing out with a count.
+    /// </summary>
+    private static string DescribeOffered(Player player)
+    {
+        try
+        {
+            var names = new List<string>();
+            foreach (var airbase in player.HQ.GetAirbases())
+            {
+                if (airbase == null || airbase.CurrentHQ != player.HQ) continue;
+                foreach (var definition in airbase.GetAvailableAircraft())
+                {
+                    if (definition?.unitName == null) continue;
+                    if (!names.Contains(definition.unitName)) names.Add(definition.unitName);
+                }
+            }
+
+            return names.Count == 0 ? "nothing offered anywhere." : "offered: " + string.Join(", ", names) + ".";
+        }
+        catch (Exception e)
+        {
+            return $"(could not list the offered aircraft: {e.Message})";
         }
     }
 
@@ -840,6 +906,7 @@ public class AutoStartMission : MonoBehaviour
                 {
                     if (definition == null) continue;
                     if (!airbase.CanSpawnAircraft(definition)) continue;
+                    if (!WantedAircraft(definition)) continue;
 
                     player.CreditAirframe(definition, 1, reserved: false);
                     _creditedAirframe = true;
