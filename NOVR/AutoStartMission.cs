@@ -333,6 +333,8 @@ public class AutoStartMission : MonoBehaviour
     /// <para>Only the placement and the hold do this, and only to the aircraft
     /// they are already teleporting. A real change of velocity still hurts.</para>
     /// </summary>
+    private readonly List<LatchedPart> _latchedParts = new();
+
     private static void ForgetAcceleration(Aircraft aircraft, Vector3 velocity)
     {
         if (PilotVelocityPrevField == null || aircraft.pilots == null) return;
@@ -536,6 +538,18 @@ public class AutoStartMission : MonoBehaviour
             // step in which its pose and its velocity disagree. The approach
             // velocity is left to the FixedUpdate hold, by which time the body
             // is out in clear air.
+            // Before anything moves: an aeroplane here is not one rigidbody.
+            // Every UnitPart carries its own, joint-attached to the rest, which
+            // is how the cockpit can leave as an escape capsule — cockpit_F is
+            // a scene root, not a child of the aircraft. The hold moved
+            // Unit.rb and nothing else, so the cockpit stayed behind: measured
+            // 118 m below the aeroplane and 24 m astern, rolled 20 degrees,
+            // with the joint stretched across the gap. That is where the engine
+            // fires came from, and the camera hangs off the pilot's skeleton
+            // inside that cockpit, so it is also why every held frame was shot
+            // from a viewpoint 44 degrees off the nose.
+            LatchParts(aircraft);
+
             if (aircraft.rb != null)
             {
                 // Kinematic for the duration.
@@ -570,6 +584,7 @@ public class AutoStartMission : MonoBehaviour
             _holdVelocity = Vector3.zero;
             ForgetAcceleration(aircraft, Vector3.zero);
             aircraft.transform.SetPositionAndRotation(position, rotation);
+            MoveLatchedParts(position, rotation, Vector3.zero);
             Physics.SyncTransforms();
 
             aircraft.SetGear(deployed: true);
@@ -733,8 +748,73 @@ public class AutoStartMission : MonoBehaviour
         }
 
         aircraft.transform.SetPositionAndRotation(position, rotation);
+        MoveLatchedParts(position, rotation, _holdVelocity);
 
         if (!aircraft.gearDeployed) aircraft.SetGear(deployed: true);
+    }
+
+    /// <summary>
+    /// Records where every other part of the aeroplane sits relative to the
+    /// aircraft root, so the hold can carry them along instead of dragging them
+    /// by their joints. Called once, before the placement moves anything.
+    /// </summary>
+    private void LatchParts(Aircraft aircraft)
+    {
+        _latchedParts.Clear();
+        try
+        {
+            var parts = aircraft.GetAllParts();
+            if (parts == null) return;
+
+            var inverse = Quaternion.Inverse(aircraft.transform.rotation);
+            var origin = aircraft.transform.position;
+            foreach (var part in parts)
+            {
+                if (part == null || part.rb == null) continue;
+                if (ReferenceEquals(part.rb, aircraft.rb)) continue;
+                _latchedParts.Add(new LatchedPart
+                {
+                    Body = part.rb,
+                    LocalPosition = inverse * (part.rb.position - origin),
+                    LocalRotation = inverse * part.rb.rotation,
+                });
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.Log($"[NOVR-HARNESS] Could not latch the aircraft's parts: {e.Message}");
+        }
+    }
+
+    private void MoveLatchedParts(Vector3 position, Quaternion rotation, Vector3 velocity)
+    {
+        var kinematic = ModConfiguration.Instance.AutoApproachKinematic.Value;
+        foreach (var part in _latchedParts)
+        {
+            var body = part.Body;
+            if (body == null) continue;
+
+            var partPosition = position + rotation * part.LocalPosition;
+            var partRotation = rotation * part.LocalRotation;
+
+            body.isKinematic = kinematic;
+            body.position = partPosition;
+            body.rotation = partRotation;
+            body.velocity = velocity;
+            body.angularVelocity = Vector3.zero;
+
+            // The transform as well as the body: the cockpit's transform is
+            // what the camera rig reads in LateUpdate, and a kinematic body's
+            // pose does not reach its transform until the physics step.
+            body.transform.SetPositionAndRotation(partPosition, partRotation);
+        }
+    }
+
+    private struct LatchedPart
+    {
+        public Rigidbody Body;
+        public Vector3 LocalPosition;
+        public Quaternion LocalRotation;
     }
 
     private void FixedUpdate()
