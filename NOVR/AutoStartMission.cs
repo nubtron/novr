@@ -556,7 +556,7 @@ public class AutoStartMission : MonoBehaviour
                 // glideslope's own length comes from
                 // Dot(rb.velocity, toTouchdown), and a zero there divides by
                 // zero and hides the line.
-                aircraft.rb.isKinematic = true;
+                aircraft.rb.isKinematic = ModConfiguration.Instance.AutoApproachKinematic.Value;
                 aircraft.rb.position = position;
                 aircraft.rb.rotation = rotation;
                 aircraft.rb.velocity = Vector3.zero;
