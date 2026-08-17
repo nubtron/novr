@@ -40,6 +40,7 @@ public class ModConfiguration
     public readonly ConfigEntry<bool> AutoApproach;
     public readonly ConfigEntry<float> AutoApproachDistance;
     public readonly ConfigEntry<string> AutoSpawnAircraft;
+    public readonly ConfigEntry<bool> AutoApproachKinematic;
     public readonly ConfigEntry<bool> HarnessMute;
 
     public ModConfiguration(ConfigFile config)
@@ -255,6 +256,12 @@ public class ModConfiguration
             "Auto Spawn Aircraft",
             "",
             "Test harness: spawn an aircraft whose name contains this, instead of the first one any airbase offers. Empty takes the first. Worth setting for anything that tests the flight HUD: Free Flight's first offer is a CI-22 Cricket, a light aircraft with no HUD, and a run in one produces a frame with HUDCanvas inactive that reads exactly like a broken HUD. The log lists every aircraft on offer when nothing matches.");
+
+        AutoApproachKinematic = config.Bind(
+            "Debug",
+            "Auto Approach Kinematic",
+            true,
+            "Test harness: hold the Auto Approach aircraft as a kinematic body, so the flight model cannot fight the hold. On, the frame is stable — 1.0 G, zero rate of climb, a level pitch ladder. Off, the aircraft and the hold overwrite each other every physics step and the airframe is destroyed around a pilot who only survives because their G damage is suppressed: the HUD reads -115 G, a 3693 fpm descent while pinned at a constant altitude, and both engines on fire. The one thing off buys is a real velocity: a kinematic body reports zero, and the glideslope symbology's drawn length comes from the dot product of that velocity with the direction to the touchdown point, so it cannot be evaluated with this on. Turn it off when the glideslope specifically is what is being looked at.");
 
         HarnessMute = config.Bind(
             "Debug",
