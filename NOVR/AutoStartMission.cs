@@ -131,6 +131,7 @@ public class AutoStartMission : MonoBehaviour
             }
 
             _missionRunning = true;
+            CloseJoinMenu();
             if (ApproachRequested)
             {
                 Debug.Log("[NOVR-HARNESS] Mission running, local aircraft acquired. Placing it on final approach.");
@@ -153,6 +154,37 @@ public class AutoStartMission : MonoBehaviour
         if (Time.unscaledTime < _nextDumpAt) return;
 
         FireDump();
+    }
+
+    /// <summary>
+    /// Close the join menu the harness never opened and never dismissed.
+    ///
+    /// <para>The harness joins a faction and spawns through the API rather than
+    /// through the menu, so the menu it skipped stays up: <c>GameplayUI</c>
+    /// leaves <c>menuCanvas</c> enabled and <c>gameplayCanvas</c> disabled, and
+    /// every frame the run captured had the faction-select panel drawn over the
+    /// flight. In a mission with its own script this was hidden — the tutorial
+    /// closes the menu itself — which is why it only surfaced on Free Flight,
+    /// and why a mirror.png of a cockpit approach came out showing SELECT
+    /// FACTION.</para>
+    ///
+    /// <para>The cockpit view and the flight HUD are unaffected and stay on;
+    /// this is about what is drawn on top of them.</para>
+    /// </summary>
+    private void CloseJoinMenu()
+    {
+        try
+        {
+            var ui = SceneSingleton<GameplayUI>.i;
+            if (ui == null) return;
+
+            ui.CloseJoinMenu();
+            Debug.Log("[NOVR-HARNESS] Closed the join menu; the harness spawned through the API and never opened it.");
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[NOVR-HARNESS] Could not close the join menu: {e.Message}");
+        }
     }
 
     // ------------------------------------------------------------ briefing dialogue
