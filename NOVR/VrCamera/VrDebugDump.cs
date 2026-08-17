@@ -79,6 +79,7 @@ public static class VrDebugDump
     private static string? _blendedColorAdjustments;
     private static readonly List<CanvasEntry> CanvasEntries = new();
     private static readonly List<HudGraphicEntry> HudGraphicEntries = new();
+    private static readonly List<ScreenGraphicEntry> ScreenGraphicEntries = new();
     private static readonly List<ImageEntry> ImageEntries = new();
     private static readonly List<string> Notes = new();
     private static readonly Dictionary<string, string?> Globals = new();
@@ -117,6 +118,7 @@ public static class VrDebugDump
         _blendedColorAdjustments = null;
         CanvasEntries.Clear();
         HudGraphicEntries.Clear();
+        ScreenGraphicEntries.Clear();
         Globals.Clear();
         ConfigValues.Clear();
         _pendingReadbacks = 0;
@@ -520,7 +522,11 @@ public static class VrDebugDump
             foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
             {
                 if (canvas == null || !canvas.isRootCanvas) continue;
-                if (canvas.renderMode != RenderMode.WorldSpace) continue;
+                if (canvas.renderMode != RenderMode.WorldSpace)
+                {
+                    SweepScreenCanvas(canvas);
+                    continue;
+                }
 
                 var viewCamera = canvas.worldCamera;
                 if (viewCamera == null) continue;
@@ -569,6 +575,57 @@ public static class VrDebugDump
         catch (Exception exception)
         {
             Notes.Add($"hud graphic sweep failed: {exception.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Inventory of a canvas NOVR left in screen space, in that canvas's own
+    /// pixels.
+    ///
+    /// <para>This exists because the world-space sweep could not see the thing
+    /// most often under test. <c>HUDCanvas</c> — the flight HUD's own canvas,
+    /// carrying the pitch ladder, the velocity vector, the unit markers and the
+    /// whole landing symbology — is <c>ScreenSpaceOverlay</c>. It is captured to
+    /// a texture and shown on a panel, so it never becomes a world-space canvas
+    /// and the sweep skipped it outright: a dump could show a canvas called
+    /// HUDCanvas existing and say nothing whatever about what was drawn on
+    /// it. Answering "is the runway outline where it should be" needed a
+    /// bespoke probe every time.</para>
+    ///
+    /// <para>Reported as pixels from the canvas's bottom-left rather than as a
+    /// world position, because the answer wanted is always "where on the panel",
+    /// and a world position has the canvas's own scale folded into it — the
+    /// factor that turns a 1920x1080 layout into a 2560x1440 rect and makes two
+    /// correct-looking numbers disagree by a third.</para>
+    /// </summary>
+    private static void SweepScreenCanvas(Canvas canvas)
+    {
+        var rect = canvas.transform as RectTransform;
+        if (rect == null) return;
+
+        var size = rect.rect.size;
+        var count = 0;
+
+        foreach (var graphic in canvas.GetComponentsInChildren<Graphic>(true))
+        {
+            if (graphic == null) continue;
+            if (count++ >= 2000) break;
+
+            var local = canvas.transform.InverseTransformPoint(graphic.transform.position);
+            var graphicRect = graphic.rectTransform;
+
+            ScreenGraphicEntries.Add(new ScreenGraphicEntry
+            {
+                Path = canvas.name + "/" + PathUnder(canvas.transform, graphic.transform),
+                Type = graphic.GetType().Name,
+                Active = graphic.isActiveAndEnabled,
+                Culled = graphic.canvasRenderer != null && graphic.canvasRenderer.cull,
+                Color = graphic.color,
+                Size = graphicRect != null ? graphicRect.rect.size : Vector2.zero,
+                Pixels = new Vector2(local.x + size.x * 0.5f, local.y + size.y * 0.5f),
+                CanvasSize = size,
+                LossyScale = graphic.transform.lossyScale,
+            });
         }
     }
 
@@ -787,6 +844,27 @@ public static class VrDebugDump
                            $"rgba=({F(g.Color.r)},{F(g.Color.g)},{F(g.Color.b)},{F(g.Color.a)}) " +
                            $"size={Vec(g.Size)} local={Vec(g.LocalPosition)} " +
                            $"viewport=({F(g.Viewport.x)},{F(g.Viewport.y)},{F(g.Viewport.z)})  {g.Path}");
+        }
+
+        txt.AppendLine();
+        txt.AppendLine("--- screen-space hud graphics (canvas pixels from bottom-left, drawn ones first) ---");
+        ScreenGraphicEntries.Sort((a, b) =>
+        {
+            if (a.Active != b.Active) return b.Active.CompareTo(a.Active);
+            return string.CompareOrdinal(a.Path, b.Path);
+        });
+        var screenShown = 0;
+        foreach (var g in ScreenGraphicEntries)
+        {
+            if (screenShown++ >= 600) break;
+            txt.AppendLine($"({F(g.Pixels.x)},{F(g.Pixels.y)}) of {Vec(g.CanvasSize)}  {g.Type,-16} " +
+                           $"active={g.Active} culled={g.Culled} " +
+                           $"rgba=({F(g.Color.r)},{F(g.Color.g)},{F(g.Color.b)},{F(g.Color.a)}) " +
+                           $"size={Vec(g.Size)} scale={Vec(g.LossyScale)}  {g.Path}");
+        }
+        if (ScreenGraphicEntries.Count > screenShown)
+        {
+            txt.AppendLine($"... {ScreenGraphicEntries.Count - screenShown} further screen-space graphics not listed.");
         }
 
         txt.AppendLine();
@@ -1021,6 +1099,25 @@ public static class VrDebugDump
         public Vector2 Size;
         public Vector3 LocalPosition;
         public Vector3 Viewport;
+    }
+
+    /// <summary>
+    /// A graphic on a canvas NOVR did <i>not</i> move to world space. Kept in
+    /// its own list and its own section: the world-space sweep measures angles
+    /// off a camera, and putting a pixel coordinate in the same table under the
+    /// same column headings is how two coordinate systems get read as one.
+    /// </summary>
+    private sealed class ScreenGraphicEntry
+    {
+        public string Path = "";
+        public string Type = "";
+        public bool Active;
+        public bool Culled;
+        public Color Color;
+        public Vector2 Size;
+        public Vector2 Pixels;
+        public Vector2 CanvasSize;
+        public Vector3 LossyScale;
     }
 
     private sealed class CanvasEntry

@@ -202,13 +202,13 @@ public class AutoStartMission : MonoBehaviour
     // ------------------------------------------------------------ approach mode
 
     /// <summary>
-    /// How far out on the extended centreline the aircraft is held. Kept short
-    /// on purpose: at 2 km both a tutorial and a campaign mission treated the
-    /// placement as leaving the mission area and put up a failure dialogue
-    /// within two seconds. Inside the airbase's own radius nothing objects, and
-    /// the overlay's approach test only needs 2.5 km.
+    /// How far out on the extended centreline the aircraft is held. The default
+    /// is kept short on purpose: at 2 km both a tutorial and a campaign mission
+    /// treated the placement as leaving the mission area and put up a failure
+    /// dialogue within two seconds. Inside the airbase's own radius nothing
+    /// objects, and the overlay's approach test only needs 2.5 km.
     /// </summary>
-    private const float ApproachDistance = 1200f;
+    private static float ApproachDistance => ModConfiguration.Instance.AutoApproachDistance.Value;
 
     /// <summary>
     /// The gradient the game's own glideslope symbology is drawn on
@@ -230,8 +230,19 @@ public class AutoStartMission : MonoBehaviour
     /// <summary>Grace after the HUD binds before the aircraft is moved.</summary>
     private const float CockpitSettleSeconds = 3f;
 
+    /// <summary>
+    /// Least height above the ground the hold point is allowed to have. Sized
+    /// to be clear of the terrain collider under any airbase the game ships
+    /// rather than to be a realistic approach height: the aircraft here is
+    /// pinned, and the only thing this number buys is that nothing touches it.
+    /// </summary>
+    private const float MinTerrainClearance = 120f;
+
     private static readonly FieldInfo LandingField =
         AccessTools.Field(typeof(AirbaseOverlay), "landing");
+
+    private static readonly FieldInfo EngineOperableField =
+        AccessTools.Field(typeof(TurbineEngine), "operable");
 
     private bool _approachPlaced;
     private bool _approachSettled;
@@ -292,7 +303,8 @@ public class AutoStartMission : MonoBehaviour
             _nextDumpAt = Time.unscaledTime + ModConfiguration.Instance.AutoDumpDelay.Value;
             Debug.Log(
                 "[NOVR-HARNESS] Approach accepted — the game is drawing the landing symbology. " +
-                $"First dump in {ModConfiguration.Instance.AutoDumpDelay.Value:0.#}s.");
+                $"First dump in {ModConfiguration.Instance.AutoDumpDelay.Value:0.#}s. " +
+                DescribeAirframe(aircraft));
             return true;
         }
 
@@ -365,7 +377,8 @@ public class AutoStartMission : MonoBehaviour
 
             _approachUsage = usage;
 
-            aircraft.transform.SetPositionAndRotation(ApproachPosition(aircraft), ApproachRotation());
+            var position = ApproachPosition(aircraft);
+            aircraft.transform.SetPositionAndRotation(position, ApproachRotation());
             if (aircraft.rb != null)
             {
                 aircraft.rb.velocity = ApproachVelocity(query.LandingSpeed);
@@ -389,8 +402,10 @@ public class AutoStartMission : MonoBehaviour
 
             Debug.Log(
                 $"[NOVR-HARNESS] Placed on final: runway {usage.Value.GetName()} at '{airbase.name}', " +
-                $"{ApproachDistance:0} m out, {ApproachDistance * GlideslopeGradient:0} m above the threshold, " +
-                $"gear down, {ApproachVelocity(query.LandingSpeed).magnitude:0} m/s.");
+                $"{ApproachDistance:0} m out, gear down, " +
+                $"{ApproachVelocity(query.LandingSpeed).magnitude:0} m/s, " +
+                $"{TerrainClearance(position):0} m above the terrain under it " +
+                $"(lowest clearance along the final: {LowestClearanceOnFinal(aircraft):0} m).");
             return true;
         }
         catch (Exception e)
@@ -409,7 +424,59 @@ public class AutoStartMission : MonoBehaviour
         var usage = _approachUsage.Value;
         var threshold = usage.GetStart().position;
         var height = ApproachDistance * GlideslopeGradient + aircraft.definition.spawnOffset.y;
-        return threshold - usage.GetDirection().normalized * ApproachDistance + Vector3.up * height;
+        var geometric = threshold - usage.GetDirection().normalized * ApproachDistance + Vector3.up * height;
+
+        // Raised to clear the ground if the geometric glideslope point is not
+        // above it. This is not a nicety. The glideslope is drawn relative to
+        // the runway's own elevation, so at an airbase in a valley — which
+        // airbase_desert1 is — a geometrically correct 1200 m final passes
+        // through the hillside short of the threshold. The aircraft was being
+        // teleported into that hillside, every frame: AeroPart.OnCollisionEnter
+        // turns the impulse into impact damage, TurbineEngine.KillEngine fires
+        // once a part's condition reaches zero, and the run captured a
+        // dead-stick glider with both engines INOPERABLE descending at
+        // 4600 fpm. The frame looked like an approach and was a crash.
+        var clearance = TerrainClearance(geometric);
+        if (clearance >= MinTerrainClearance) return geometric;
+
+        return geometric + Vector3.up * (MinTerrainClearance - clearance);
+    }
+
+    /// <summary>
+    /// Height of a point above whatever the game considers ground beneath it,
+    /// using the same layer mask <c>Aircraft.CheckRadarAlt</c> uses so this
+    /// agrees with the <c>radarAlt</c> the overlay's own test reads.
+    /// Returns <see cref="float.PositiveInfinity"/> over nothing at all.
+    /// </summary>
+    private static float TerrainClearance(Vector3 point)
+    {
+        var mask = (int)PhysicsLayers.StaticsMask | (int)PhysicsLayers.ShipsMask;
+        return Physics.Linecast(point, point - Vector3.up * 10000f, out var hit, mask)
+            ? hit.distance
+            : float.PositiveInfinity;
+    }
+
+    /// <summary>
+    /// The worst clearance anywhere between the hold point and the threshold,
+    /// sampled every 100 m. The hold point clearing the ground says nothing
+    /// about the rest of the final, and a run whose approach path goes through a
+    /// ridge is a run whose frames are not of an approach — so the number goes
+    /// in the log where it can be read afterwards rather than inferred.
+    /// </summary>
+    private float LowestClearanceOnFinal(Aircraft aircraft)
+    {
+        var threshold = _approachUsage.Value.GetStart().position;
+        var hold = ApproachPosition(aircraft);
+        var steps = Mathf.Max(1, Mathf.CeilToInt(ApproachDistance / 100f));
+
+        var lowest = float.PositiveInfinity;
+        for (var step = 0; step <= steps; step++)
+        {
+            var point = Vector3.Lerp(threshold, hold, step / (float)steps);
+            lowest = Mathf.Min(lowest, TerrainClearance(point));
+        }
+
+        return lowest;
     }
 
     private Quaternion ApproachRotation() =>
@@ -418,18 +485,86 @@ public class AutoStartMission : MonoBehaviour
     private Vector3 ApproachVelocity(float landingSpeed) =>
         _approachUsage.Value.GetDirection().normalized * Mathf.Max(60f, landingSpeed * 1.3f);
 
+    /// <summary>
+    /// Keep the aircraft on the hold point, from <c>FixedUpdate</c> and through
+    /// the rigidbody.
+    ///
+    /// <para>It used to do this from <c>Update</c> by writing
+    /// <c>transform.position</c>. That writes a pose the physics step then
+    /// integrates away from and the next write teleports back — a sawtooth the
+    /// solver sees as motion, and every contact it produces is an impulse
+    /// divided by <c>Time.fixedDeltaTime</c> in
+    /// <c>AeroPart.OnCollisionEnter</c>'s damage term. Correcting inside the
+    /// physics step instead means the pose the solver starts from is the pose
+    /// we asked for, so there is nothing for it to resolve.</para>
+    /// </summary>
     private void HoldOnApproach(Aircraft aircraft)
     {
         if (_approachUsage == null) return;
 
-        aircraft.transform.SetPositionAndRotation(ApproachPosition(aircraft), ApproachRotation());
+        var position = ApproachPosition(aircraft);
+        var rotation = ApproachRotation();
+
         if (aircraft.rb != null)
         {
+            aircraft.rb.position = position;
+            aircraft.rb.rotation = rotation;
             aircraft.rb.velocity = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
             aircraft.rb.angularVelocity = Vector3.zero;
         }
 
+        aircraft.transform.SetPositionAndRotation(position, rotation);
+
         if (!aircraft.gearDeployed) aircraft.SetGear(deployed: true);
+    }
+
+    private void FixedUpdate()
+    {
+        if (!ApproachRequested || !_approachPlaced) return;
+        if (!GameManager.GetLocalAircraft(out var aircraft) || aircraft == null) return;
+        if (!ReferenceEquals(aircraft, _placedAircraft)) return;
+
+        HoldOnApproach(aircraft);
+    }
+
+    /// <summary>
+    /// Whether every engine on the aircraft is still working, and the reason if
+    /// not.
+    ///
+    /// <para>Reported at dump time because the harness has already once handed
+    /// over a frame of a crash as if it were a frame of an approach — both
+    /// engines dead, 4600 fpm down — and nothing in the dump said so. An engine
+    /// only reads INOPERABLE after <c>TurbineEngine.KillEngine</c>, which only
+    /// runs from damage, so this doubles as the detector for a placement that is
+    /// putting the aircraft through scenery.</para>
+    /// </summary>
+    private static string DescribeAirframe(Aircraft aircraft)
+    {
+        try
+        {
+            var engines = aircraft.GetComponentsInChildren<TurbineEngine>(true);
+            var dead = 0;
+            var thrust = 0f;
+            foreach (var engine in engines)
+            {
+                if (engine == null) continue;
+                thrust += engine.GetThrust();
+                if (EngineOperableField?.GetValue(engine) is bool operable && !operable) dead++;
+            }
+
+            var health = dead == 0
+                ? $"engines={engines.Length} all operable"
+                : $"engines={engines.Length} INOPERABLE={dead} — this aircraft is damaged, " +
+                  "the frames are of a crash and not of an approach";
+
+            return $"{health} ignition={aircraft.Ignition} thrust={thrust:0} " +
+                   $"speed={(aircraft.rb != null ? aircraft.rb.velocity.magnitude : 0f):0} m/s " +
+                   $"radarAlt={aircraft.radarAlt:0} m";
+        }
+        catch (Exception e)
+        {
+            return $"(could not describe the airframe: {e.Message})";
+        }
     }
 
     private bool IsLanding()
@@ -791,6 +926,14 @@ public class AutoStartMission : MonoBehaviour
         _dumpsRemaining--;
         Debug.Log($"[NOVR-HARNESS] Fired dump {index}/{total}" +
                   (_yaws != null ? $" at yaw {_yaws[index - 1]:0.#}° (measured {HarnessViewPose.MeasuredYaw():0.#}°)." : "."));
+
+        // What the aeroplane was actually doing in the frame that was just
+        // captured. Without it a dump has to be read backwards out of its own
+        // pixels, which is how a crash got reported as an approach.
+        if (ApproachRequested && GameManager.GetLocalAircraft(out var dumped) && dumped != null)
+        {
+            Debug.Log($"[NOVR-HARNESS] Airframe at dump {index}: {DescribeAirframe(dumped)}");
+        }
 
         if (_dumpsRemaining > 0)
         {
