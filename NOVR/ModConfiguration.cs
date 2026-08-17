@@ -38,6 +38,7 @@ public class ModConfiguration
     public readonly ConfigEntry<float> AutoDumpDelay;
     public readonly ConfigEntry<string> AutoDumpYaws;
     public readonly ConfigEntry<bool> AutoApproach;
+    public readonly ConfigEntry<float> AutoApproachDistance;
     public readonly ConfigEntry<bool> HarnessMute;
 
     public ModConfiguration(ConfigFile config)
@@ -241,6 +242,12 @@ public class ModConfiguration
             "Auto Approach",
             false,
             "Test harness: once the aircraft has spawned, put it on final approach to the nearest friendly airbase — on the extended centreline, on the glideslope, gear down, marked as having taken off — and hold it there for the rest of the run. The landing symbology (runway outline, glideslope line, airbase marker) only draws while the game believes you are landing, and a harness that spawns parked in a hangar can never see any of it. Ignored unless Auto Start Mission is on.");
+
+        AutoApproachDistance = config.Bind(
+            "Debug",
+            "Auto Approach Distance",
+            1200f,
+            "Test harness: how far out on the extended centreline Auto Approach holds the aircraft, in metres. The hold point is raised if the glideslope would put it inside terrain, so a short final at an airbase in a valley stays in the air. Worth varying: the glideslope symbology's length is drawn from the on-screen separation between the touchdown point and the aim point, and at 1200 m those are only a few pixels apart. Beyond about 2 km some missions treat the placement as leaving the mission area and fail the mission.");
 
         HarnessMute = config.Bind(
             "Debug",
