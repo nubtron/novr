@@ -973,13 +973,30 @@ public class AutoStartMission : MonoBehaviour
                 $"aircraft pos={Vec3(t.position)} fwd={Vec3(t.forward)} right={Vec3(t.right)} up={Vec3(t.up)}",
             };
 
+            if (aircraft.rb != null)
+            {
+                // A rigidbody that disagrees with its own transform is the
+                // difference between "the hold is wrong" and "the hold did not
+                // take"; they are not the same bug and read identically.
+                lines.Add($"aircraft rb pos={Vec3(aircraft.rb.position)} " +
+                          $"fwd={Vec3(aircraft.rb.rotation * Vector3.forward)} " +
+                          $"kinematic={aircraft.rb.isKinematic} " +
+                          $"| transform disagrees by {Vector3.Distance(aircraft.rb.position, t.position):0.0} m");
+            }
+
             var main = APIBus.MainCamera;
             lines.Add(DescribeCameraPose("MainCamera", main, t));
             if (main != null)
             {
-                var child = main.transform.Find("NOVR Main Camera");
-                lines.Add(DescribeCameraPose("NOVR Main Camera",
-                    child != null ? child.GetComponent<Camera>() : null, t));
+                // The camera hangs off the pilot's skeleton inside a cockpit
+                // object that is a scene root of its own, not a child of the
+                // aeroplane. If that root is somewhere else, so is the view,
+                // and every projection computed in it is wrong by the same
+                // amount.
+                var root = main.transform.root;
+                lines.Add($"camera root '{root.name}' pos={Vec3(root.position)} fwd={Vec3(root.forward)} " +
+                          $"right={Vec3(root.right)} | {Vector3.Distance(root.position, t.position):0.0} m from " +
+                          $"the aircraft, {Vector3.Angle(root.forward, t.forward):0.0} deg off its nose");
             }
 
             var hudCamera = APIBus.CockpitHudCamera;
@@ -1412,10 +1429,18 @@ public class AutoStartMission : MonoBehaviour
         // What the aeroplane was actually doing in the frame that was just
         // captured. Without it a dump has to be read backwards out of its own
         // pixels, which is how a crash got reported as an approach.
-        if (ApproachRequested && GameManager.GetLocalAircraft(out var dumped) && dumped != null)
+        if (GameManager.GetLocalAircraft(out var dumped) && dumped != null)
         {
-            Debug.Log($"[NOVR-HARNESS] Airframe at dump {index}: {DescribeAirframe(dumped)} " +
-                      $"landing={IsLanding()}");
+            if (ApproachRequested)
+            {
+                Debug.Log($"[NOVR-HARNESS] Airframe at dump {index}: {DescribeAirframe(dumped)} " +
+                          $"landing={IsLanding()}");
+            }
+
+            // Unconditional: the pose comparison is only worth anything if a
+            // run with the approach hold off can be held against one with it
+            // on. Logging it only when the hold is active makes the hold
+            // unfalsifiable as the cause.
             Debug.Log($"[NOVR-HARNESS] Projection at dump {index}:\n    {DescribeProjection(dumped)}");
         }
 
