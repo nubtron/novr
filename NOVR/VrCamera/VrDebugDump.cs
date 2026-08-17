@@ -519,9 +519,16 @@ public static class VrDebugDump
         try
         {
             var count = 0;
-            foreach (var canvas in UnityEngine.Object.FindObjectsOfType<Canvas>())
+            // FindObjectsOfType skips inactive objects, so a canvas that has
+            // been switched off reads identically to one that does not exist —
+            // and those need opposite fixes. It cost a run to notice: the sweep
+            // reported no HUDCanvas at all while the harness, walking the
+            // hierarchy directly, was reporting SceneEssentials/Canvas/HUDCanvas
+            // present with an inactive parent.
+            foreach (var canvas in Resources.FindObjectsOfTypeAll<Canvas>())
             {
                 if (canvas == null || !canvas.isRootCanvas) continue;
+                if (!canvas.gameObject.scene.IsValid()) continue;
                 if (canvas.renderMode != RenderMode.WorldSpace)
                 {
                     SweepScreenCanvas(canvas);
@@ -629,6 +636,18 @@ public static class VrDebugDump
         }
     }
 
+    /// <summary>
+    /// Full scene path. Canvas names are not unique — this scene has two
+    /// GameObjects called "Canvas", one of them the parent of HUDCanvas — and a
+    /// bare name in the inventory makes them the same row.
+    /// </summary>
+    private static string FullPath(Transform node)
+    {
+        var path = node.name;
+        for (var t = node.parent; t != null; t = t.parent) path = t.name + "/" + path;
+        return path;
+    }
+
     private static string PathUnder(Transform root, Transform node)
     {
         var path = node.name;
@@ -641,19 +660,23 @@ public static class VrDebugDump
 
     private static void SweepCanvases()
     {
-        var canvases = UnityEngine.Object.FindObjectsOfType<Canvas>();
+        // Same reason as the graphic sweep: an inactive canvas has to be
+        // distinguishable from an absent one.
+        var canvases = Resources.FindObjectsOfTypeAll<Canvas>();
         var count = 0;
         foreach (var canvas in canvases)
         {
+            if (canvas == null || !canvas.gameObject.scene.IsValid()) continue;
             if (count++ >= 100) break;
             try
             {
                 var rect = canvas.transform as RectTransform;
                 CanvasEntries.Add(new CanvasEntry
                 {
-                    Name = canvas.name,
+                    Name = FullPath(canvas.transform),
                     Enabled = canvas.enabled,
                     Active = canvas.gameObject.activeInHierarchy,
+                    SelfActive = canvas.gameObject.activeSelf,
                     RenderMode = (int)canvas.renderMode,
                     WorldCamera = canvas.worldCamera != null ? canvas.worldCamera.name : null,
                     PlaneDistance = canvas.planeDistance,
@@ -871,7 +894,7 @@ public static class VrDebugDump
         txt.AppendLine("--- canvases ---");
         foreach (var c in CanvasEntries)
         {
-            txt.AppendLine($"{c.Name}: enabled={c.Enabled} active={c.Active} renderMode={c.RenderMode} " +
+            txt.AppendLine($"{c.Name}: enabled={c.Enabled} active={c.Active} selfActive={c.SelfActive} renderMode={c.RenderMode} " +
                            $"worldCamera={(c.WorldCamera ?? "<null>")} planeDistance={F(c.PlaneDistance)} " +
                            $"sortingOrder={c.SortingOrder} layer={c.SortingLayer} size={Vec(c.SizeDelta)} pos={Vec(c.Position)}");
         }
@@ -1125,6 +1148,7 @@ public static class VrDebugDump
         public string Name = "";
         public bool Enabled;
         public bool Active;
+        public bool SelfActive;
         public int RenderMode;
         public string? WorldCamera;
         public float PlaneDistance;
