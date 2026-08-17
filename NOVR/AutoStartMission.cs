@@ -494,6 +494,7 @@ public class AutoStartMission : MonoBehaviour
             // being excused, and Pilot's job may run between this frame's
             // Update and the next FixedUpdate.
             HoldingApproach = true;
+            _holdVelocity = Vector3.zero;
             ForgetAcceleration(aircraft, Vector3.zero);
             aircraft.transform.SetPositionAndRotation(position, rotation);
             Physics.SyncTransforms();
@@ -642,9 +643,16 @@ public class AutoStartMission : MonoBehaviour
             // job measures is bounded by construction, whichever of us runs
             // first. Half a second of ramp, and the aircraft is held from then
             // on at a velocity that never changes again.
+            // Ramped from what the hold last commanded, not from what the
+            // rigidbody currently reads. Reading the body back put the airspeed
+            // at 3683 m/s: teleporting the body every step leaves it with a
+            // velocity that has nothing to do with flight, and a ramp that
+            // starts there spends forty seconds converging on the number it was
+            // supposed to hold. The hold owns this value outright.
             var target = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
             var maxDelta = SafeAcceleration * Time.fixedDeltaTime * 9.81f;
-            var velocity = Vector3.MoveTowards(aircraft.rb.velocity, target, maxDelta);
+            var velocity = Vector3.MoveTowards(_holdVelocity, target, maxDelta);
+            _holdVelocity = velocity;
 
             aircraft.rb.velocity = velocity;
             aircraft.rb.angularVelocity = Vector3.zero;
@@ -830,6 +838,7 @@ public class AutoStartMission : MonoBehaviour
                          $"{DescribePilot(aircraft)} {DescribeView()}");
     }
 
+    private Vector3 _holdVelocity;
     private float _lastPilotHitPoints = float.NaN;
     private bool _lastPilotDead;
 
