@@ -239,6 +239,14 @@ public class AutoStartMission : MonoBehaviour
     /// </summary>
     private const float MinTerrainClearance = 120f;
 
+    /// <summary>
+    /// The most the hold will change the aircraft's velocity by, in g. Well
+    /// under the 20 g at which <c>Pilot</c> starts taking damage, because the
+    /// damage term is quadratic and the margin costs only a fraction of a
+    /// second of ramp.
+    /// </summary>
+    private const float SafeAcceleration = 8f;
+
     private static readonly FieldInfo LandingField =
         AccessTools.Field(typeof(AirbaseOverlay), "landing");
 
@@ -590,7 +598,21 @@ public class AutoStartMission : MonoBehaviour
         {
             aircraft.rb.position = position;
             aircraft.rb.rotation = rotation;
-            var velocity = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
+
+            // Approached at a survivable rate rather than snapped to.
+            //
+            // Zeroing the pilot's remembered velocity was the obvious fix and
+            // it only got the damage down from 65504 to 2486: whether it helps
+            // depends on whether this FixedUpdate runs before or after Pilot's
+            // own fixed-step job, and script order is not ours to choose. A
+            // per-step cap needs no such luck — the acceleration the pilot's
+            // job measures is bounded by construction, whichever of us runs
+            // first. Half a second of ramp, and the aircraft is held from then
+            // on at a velocity that never changes again.
+            var target = ApproachVelocity(aircraft.GetAircraftParameters().takeoffSpeed);
+            var maxDelta = SafeAcceleration * Time.fixedDeltaTime * 9.81f;
+            var velocity = Vector3.MoveTowards(aircraft.rb.velocity, target, maxDelta);
+
             aircraft.rb.velocity = velocity;
             aircraft.rb.angularVelocity = Vector3.zero;
             ForgetAcceleration(aircraft, velocity);
