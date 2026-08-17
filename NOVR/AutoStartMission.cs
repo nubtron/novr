@@ -245,6 +245,9 @@ public class AutoStartMission : MonoBehaviour
     private static readonly FieldInfo EngineOperableField =
         AccessTools.Field(typeof(TurbineEngine), "operable");
 
+    private static readonly FieldInfo FlightHudCanvasField =
+        AccessTools.Field(typeof(FlightHud), "canvas");
+
     private bool _approachPlaced;
     private bool _approachSettled;
     private float _approachDeadline;
@@ -575,7 +578,7 @@ public class AutoStartMission : MonoBehaviour
 
             return $"{health} ignition={aircraft.Ignition} thrust={thrust:0} " +
                    $"speed={(aircraft.rb != null ? aircraft.rb.velocity.magnitude : 0f):0} m/s " +
-                   $"radarAlt={aircraft.radarAlt:0} m";
+                   $"radarAlt={aircraft.radarAlt:0} m {DescribeView()}";
         }
         catch (Exception e)
         {
@@ -669,6 +672,39 @@ public class AutoStartMission : MonoBehaviour
         catch (Exception e)
         {
             return $"(could not describe the approach: {e.Message})";
+        }
+    }
+
+    /// <summary>
+    /// The camera state, and whether the flight HUD canvas is switched on.
+    ///
+    /// <para>These belong together because one drives the other:
+    /// <c>FlightHud.EnableCanvas(false)</c> is called by the entry of every
+    /// camera state that is not the cockpit — relative, controlled, TV,
+    /// selection, and the map. So a HUD canvas that is off is almost never a
+    /// HUD problem; it is the view having left the cockpit, and every symbol
+    /// the run was capturing goes with it.</para>
+    /// </summary>
+    private static string DescribeView()
+    {
+        try
+        {
+            var manager = SceneSingleton<CameraStateManager>.i;
+            var state = manager != null && manager.currentState != null
+                ? manager.currentState.GetType().Name
+                : "<no camera state>";
+
+            var hud = SceneSingleton<FlightHud>.i;
+            var hudCanvas = hud != null ? FlightHudCanvasField?.GetValue(hud) as Canvas : null;
+            var canvas = hudCanvas != null
+                ? $"hudCanvas={(hudCanvas.gameObject.activeInHierarchy ? "on" : "OFF")}"
+                : "hudCanvas=<none>";
+
+            return $"view={state} {canvas}";
+        }
+        catch (Exception e)
+        {
+            return $"(could not describe the view: {e.Message})";
         }
     }
 
