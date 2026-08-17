@@ -78,9 +78,31 @@ public class AutoStartMission : MonoBehaviour
                   (_yaws != null ? $" Yaw sweep: {string.Join(", ", Array.ConvertAll(_yaws, y => $"{y:0.#}°"))}." : ""));
     }
 
+    /// <summary>
+    /// How long the run stays alive after its last dump.
+    ///
+    /// <para>ScreenCapture.CaptureScreenshot writes mirror.png asynchronously.
+    /// Writing harness.done immediately let the launcher close the game first,
+    /// and the file that eventually landed was of a much later frame — one run
+    /// captured the faction-select menu, several seconds after MissionManager
+    /// had been destroyed, while meta.txt from the same dump correctly recorded
+    /// an aircraft on final approach. A mirror that disagrees with its own
+    /// metadata is worse than no mirror, because it is the half of the dump a
+    /// person actually looks at.</para>
+    /// </summary>
+    private const float ShutdownGrace = 2f;
+
+    private float _finishAt;
+
     private void Update()
     {
         if (_finished) return;
+
+        if (_finishAt > 0f)
+        {
+            if (Time.unscaledTime >= _finishAt) Finish();
+            return;
+        }
 
         if (!_launched)
         {
@@ -867,7 +889,10 @@ public class AutoStartMission : MonoBehaviour
                 ? $"hudCanvas={(hudCanvas.gameObject.activeInHierarchy ? "on" : "OFF")}"
                 : "hudCanvas=<none>";
 
-            return $"view={state} {canvas}";
+            var manager2 = SceneSingleton<CameraStateManager>.i;
+            var main = manager2 != null && manager2.mainCamera != null ? manager2.mainCamera.name : "<null>";
+
+            return $"view={state} {canvas} mainCamera={main}";
         }
         catch (Exception e)
         {
@@ -1267,7 +1292,8 @@ public class AutoStartMission : MonoBehaviour
         // pixels, which is how a crash got reported as an approach.
         if (ApproachRequested && GameManager.GetLocalAircraft(out var dumped) && dumped != null)
         {
-            Debug.Log($"[NOVR-HARNESS] Airframe at dump {index}: {DescribeAirframe(dumped)}");
+            Debug.Log($"[NOVR-HARNESS] Airframe at dump {index}: {DescribeAirframe(dumped)} " +
+                      $"landing={IsLanding()}");
         }
 
         if (_dumpsRemaining > 0)
@@ -1276,7 +1302,8 @@ public class AutoStartMission : MonoBehaviour
             return;
         }
 
-        Finish();
+        // Not Finish() — see _finishAt.
+        _finishAt = Time.unscaledTime + ShutdownGrace;
     }
 
     /// <summary>
