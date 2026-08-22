@@ -20,6 +20,7 @@ public static class CapturedHmd
     public static ConfigEntry<float> VisorFieldOfView;
     public static ConfigEntry<float> PanelShading;
     public static ConfigEntry<float> PanelSpread;
+    public static ConfigEntry<bool> PanelLock;
     public static ConfigEntry<bool> GazeDesignator;
     public static ConfigEntry<bool> ViewIcons;
 
@@ -77,6 +78,20 @@ public static class CapturedHmd
                 + "bearing, horizon) are not affected: the game's own HMD settings place those. "
                 + "Takes effect immediately.",
                 new AcceptableValueRange<float>(0f, 30f)));
+
+        PanelLock = config.Bind(
+            "Experimental",
+            "Captured HMD Panel Lock",
+            true,
+            "Fix the tactical map and the weapon/countermeasure readout in the cockpit, so they "
+            + "hold still while you look around, instead of carrying them on the head-locked "
+            + "visor with the rest of the helmet display. The flat game puts them on the screen "
+            + "because a screen is where the pilot is already looking; in VR that makes two large, "
+            + "dense panels ride your view wherever it goes. The four HMD readouts (speed, "
+            + "altitude, bearing, horizon) stay on the visor — they are small, they are what a "
+            + "helmet display is for, and they are the only widgets the game itself places and "
+            + "declutters. Off puts the map and the readout back on the visor. Takes effect "
+            + "immediately.");
 
         GazeDesignator = config.Bind(
             "Experimental",
