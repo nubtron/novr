@@ -209,6 +209,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private void TeardownCapture()
     {
         _capturing = false;
+        WeaponSafetyWash.Restore();
 
         if (_panelCanvas != null)
         {
@@ -388,11 +389,16 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         // already dimmer than the flat game draws it, and adding that to bright
         // cloud leaves it washed out. A tint multiplier on the panel is the one
         // knob that fixes it, and it is the same knob a real HUD has.
+        var brightness = Mathf.Clamp(CapturedFlightHud.Brightness?.Value ?? 2f, 0.25f, 8f);
         if (_panelImage != null && _panelImage.material != null)
-        {
-            var brightness = Mathf.Clamp(CapturedFlightHud.Brightness?.Value ?? 2f, 0.25f, 8f);
             _panelImage.material.SetColor("_Color", new Color(brightness, brightness, brightness, 1f));
-        }
+
+        // The one graphic on the HUD that is neither symbology nor a darkening
+        // mask, and so the one the brightness multiplier destroys. Held here
+        // rather than in HmdVisorBackend because it has to hold whether the
+        // weapon readout is on the visor, on the cockpit panel or - with the
+        // visor off - still on this one.
+        WeaponSafetyWash.Apply(brightness);
 
         ApplyFixedPlacement(distance);
         UpdateProjectionCamera();
