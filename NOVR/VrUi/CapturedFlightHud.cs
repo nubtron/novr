@@ -29,7 +29,7 @@ public static class CapturedFlightHud
         Enabled = config.Bind(
             "Experimental",
             "Captured Flight HUD",
-            false,
+            true,
             "Show the game's own flight HUD on a single flat panel fixed in the cockpit, like a "
             + "real HUD combiner, instead of converting the HUD canvas to world space and "
             + "re-projecting each symbol. Nothing is re-projected, so nothing lands in the wrong "
