@@ -179,8 +179,15 @@ public class ModConfiguration
         EnableNativeMenuUi = config.Bind(
             "Experimental",
             "Enable Native Menu UI",
-            true,
-            "Use NOVR's native VR menu UI for non-flight menus. Disable to fall back to the existing patched game UI.");
+            false,
+            "Which of the two VR menu implementations runs for non-flight menus. "
+            + "On uses the native VR menu UI: the menus rebuilt as VR panels, which is "
+            + "faithful to VR but only covers the screens that were rebuilt. Off — the "
+            + "default — captures the game's own menus through the engine's overlay path "
+            + "onto a VR panel, so every screen the game has is present, including ones "
+            + "no native panel exists for, at the cost of being a flat capture rather "
+            + "than a native one. Both are VR; neither is a fallback for the other, and "
+            + "the choice takes effect immediately.");
 
         NativeMenuScale = config.Bind(
             "Experimental",
