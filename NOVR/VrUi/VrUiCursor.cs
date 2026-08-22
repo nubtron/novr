@@ -46,10 +46,9 @@ public class VrUiCursor: NOVRBehaviour
     private const float MaxYawDegrees = 65f;
     private const float MaxPitchDegrees = 45f;
     private const float DefaultProjectionDistance = 5;
+    private const float CursorMinDistanceMeters = 1.0f;
     private const float CursorCanvasScale = 0.001f;
     private const int CursorTextureSize = 64;
-    private const float CursorRingRadius = 12f;
-    private const float CursorRingThickness = 4f;
     private const float CursorIdlePulseScale = 0.035f;
     private const float CursorIdlePulseSpeed = 5.5f;
     private const float CursorHoverScale = 1.18f;
@@ -57,9 +56,6 @@ public class VrUiCursor: NOVRBehaviour
     private const float CursorClickPulseScale = 0.22f;
     private const float CursorClickPulseDuration = 0.18f;
     private const float CursorAnimationLerpSpeed = 24f;
-    private static readonly Color CursorNormalColor = new Color32(100, 200, 100, 255);
-    private static readonly Color CursorHoverColor = new Color32(155, 255, 175, 255);
-    private static readonly Color CursorPressedColor = new Color32(255, 224, 92, 255);
     private GameObject? _cursor;
     private RectTransform? _cursorRectTransform;
     private Canvas? _cursorCanvas;
@@ -72,6 +68,7 @@ public class VrUiCursor: NOVRBehaviour
     private bool _hasInitializedEventSystem = false;
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
+    private bool _loggedMissingRealMouse;
     
     
     private int ScreenWidth => Screen.width;
@@ -137,11 +134,11 @@ public class VrUiCursor: NOVRBehaviour
         
         if (_virtualMouse == null)
         {
-            _realMouse = Mouse.current ?? throw new System.InvalidOperationException(
-                $"[{nameof(VrUiCursor)}] Unity InputSystem could not find an active hardware Mouse device during initialization.");
             _virtualMouse = InputSystem.AddDevice<Mouse>("VirtualMouse");
             Debug.Log($"[NOVR] Added VirtualMouse device: name='{_virtualMouse.name}', path='{_virtualMouse.path}', displayName='{_virtualMouse.displayName}'");
         }
+
+        if (!EnsureRealMouse()) return;
 
         if (!_hasInitializedEventSystem)
         {
@@ -179,6 +176,59 @@ public class VrUiCursor: NOVRBehaviour
         }
     }
     
+
+    /// <summary>
+    /// Point <see cref="_realMouse"/> at a live hardware mouse, re-acquiring it
+    /// when the one we were holding has been removed.
+    ///
+    /// <para><b>Why it is not cached for the session.</b> A removed
+    /// <c>InputDevice</c> keeps its managed object but loses its state block,
+    /// and <i>every</i> control read on it throws
+    /// (<c>InputControl.GetDeviceIndex</c>: "Cannot query value of control ...
+    /// before ... has been added to system"). The backend re-enumerates devices
+    /// mid-session, not only at startup — a single run logged seven
+    /// <c>OnNativeDeviceDiscovered</c> passes in fifty seconds — so a reference
+    /// taken once and held was one re-enumeration away from throwing on every
+    /// frame for the rest of the run. It threw *below* the cursor's own posing,
+    /// which is what made it hard to read: the cursor still tracked the head,
+    /// and nothing that clicks was ever reached again.</para>
+    ///
+    /// <para>Never selects our own VirtualMouse. <see cref="Mouse.current"/> is
+    /// whichever mouse last changed state, and this component writes to the
+    /// virtual one every frame, so <c>current</c> is almost always the wrong
+    /// answer here.</para>
+    /// </summary>
+    private bool EnsureRealMouse()
+    {
+        if (_realMouse != null && _realMouse.added) return true;
+
+        var reacquiring = _realMouse != null;
+        _realMouse = null;
+
+        foreach (var device in InputSystem.devices)
+        {
+            if (device is not Mouse mouse) continue;
+            if (!mouse.added || ReferenceEquals(mouse, _virtualMouse)) continue;
+            _realMouse = mouse;
+            break;
+        }
+
+        if (_realMouse == null)
+        {
+            if (reacquiring || !_loggedMissingRealMouse)
+            {
+                _loggedMissingRealMouse = true;
+                Debug.LogWarning($"[{nameof(VrUiCursor)}] No hardware Mouse device present; " +
+                                 "the VR cursor cannot forward buttons until one appears.");
+            }
+            return false;
+        }
+
+        _loggedMissingRealMouse = false;
+        Debug.Log($"[{nameof(VrUiCursor)}] {(reacquiring ? "Re-acquired" : "Acquired")} hardware mouse " +
+                  $"'{_realMouse.name}' (path '{_realMouse.path}').");
+        return true;
+    }
 
     private void UpdateCursorAngles()
     {
@@ -246,11 +296,12 @@ public class VrUiCursor: NOVRBehaviour
         _cursorCanvas.pixelPerfect = true;
 
         _cursorRectTransform = _cursor.GetComponent<RectTransform>();
-        _cursorRectTransform.sizeDelta = new Vector2(CursorTextureSize, CursorTextureSize);
+        var sizeMultiplier = Mathf.Clamp(ModConfiguration.Instance.CursorSizeMultiplier.Value, 1.0f, 3.0f);
+        _cursorRectTransform.sizeDelta = Vector2.one * (CursorTextureSize * sizeMultiplier);
         _cursorImage = _cursor.AddComponent<RawImage>();
         _cursorImage.raycastTarget = false;
         _cursorImage.texture = _texture;
-        _cursorImage.color = CursorNormalColor;
+        _cursorImage.color = Color.white;
         LayerHelper.SetLayerRecursive(_cursor.transform, LayerHelper.GetVrUiLayer());
         
         
@@ -262,13 +313,21 @@ public class VrUiCursor: NOVRBehaviour
     private float GetDistanceUnderCursor(Vector2 screenPos)
     {
         _cursorOverInteractive = false;
+        float distance;
         if (TryGetUiDistanceUnderCursor(screenPos, out var uiDistance, out var overInteractive))
         {
             _cursorOverInteractive = overInteractive;
-            return uiDistance;
+            distance = uiDistance;
+        }
+        else
+        {
+            distance = DefaultProjectionDistance;
         }
 
-        return DefaultProjectionDistance;
+        // Keep the cursor at least CursorMinDistanceMeters away from the
+        // camera: a UI element that nearly touches the lens would otherwise
+        // make the cursor gigantic on screen.
+        return Mathf.Max(distance, CursorMinDistanceMeters);
     }
 
     private bool TryGetUiDistanceUnderCursor(Vector2 screenPos, out float distance, out bool overInteractive)
@@ -355,17 +414,7 @@ public class VrUiCursor: NOVRBehaviour
         var targetScale = Vector3.one * (CursorCanvasScale * targetVisualScale);
         _cursor.transform.localScale = Vector3.Lerp(_cursor.transform.localScale, targetScale, Time.unscaledDeltaTime * CursorAnimationLerpSpeed);
 
-        var targetColor = CursorNormalColor;
-        if (_cursorOverInteractive)
-        {
-            targetColor = CursorHoverColor;
-        }
-        if (isPressed)
-        {
-            targetColor = CursorPressedColor;
-        }
-
-        _cursorImage.color = Color.Lerp(_cursorImage.color, targetColor, Time.unscaledDeltaTime * CursorAnimationLerpSpeed);
+        _cursorImage.color = Color.white;
     }
 
 
@@ -393,17 +442,35 @@ public class VrUiCursor: NOVRBehaviour
 
         var colors = new Color32[CursorTextureSize * CursorTextureSize];
         var center = new Vector2((CursorTextureSize - 1) * 0.5f, (CursorTextureSize - 1) * 0.5f);
-        var innerRadius = CursorRingRadius - CursorRingThickness * 0.5f;
-        var outerRadius = CursorRingRadius + CursorRingThickness * 0.5f;
         var transparent = new Color32(0, 0, 0, 0);
+        var outline = new Color32(0, 0, 0, 255);
+        var highlight = new Color32(0, 255, 255, 255);
 
         for (var y = 0; y < CursorTextureSize; y++)
         {
             for (var x = 0; x < CursorTextureSize; x++)
             {
-                var distanceFromCenter = Vector2.Distance(new Vector2(x, y), center);
-                var isRing = distanceFromCenter >= innerRadius && distanceFromCenter <= outerRadius;
-                colors[y * CursorTextureSize + x] = isRing ? Color.white : transparent;
+                var distance = Vector2.Distance(new Vector2(x, y), center);
+                var color = transparent;
+
+                if (distance >= 10.5f && distance <= 19.5f)
+                {
+                    color = outline;
+                }
+                if (distance >= 13.0f && distance <= 17.0f)
+                {
+                    color = highlight;
+                }
+                if (distance <= 4.0f)
+                {
+                    color = outline;
+                }
+                if (distance <= 2.0f)
+                {
+                    color = highlight;
+                }
+
+                colors[y * CursorTextureSize + x] = color;
             }
         }
 
