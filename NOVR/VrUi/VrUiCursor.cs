@@ -536,20 +536,31 @@ public class VrUiCursor: NOVRBehaviour
             triggerPressed = true;
         }
 
-        // Edge-track the keyboard click key so even a quick tap registers as a
-        // full press-and-release instead of being missed between frames.
+        // Held while the key is down, plus the frame it went down so a tap
+        // shorter than a frame still clicks.
+        //
+        // What this must not do is latch on the press edge and clear on the
+        // release edge. A release edge only exists in a frame this component
+        // runs, and Update() returns above here whenever the window is not
+        // focused — so an alt-tab loses it. That is not a corner case: the
+        // default click key is LeftAlt, so *Alt+Tab presses it*. The keydown
+        // landed while the game still had focus, the release never did, and
+        // the latch survived the focus cycle holding the virtual mouse's left
+        // button down for the rest of the session. A button that is already
+        // down produces no press edge, so nothing was ever clickable again,
+        // while the cursor — posed earlier in Update() — went on tracking the
+        // head as if nothing were wrong. Reading the key's own state cannot
+        // miss a transition it did not see.
         var clickKey = ModConfiguration.Instance.HeadGazeClickKey.Value;
         var keyboard = Keyboard.current;
         if (keyboard != null && clickKey != Key.None)
         {
-            if (keyboard[clickKey].wasPressedThisFrame)
-            {
-                _gazeKeyClickHeld = true;
-            }
-            if (keyboard[clickKey].wasReleasedThisFrame)
-            {
-                _gazeKeyClickHeld = false;
-            }
+            var key = keyboard[clickKey];
+            _gazeKeyClickHeld = key.isPressed || key.wasPressedThisFrame;
+        }
+        else
+        {
+            _gazeKeyClickHeld = false;
         }
         if (_gazeKeyClickHeld)
         {
