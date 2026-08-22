@@ -80,6 +80,11 @@ public class VrUiCursor: NOVRBehaviour
     private float _controllerIdleTime;
     private bool _controllerIdleTracked;
     private bool _hmdGazeActive;
+    private bool _stickModeActive;
+    private bool _stickModeLogged;
+    private Vector2 _stickScreenPosition;
+    private bool _stickPositionValid;
+    private Vector2 _stickScrollDelta;
     private Vector3 _controllerAimDirection = Vector3.forward;
     private bool _controllerTriggerPressed;
     private bool _controllerTriggerClicked;
@@ -192,6 +197,7 @@ public class VrUiCursor: NOVRBehaviour
                 _cursor.SetActive(false);
             }
             _gazeAnchorCaptured = false;
+            _stickPositionValid = false;
             return;
         }
 
@@ -202,6 +208,7 @@ public class VrUiCursor: NOVRBehaviour
                 _cursor.SetActive(false);
             }
             _gazeAnchorCaptured = false;
+            _stickPositionValid = false;
             return;
         }
         
@@ -242,7 +249,7 @@ public class VrUiCursor: NOVRBehaviour
         {
             position = screenPoint,
             delta = realMouse.delta.ReadValue(),
-            scroll = realMouse.scroll.ReadValue(),
+            scroll = realMouse.scroll.ReadValue() + _stickScrollDelta,
             buttons = buttons
         });
 
@@ -361,12 +368,24 @@ public class VrUiCursor: NOVRBehaviour
         }
         else
         {
-            var mouse = _realMouse;
-            if (mouse == null) return;
+            // The stick cursor is the mouse cursor with a different source of
+            // screen position: same projection, same bounds, same reference
+            // rotation — which is what makes it stay put on the panel through
+            // a recentre, and what lets the mouse take over mid-menu.
+            Vector2 pointerPosition;
+            if (_stickModeActive)
+            {
+                pointerPosition = _stickScreenPosition;
+            }
+            else
+            {
+                var mouse = _realMouse;
+                if (mouse == null) return;
+                pointerPosition = mouse.position.ReadValue();
+            }
 
-            var mousePos = mouse.position.ReadValue();
-            float cursorPitch = ProjectPitchAngle(mousePos.y);
-            float cursorYaw = ProjectYawAngle(mousePos.x);
+            float cursorPitch = ProjectPitchAngle(pointerPosition.y);
+            float cursorYaw = ProjectYawAngle(pointerPosition.x);
 
             Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
             Quaternion referenceRotation = GetProjectionReferenceRotation();
@@ -401,6 +420,22 @@ public class VrUiCursor: NOVRBehaviour
     {
         _hmdGazeActive = false;
         _controllerModeActive = false;
+        _stickModeActive = false;
+        _stickScrollDelta = Vector2.zero;
+
+        if (StickCursorConfig.Enabled)
+        {
+            _stickModeActive = true;
+            UpdateStickCursorInput();
+            if (!_stickModeLogged)
+            {
+                Debug.Log("[VrUiCursor] Stick cursor active: the cursor is driven by the game's own view axes " +
+                          "(and the map scroll axes outside the maximized map); clicks from trigger, Fire or Select.");
+                _stickModeLogged = true;
+            }
+            return;
+        }
+        _stickModeLogged = false;
 
         // A controller in the hand outranks the configured mode, and only for
         // as long as it is held: UpdateControllerInput hands the cursor back
@@ -555,6 +590,164 @@ public class VrUiCursor: NOVRBehaviour
         _controllerIdleLastPosition = position;
         _controllerIdleLastRotation = rotation;
         return _controllerIdleTime > timeout;
+    }
+
+    /// <summary>
+    /// Move the cursor from the game's own axes, in screen space, and clamp it
+    /// to the screen rect the projection maps from.
+    ///
+    /// <para><b>Which axes, and why the game's own.</b> "Pan View"/"Tilt View"
+    /// are dead sticks in a VR cockpit — the head does the looking, and
+    /// <c>CameraCockpitStatePatch</c> already zeroes the state's panView and
+    /// tiltView every frame — so taking them costs nothing and needs no new
+    /// binding from the pilot. "Move Map Horizontal"/"Move Map Vertical" are
+    /// only read by <c>DynamicMap.MapControls</c>, which the game runs solely
+    /// while the map is maximized; everywhere else they are free, so the
+    /// cursor gets them there and gives them back over the map.</para>
+    ///
+    /// <para><b>Velocity, not position.</b> The axis is integrated as a rate,
+    /// which is how the flat game treats it too (<c>panView +=
+    /// GetAxis("Pan View") * ...</c>). It also makes the same action work
+    /// whether it is bound to a self-centring stick, a hat or a mouse axis —
+    /// an absolute mapping would only be meaningful for the first.</para>
+    /// </summary>
+    private void UpdateStickCursorInput()
+    {
+        if (!_stickPositionValid)
+        {
+            // Centre, rather than wherever the desktop pointer was parked: in
+            // a headset the mouse is somewhere you cannot see, and a menu that
+            // opens with the cursor already off in a corner reads as a cursor
+            // that failed to appear.
+            _stickScreenPosition = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            _stickPositionValid = true;
+        }
+
+        var realMouse = _realMouse;
+        if (realMouse != null && realMouse.delta.ReadValue() != Vector2.zero)
+        {
+            // The mouse still works, and wins the moment it actually moves.
+            _stickScreenPosition = realMouse.position.ReadValue();
+        }
+        else
+        {
+            var player = GameManager.playerInput;
+            if (player != null)
+            {
+                var mapMaximized = global::DynamicMap.mapMaximized;
+                // Over the map, a held (real) mouse button is the game's own
+                // drag-pan, which reads these same two axes. Moving the cursor
+                // as well would fight it, so the drag wins.
+                var dragPanning = mapMaximized && Input.GetMouseButton(0);
+
+                var axis = Vector2.zero;
+                if (!dragPanning)
+                {
+                    // Screen-space signs, not view signs: the game's view axes
+                    // mean "+Pan View = right, +Tilt View = down". Both are
+                    // readable off the flat game twice over — CameraCockpitState
+                    // feeds tiltView straight into Euler X (positive = looking
+                    // down), and the radial menu, the one screen-space pointer
+                    // the flat game builds out of these same two axes, takes
+                    // "GetAxis("Pan View") * right - GetAxis("Tilt View") * up".
+                    axis.x += ApplyStickDeadzone(player.GetAxis("Pan View"));
+                    axis.y -= ApplyStickDeadzone(player.GetAxis("Tilt View"));
+                }
+                if (StickCursorConfig.UseMapAxes && !mapMaximized)
+                {
+                    // These two are already screen-space: DynamicMap adds them
+                    // to positionOffset and applies -offset to the map image,
+                    // so positive scrolls the view right and up.
+                    axis.x += ApplyStickDeadzone(player.GetAxis("Move Map Horizontal"));
+                    axis.y += ApplyStickDeadzone(player.GetAxis("Move Map Vertical"));
+                }
+                if (StickCursorConfig.InvertVertical)
+                {
+                    axis.y = -axis.y;
+                }
+                // Two sources can push the same way; a diagonal must not be
+                // faster than a straight line either.
+                if (axis.sqrMagnitude > 1f)
+                {
+                    axis.Normalize();
+                }
+
+                // Unscaled, because every surface this cursor is for runs at
+                // timeScale 0, and capped, because a frame lost to a scene load
+                // must not fling the cursor across the panel.
+                var deltaTime = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+                var speed = StickCursorConfig.Speed * deltaTime;
+                _stickScreenPosition += new Vector2(axis.x * Screen.width, axis.y * Screen.height) * speed;
+            }
+        }
+
+        _stickScreenPosition.x = Mathf.Clamp(_stickScreenPosition.x, 0f, Screen.width);
+        _stickScreenPosition.y = Mathf.Clamp(_stickScreenPosition.y, 0f, Screen.height);
+
+        UpdateStickScrollInput();
+        UpdateStickClickInput();
+    }
+
+    private static float ApplyStickDeadzone(float value)
+    {
+        var deadzone = Mathf.Clamp(StickCursorConfig.Deadzone, 0f, 0.9f);
+        var magnitude = Mathf.Abs(value);
+        if (magnitude <= deadzone) return 0f;
+
+        // Rescaled rather than merely clipped, so the first millimetre past the
+        // deadzone is a crawl instead of a jump.
+        return Mathf.Sign(value) * Mathf.Clamp01((magnitude - deadzone) / (1f - deadzone));
+    }
+
+    /// <summary>
+    /// Scroll the list under the cursor with the "Zoom View" axis, so a long
+    /// settings page is reachable without a wheel.
+    ///
+    /// <para>Only while flight controls are off and the map is not maximized:
+    /// those are exactly the two states in which something else already owns
+    /// that axis — <c>VrZoomController</c> in the cockpit and the map's own
+    /// zoom over the map — and both of those are worth more than scrolling.</para>
+    /// </summary>
+    private void UpdateStickScrollInput()
+    {
+        _stickScrollDelta = Vector2.zero;
+
+        var speed = StickCursorConfig.ScrollSpeed;
+        if (speed <= 0f) return;
+        if (GameManager.flightControlsEnabled || global::DynamicMap.mapMaximized) return;
+
+        var player = GameManager.playerInput;
+        if (player == null) return;
+
+        var axis = ApplyStickDeadzone(player.GetAxis("Zoom View"));
+        if (axis == 0f) return;
+
+        // 120 units is one wheel notch, which is what InputSystemUIInputModule
+        // divides by; the rest is notches per second.
+        var deltaTime = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+        _stickScrollDelta = new Vector2(0f, axis * 120f * speed * deltaTime);
+    }
+
+    /// <summary>
+    /// Clicks for the stick cursor: either trigger, the game's "Fire", or the
+    /// game's "Select" — the action the flat game already uses to pick an icon
+    /// off the tactical map, so the button the pilot reaches for there also
+    /// works on every other panel.
+    /// </summary>
+    private void UpdateStickClickInput()
+    {
+        var pressed =
+            MotionControllerPose.TryRead(XRNode.RightHand, out _, out _, out _, out _, out var rightTrigger) && rightTrigger > 0.5f ||
+            MotionControllerPose.TryRead(XRNode.LeftHand, out _, out _, out _, out _, out var leftTrigger) && leftTrigger > 0.5f;
+
+        var player = GameManager.playerInput;
+        if (player != null && (player.GetButton("Fire") || player.GetButton("Select")))
+        {
+            pressed = true;
+        }
+
+        _controllerTriggerClicked = pressed && !_controllerTriggerPressed;
+        _controllerTriggerPressed = pressed;
     }
 
     /// <summary>
