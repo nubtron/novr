@@ -1,4 +1,5 @@
 using BepInEx.Configuration;
+using UnityEngine;
 
 namespace NOVR.VrUi;
 
@@ -18,11 +19,32 @@ namespace NOVR.VrUi;
 [ConfigSection(Order = 96)]
 public static class CapturedFlightHud
 {
+    /// <summary>
+    /// Metres. Far enough that the panel is collimated in every cue the eye
+    /// has: 0.43 arc-minutes of stereo disparity across a 63 mm IPD (a fifth
+    /// of a pixel on a 25-PPD headset, against a stereo threshold of about
+    /// one arc-minute) and 0.7 arc-minutes of parallax per 10 cm of head
+    /// movement. See <see cref="Distance"/>'s description for why the panel
+    /// costs nothing to move out.
+    /// </summary>
+    public const float DefaultDistanceMeters = 500f;
+
+    private const float MinDistanceMeters = 2f;
+    private const float MaxDistanceMeters = 1000f;
+
     public static ConfigEntry<bool> Enabled;
     public static ConfigEntry<bool> Conformal;
     public static ConfigEntry<float> Distance;
     public static ConfigEntry<float> FieldOfView;
     public static ConfigEntry<float> Brightness;
+
+    /// <summary>
+    /// The panel distance the backends place at, clamped and defaulted in one
+    /// place. Four call sites shared the literals before, which is how the
+    /// value and the arithmetic that justified it drifted apart unnoticed.
+    /// </summary>
+    public static float DistanceMeters =>
+        Mathf.Clamp(Distance?.Value ?? DefaultDistanceMeters, MinDistanceMeters, MaxDistanceMeters);
 
     public static void Bind(ConfigFile config)
     {
@@ -57,14 +79,22 @@ public static class CapturedFlightHud
         Distance = config.Bind(
             "Experimental",
             "Captured HUD Distance",
-            25f,
+            DefaultDistanceMeters,
             new ConfigDescription(
                 "Metres in front of the pilot to place the HUD panel. This stands in for "
                 + "collimation rather than setting the apparent size (which follows Captured HUD "
-                + "Field Of View): far away means near-zero stereo disparity, so the symbology "
-                + "reads as projected at infinity the way a real HUD does. Closer than about 10 m "
-                + "it starts to read as a screen hanging in the cockpit.",
-                new AcceptableValueRange<float>(2f, 200f)));
+                + "Field Of View): a real combiner projects at infinity, so its symbology has no "
+                + "stereo disparity and does not slide against the world when you move your head, "
+                + "and a distant panel is how that is approximated. Every error scales as one "
+                + "over the distance, so the panel is cheap to push out — the width is derived "
+                + "from the angle, which holds the apparent size and the texture's angular "
+                + "resolution constant however far away it is. At the default 500 m the disparity "
+                + "is 0.43 arc-minutes and a 10 cm lean moves the symbology 0.7 arc-minutes "
+                + "against the world; both are under what the eye resolves. Bring it in and it "
+                + "starts to read as a screen hanging in the cockpit instead: 25 m is 8.8 "
+                + "arc-minutes and 14 arc-minutes per 10 cm, which is several pixels of split "
+                + "between the eyes and visible sliding as you move.",
+                new AcceptableValueRange<float>(MinDistanceMeters, MaxDistanceMeters)));
 
         FieldOfView = config.Bind(
             "Experimental",

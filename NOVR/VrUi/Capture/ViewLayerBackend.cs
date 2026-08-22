@@ -415,7 +415,7 @@ public class ViewLayerBackend : NOVRBehaviour
         if (mount == null) return;
 
         var head = mount.transform;
-        var distance = Mathf.Clamp(CapturedFlightHud.Distance?.Value ?? 25f, 2f, 200f);
+        var distance = CapturedFlightHud.DistanceMeters;
         _panelRect.localPosition = head.localPosition + head.localRotation * new Vector3(0f, 0f, distance);
         _panelRect.localRotation = head.localRotation;
     }
@@ -438,7 +438,7 @@ public class ViewLayerBackend : NOVRBehaviour
         EnsurePanel();
         if (_panelRect == null) return;
 
-        var distance = Mathf.Clamp(CapturedFlightHud.Distance?.Value ?? 25f, 2f, 200f);
+        var distance = CapturedFlightHud.DistanceMeters;
         var fovDegrees = Mathf.Clamp(CapturedHmd.VisorFieldOfView?.Value ?? 70f, 30f, 110f);
         var widthMeters = 2f * distance * Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad);
 

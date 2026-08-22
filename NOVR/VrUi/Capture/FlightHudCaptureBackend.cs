@@ -39,11 +39,28 @@ namespace NOVR.VrUi.Capture;
 ///
 /// Distance stands in for collimation. A real combiner projects at infinity, so
 /// the symbology has no stereo disparity and no parallax against the head. A
-/// quad a long way out is the cheap approximation: at the default 25 m the
-/// residual disparity across a 64 mm IPD is about 2.6 arc-minutes, below what
-/// the eye resolves, so it reads as projected rather than as a screen hanging in
-/// the cockpit. Size is given as an angle rather than metres for the same
-/// reason — what matters is how much of the view it covers, not how big it is.
+/// quad a long way out is the cheap approximation, and every error it leaves
+/// scales as one over the distance: across a 63 mm IPD the residual disparity
+/// is <c>2*atan(IPD/2/d)</c>, and a lean of <c>x</c> moves the symbology
+/// <c>x/d</c> against the world. At the default 500 m that is 0.43 arc-minutes
+/// and 0.7 arc-minutes per 10 cm — both under what the eye resolves. Size is
+/// given as an angle rather than metres so that pushing the panel out costs
+/// nothing: the width is <c>2*d*tan(fov/2)</c>, which holds the apparent size
+/// and the texture's angular resolution constant at any distance.
+///
+/// The default was 25 m until 2026-08-22, on the strength of a figure that had
+/// been converted wrong — <c>0.064/25 = 0.00256</c> is 2.56 <em>milliradians</em>
+/// and was written down as "2.6 arc-minutes, below what the eye resolves". It is
+/// 8.8 arc-minutes, about nine times the stereo threshold, and the pilot's
+/// report was that the symbology floated in front of the world rather than on
+/// it. 2.6 arc-minutes is what 83 m gives.
+///
+/// Nothing about the renderer resists the distance, which is why the old
+/// default was under-chosen rather than a trade: the panel is drawn by
+/// <c>VrCockpitHudCamera</c>, last in the camera stack at <c>postFX=False</c>,
+/// so it is composited after every post-processing pass and no atmospheric term
+/// can dim it with range; its far clip is 10 km against a game camera whose own
+/// projection reaches 77 km.
 ///
 /// **Conformal mode** (the default) makes the world line up with the symbols
 /// the way a real HUD does: by fixing the *symbol generator's* eye, not by
@@ -66,8 +83,8 @@ namespace NOVR.VrUi.Capture;
 /// after, so every symbol is projected from the fixed eye. The airframe-fixed
 /// panel spanning the same frustum then puts every pixel back on its ray by
 /// construction: the velocity vector sits on the flight path, markers sit on
-/// their units, and head motion is handled by collimation (at 25 m, a 10 cm
-/// lean moves the symbols ~0.23 degrees against the world).
+/// their units, and head motion is handled by collimation (at 500 m, a 10 cm
+/// lean moves the symbols ~0.7 arc-minutes against the world).
 ///
 /// Free win from the swap: <c>FlightHud</c> counter-rolls the pitch ladder by
 /// the projecting camera's roll, and the design eye rolls with the airframe —
@@ -364,7 +381,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     {
         if (_panelRect == null || _panelCanvas == null) return;
 
-        var distance = Mathf.Clamp(CapturedFlightHud.Distance?.Value ?? 25f, 2f, 200f);
+        var distance = CapturedFlightHud.DistanceMeters;
 
         // Additive against a daylit sky needs help: the overlay pass writes the
         // HUD pre-multiplied by its own alpha, so what lands in the texture is
@@ -397,7 +414,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         _panelRect.localScale = new Vector3(scale, scale, scale);
 
         // Straight down the nose. The pilot's eye is not exactly at the root
-        // origin, but at 25 m the difference is a fraction of a degree.
+        // origin, but at 500 m the difference is under an arc-minute.
         _panelRect.localPosition = new Vector3(0f, 0f, distance);
         _panelRect.localRotation = Quaternion.identity;
 

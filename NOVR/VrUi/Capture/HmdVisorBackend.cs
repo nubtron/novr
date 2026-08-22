@@ -354,7 +354,7 @@ public class HmdVisorBackend : NOVRBehaviour
         EnsurePanel();
         if (_panelRect == null) return;
 
-        var distance = Mathf.Clamp(CapturedFlightHud.Distance?.Value ?? 25f, 2f, 200f);
+        var distance = CapturedFlightHud.DistanceMeters;
         var fovDegrees = Mathf.Clamp(CapturedHmd.VisorFieldOfView?.Value ?? 70f, 30f, 110f);
         var widthMeters = 2f * distance * Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad);
 
