@@ -68,6 +68,7 @@ public class VrUiCursor: NOVRBehaviour
     private bool _hasInitializedEventSystem = false;
     private Mouse? _virtualMouse;
     private Mouse? _realMouse;
+    private bool _loggedMissingRealMouse;
     
     
     private int ScreenWidth => Screen.width;
@@ -133,11 +134,11 @@ public class VrUiCursor: NOVRBehaviour
         
         if (_virtualMouse == null)
         {
-            _realMouse = Mouse.current ?? throw new System.InvalidOperationException(
-                $"[{nameof(VrUiCursor)}] Unity InputSystem could not find an active hardware Mouse device during initialization.");
             _virtualMouse = InputSystem.AddDevice<Mouse>("VirtualMouse");
             Debug.Log($"[NOVR] Added VirtualMouse device: name='{_virtualMouse.name}', path='{_virtualMouse.path}', displayName='{_virtualMouse.displayName}'");
         }
+
+        if (!EnsureRealMouse()) return;
 
         if (!_hasInitializedEventSystem)
         {
@@ -175,6 +176,59 @@ public class VrUiCursor: NOVRBehaviour
         }
     }
     
+
+    /// <summary>
+    /// Point <see cref="_realMouse"/> at a live hardware mouse, re-acquiring it
+    /// when the one we were holding has been removed.
+    ///
+    /// <para><b>Why it is not cached for the session.</b> A removed
+    /// <c>InputDevice</c> keeps its managed object but loses its state block,
+    /// and <i>every</i> control read on it throws
+    /// (<c>InputControl.GetDeviceIndex</c>: "Cannot query value of control ...
+    /// before ... has been added to system"). The backend re-enumerates devices
+    /// mid-session, not only at startup — a single run logged seven
+    /// <c>OnNativeDeviceDiscovered</c> passes in fifty seconds — so a reference
+    /// taken once and held was one re-enumeration away from throwing on every
+    /// frame for the rest of the run. It threw *below* the cursor's own posing,
+    /// which is what made it hard to read: the cursor still tracked the head,
+    /// and nothing that clicks was ever reached again.</para>
+    ///
+    /// <para>Never selects our own VirtualMouse. <see cref="Mouse.current"/> is
+    /// whichever mouse last changed state, and this component writes to the
+    /// virtual one every frame, so <c>current</c> is almost always the wrong
+    /// answer here.</para>
+    /// </summary>
+    private bool EnsureRealMouse()
+    {
+        if (_realMouse != null && _realMouse.added) return true;
+
+        var reacquiring = _realMouse != null;
+        _realMouse = null;
+
+        foreach (var device in InputSystem.devices)
+        {
+            if (device is not Mouse mouse) continue;
+            if (!mouse.added || ReferenceEquals(mouse, _virtualMouse)) continue;
+            _realMouse = mouse;
+            break;
+        }
+
+        if (_realMouse == null)
+        {
+            if (reacquiring || !_loggedMissingRealMouse)
+            {
+                _loggedMissingRealMouse = true;
+                Debug.LogWarning($"[{nameof(VrUiCursor)}] No hardware Mouse device present; " +
+                                 "the VR cursor cannot forward buttons until one appears.");
+            }
+            return false;
+        }
+
+        _loggedMissingRealMouse = false;
+        Debug.Log($"[{nameof(VrUiCursor)}] {(reacquiring ? "Re-acquired" : "Acquired")} hardware mouse " +
+                  $"'{_realMouse.name}' (path '{_realMouse.path}').");
+        return true;
+    }
 
     private void UpdateCursorAngles()
     {
