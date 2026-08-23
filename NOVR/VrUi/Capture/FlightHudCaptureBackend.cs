@@ -1,0 +1,737 @@
+using UnityEngine;
+using UnityEngine.Rendering.Universal;
+using UnityEngine.UI;
+using UnityEngine.XR;
+using NOVR.VrCamera;
+
+namespace NOVR.VrUi.Capture;
+
+/// <summary>
+/// Shows the game's own flight HUD in VR as a single flat panel fixed in the
+/// cockpit, the way a real HUD combiner is fixed to the airframe.
+///
+/// The mod's normal path takes the HUD apart: the canvas is converted to world
+/// space and every symbol — velocity vector, pipper, unit markers, threat
+/// notches, pitch ladder — is re-projected individually, which is eight Harmony
+/// patches and a per-element scale. This backend does the opposite. It leaves
+/// the HUD in ScreenSpaceOverlay exactly as the base game authored it, renders
+/// that overlay pass into a texture (the same machinery
+/// <see cref="MenuCaptureBackend"/> uses for the menus), and puts the texture on
+/// one quad. Nothing is re-projected, so nothing can be re-projected wrongly.
+///
+/// The trade is stated up front rather than discovered: a flat panel cannot
+/// conform symbols to the world. The velocity vector marks where the flat HUD
+/// put it, not where the aircraft is actually going as seen from the headset,
+/// and a target marker sits where the mono camera projected it. It is a HUD you
+/// read, not a HUD you aim with.
+///
+/// **Why the panel needs no anchoring code.** The NOVR root is created at
+/// identity and never moved; <c>VrCockpitHudCamera</c> hangs off it with a
+/// <see cref="NOVRPoseDriver"/> that writes the raw headset pose into its
+/// *local* transform. The headset pose is measured against the play space,
+/// which the game keeps attached to the cockpit — so the root's local space
+/// already *is* the airframe's frame, and the camera moves inside it exactly as
+/// the pilot's head moves inside the cockpit. A panel parked at a constant local
+/// position under the root is therefore aircraft-fixed for free: it holds still
+/// when you look around, rolls with the aircraft because you roll with it, and
+/// shifts correctly when you lean. This is the same reason
+/// <see cref="MenuCaptureBackend"/> has to work to *undo* that and follow the
+/// head — for a HUD, the default is what we want.
+///
+/// Distance stands in for collimation. A real combiner projects at infinity, so
+/// the symbology has no stereo disparity and no parallax against the head. A
+/// quad a long way out is the cheap approximation, and every error it leaves
+/// scales as one over the distance: across a 63 mm IPD the residual disparity
+/// is <c>2*atan(IPD/2/d)</c>, and a lean of <c>x</c> moves the symbology
+/// <c>x/d</c> against the world. At the default 500 m that is 0.43 arc-minutes
+/// and 0.7 arc-minutes per 10 cm — both under what the eye resolves. Size is
+/// given as an angle rather than metres so that pushing the panel out costs
+/// nothing: the width is <c>2*d*tan(fov/2)</c>, which holds the apparent size
+/// and the texture's angular resolution constant at any distance.
+///
+/// The default was 25 m until 2026-08-22, on the strength of a figure that had
+/// been converted wrong — <c>0.064/25 = 0.00256</c> is 2.56 <em>milliradians</em>
+/// and was written down as "2.6 arc-minutes, below what the eye resolves". It is
+/// 8.8 arc-minutes, about nine times the stereo threshold, and the pilot's
+/// report was that the symbology floated in front of the world rather than on
+/// it. 2.6 arc-minutes is what 83 m gives.
+///
+/// Nothing about the renderer resists the distance, which is why the old
+/// default was under-chosen rather than a trade: the panel is drawn by
+/// <c>VrCockpitHudCamera</c>, last in the camera stack at <c>postFX=False</c>,
+/// so it is composited after every post-processing pass and no atmospheric term
+/// can dim it with range; its far clip is 10 km against a game camera whose own
+/// projection reaches 77 km.
+///
+/// **Conformal mode** (the default) makes the world line up with the symbols
+/// the way a real HUD does: by fixing the *symbol generator's* eye, not by
+/// chasing the pilot's. The game places every world-referenced symbol via
+/// <c>CameraStateManager.i.mainCamera.WorldToScreenPoint(...)</c> (seen in the
+/// decompile of <c>FlightHud</c>, <c>CombatHUD</c>, <c>HUDUnitMarker</c> and
+/// <c>HUDFunctions</c>), and under NO:VR that camera is the head — which forces
+/// a choice between a head-locked conformal frame (flown, rejected: the frame
+/// follows the head and the one-frame pose lag makes the symbols swim) and an
+/// airframe-fixed frame whose symbols are wrong.
+///
+/// A real HUD escapes the dilemma because its symbol generator draws for a
+/// fixed <em>design eye</em> and the collimator absorbs head movement. This
+/// backend does the same: a disabled camera is parked at the game camera's
+/// mount (the cockpit eye point — the pose driver overwrites the camera's
+/// local pose, so its parent is exactly the seat), boresighted with the
+/// airframe, with its field of view equal to the panel's. While the HUD code
+/// runs, <see cref="HarmonyPatches.HudDesignEyePatches"/> swaps the public
+/// <c>CameraStateManager.mainCamera</c> field to that camera and restores it
+/// after, so every symbol is projected from the fixed eye. The airframe-fixed
+/// panel spanning the same frustum then puts every pixel back on its ray by
+/// construction: the velocity vector sits on the flight path, markers sit on
+/// their units, and head motion is handled by collimation (at 500 m, a 10 cm
+/// lean moves the symbols ~0.7 arc-minutes against the world).
+///
+/// Free win from the swap: <c>FlightHud</c> counter-rolls the pitch ladder by
+/// the projecting camera's roll, and the design eye rolls with the airframe —
+/// so the ladder stays horizon-parallel in the world, which is what a real
+/// HUD's ladder does.
+///
+/// What does *not* become conformal is anything the flat game itself draws at
+/// an expanded scale — the pitch ladder is scaled by 50/fov as a readability
+/// choice, and that expansion is reproduced faithfully, not corrected. And the
+/// alignment is only as good as the recenter: the panel lives in the overlay
+/// room, whose forward is wherever the pilot recentred; recentre facing the
+/// boresight or the whole frame is rotated against the world by the error.
+/// </summary>
+public class FlightHudCaptureBackend : NOVRBehaviour
+{
+    private const string HudCanvasName = "HUDCanvas";
+    private const float PanelCanvasReferenceWidth = 1000f;
+    private const float RebindInterval = 0.5f;
+    // Same reason as the menu backend's: the HUD canvas is deactivated for a
+    // frame at a time around aircraft changes and respawns, and tearing the
+    // target down on the first inactive frame rebuilds it repeatedly.
+    private const float TeardownGrace = 1.5f;
+
+    private static FlightHudCaptureBackend? _instance;
+
+    private Canvas? _hudCanvas;
+    private Camera? _captureCamera;
+    private RenderTexture? _target;
+    private Canvas? _panelCanvas;
+    private RawImage? _panelImage;
+    private RectTransform? _panelRect;
+    private float _nextRebind;
+    private float _lastWantedCapture;
+    private bool _capturing;
+    private bool _loggedPlacement;
+    private int _targetWidth;
+    private int _targetHeight;
+    private bool _targetMipped;
+    private Canvas? _snappedCanvas;
+    private bool _snappedWasPixelPerfect;
+    /// <summary>Eye-buffer pixels per degree, measured once per capture; 0 when unmeasurable.</summary>
+    private float _eyePixelsPerDegree;
+    private bool _loggedSampling;
+
+    /// <summary>True while this backend owns the overlay UI.</summary>
+    public static bool IsActive => _instance != null && _instance._capturing;
+
+    public static bool IsCaptureCamera(Camera? camera) =>
+        camera != null && _instance != null && ReferenceEquals(camera, _instance._captureCamera);
+
+    /// <summary>
+    /// Gated on the setting alone. The setting also stops the flight-HUD patches
+    /// being applied at all (see <see cref="VanillaFlightHud"/>), so a build with
+    /// it off never reaches any of this.
+    /// </summary>
+    public static bool Enabled => CapturedFlightHud.Enabled?.Value ?? false;
+
+    protected override void Awake()
+    {
+        base.Awake();
+        _instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (ReferenceEquals(_instance, this)) _instance = null;
+        TeardownCapture();
+    }
+
+    private void Update()
+    {
+        // One capture camera at a time: both backends draw *every* overlay
+        // canvas, so running them together would put the menu on the HUD glass
+        // and the HUD on the menu panel. The menus win — they are the ones
+        // being interacted with.
+        if (!Enabled || MenuCaptureBackend.IsActive)
+        {
+            if (_capturing) TeardownCapture();
+            return;
+        }
+
+        if (Time.unscaledTime >= _nextRebind)
+        {
+            _nextRebind = Time.unscaledTime + RebindInterval;
+            _hudCanvas = FindHudCanvas();
+        }
+
+        // ScreenSpaceOverlay is the load-bearing condition, not a sanity check:
+        // it is what says the HUD really was left alone. If some other layer
+        // converts the canvas after all, the overlay pass draws nothing and the
+        // panel would hang there blank.
+        var wantCapture = _hudCanvas != null &&
+                          _hudCanvas.isActiveAndEnabled &&
+                          _hudCanvas.renderMode == RenderMode.ScreenSpaceOverlay;
+
+        if (wantCapture) _lastWantedCapture = Time.unscaledTime;
+
+        if (wantCapture && !_capturing) SetupCapture();
+        else if (!wantCapture && _capturing && Time.unscaledTime - _lastWantedCapture > TeardownGrace) TeardownCapture();
+
+        if (_capturing) UpdatePanel();
+    }
+
+    private static Canvas? FindHudCanvas()
+    {
+        foreach (var canvas in Resources.FindObjectsOfTypeAll<Canvas>())
+        {
+            if (canvas == null) continue;
+            if (canvas.name != HudCanvasName) continue;
+            if (!canvas.gameObject.scene.IsValid()) continue;
+            return canvas;
+        }
+
+        return null;
+    }
+
+    private void SetupCapture()
+    {
+        EnsureTarget();
+        // Before the panel: it is what "match the eye" sizes the panel from.
+        _eyePixelsPerDegree = MeasureEyePixelsPerDegree();
+        EnsureCaptureCamera();
+        EnsurePanel();
+        ApplyPixelSnap();
+
+        _capturing = true;
+        Debug.Log($"[NOVR] Captured flight HUD active: rendering the overlay pass into a " +
+                  $"{_targetWidth}x{_targetHeight} texture on a cockpit-fixed panel.");
+    }
+
+    private void TeardownCapture()
+    {
+        _capturing = false;
+        _loggedSampling = false;
+        WeaponSafetyWash.Restore();
+        RestorePixelSnap();
+
+        if (_panelCanvas != null)
+        {
+            // The material is a `new Material(...)` instance, and destroying the
+            // GameObject does not take it with it.
+            if (_panelImage != null && _panelImage.material != null) Destroy(_panelImage.material);
+            Destroy(_panelCanvas.gameObject);
+            _panelCanvas = null;
+            _panelImage = null;
+            _panelRect = null;
+        }
+
+        if (_captureCamera != null)
+        {
+            VrCameraManager.IgnoredCameras.Remove(_captureCamera);
+            Destroy(_captureCamera.gameObject);
+            _captureCamera = null;
+        }
+
+        TeardownProjectionCamera();
+
+        if (_target != null)
+        {
+            _target.Release();
+            Destroy(_target);
+            _target = null;
+        }
+    }
+
+    private void EnsureTarget()
+    {
+        // The game's own resolution, and it cannot be anything else: the
+        // overlay pass draws the canvas in *screen* pixel coordinates into
+        // whatever target is bound, so a smaller target crops the HUD instead
+        // of scaling it (measured — at 0.6 the content kept its absolute pixel
+        // bounds and lost everything past 1536x864). The window resolution is
+        // therefore the only handle on how dense this texture is.
+        var width = Mathf.Max(640, Screen.width);
+        var height = Mathf.Max(480, Screen.height);
+
+        // More texels than the headset can show is not free detail: the panel
+        // is minified on the way to the eye (roughly 43 texels per degree
+        // against 27 eye pixels per degree at the defaults), and two samples
+        // cannot carry that, so strokes flicker. Mipmaps and anisotropy are
+        // what make a minified sample an average instead of a lottery.
+        var mipped = CapturedFlightHud.SmoothDownscaleEnabled;
+
+        if (_target != null && _targetWidth == width && _targetHeight == height &&
+            _targetMipped == mipped) return;
+
+        if (_target != null)
+        {
+            _target.Release();
+            Destroy(_target);
+        }
+
+        _target = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
+        {
+            name = "NOVR Flight HUD Capture",
+            filterMode = mipped ? FilterMode.Trilinear : FilterMode.Bilinear,
+            useMipMap = mipped,
+            autoGenerateMips = mipped,
+            anisoLevel = mipped ? 8 : 0,
+        };
+        _target.Create();
+        _targetWidth = width;
+        _targetHeight = height;
+        _targetMipped = mipped;
+
+        if (_captureCamera != null) _captureCamera.targetTexture = _target;
+        if (_panelImage != null) _panelImage.texture = _target;
+    }
+
+    private void EnsureCaptureCamera()
+    {
+        if (_captureCamera != null) return;
+
+        var go = new GameObject("NOVR Flight HUD Capture Camera");
+        go.transform.SetParent(transform, false);
+
+        var camera = go.AddComponent<Camera>();
+        // Draws nothing of the scene; it exists to give the capture pass a
+        // target and a frame to run in.
+        camera.cullingMask = 0;
+        camera.clearFlags = CameraClearFlags.SolidColor;
+        camera.backgroundColor = Color.clear;
+        camera.targetTexture = _target;
+        camera.depth = -100f;
+        camera.stereoTargetEye = StereoTargetEyeMask.None;
+        camera.allowHDR = false;
+        camera.allowMSAA = false;
+        camera.useOcclusionCulling = false;
+
+        var data = go.AddComponent<UniversalAdditionalCameraData>();
+        data.renderType = CameraRenderType.Base;
+        data.renderPostProcessing = false;
+        data.requiresColorOption = CameraOverrideOption.Off;
+        data.requiresDepthOption = CameraOverrideOption.Off;
+
+        VrCameraManager.IgnoredCameras.Add(camera);
+        _captureCamera = camera;
+    }
+
+    private void EnsurePanel()
+    {
+        if (_panelCanvas != null) return;
+
+        var go = new GameObject("NOVR Flight HUD Panel");
+        // Parented to the NOVR root, which is the airframe's frame — see the
+        // class comment. This is the entire placement mechanism.
+        go.transform.SetParent(transform, false);
+
+        var canvas = go.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        canvas.worldCamera = APIBus.CockpitHudCamera;
+
+        var rect = (RectTransform)canvas.transform;
+        var imageGo = new GameObject("HUD Texture");
+        imageGo.transform.SetParent(rect, false);
+
+        var image = imageGo.AddComponent<RawImage>();
+        image.texture = _target;
+        image.raycastTarget = false;
+        image.material = CreatePanelMaterial();
+
+        var imageRect = (RectTransform)imageGo.transform;
+        imageRect.anchorMin = Vector2.zero;
+        imageRect.anchorMax = Vector2.one;
+        imageRect.offsetMin = Vector2.zero;
+        imageRect.offsetMax = Vector2.zero;
+
+        LayerHelper.SetLayerRecursive(go.transform, LayerHelper.GetVrUiLayer());
+
+        _panelCanvas = canvas;
+        _panelImage = image;
+        _panelRect = rect;
+
+        ApplyPlacement();
+    }
+
+    /// <summary>
+    /// The panel adds light rather than compositing over the view, because that
+    /// is what a combiner does — it is a half-silvered mirror and has no way to
+    /// make the world behind it darker.
+    ///
+    /// This is not a cosmetic preference. The captured texture is the whole flat
+    /// frame, and the game's HUD draws translucent backing panels behind the
+    /// weapon status and the tactical map. Alpha-composited onto a quad those
+    /// become solid grey rectangles hanging in the sky; added, their near-black
+    /// contributes nothing and only the green strokes survive. Measured on the
+    /// first harness run of this backend, which is what prompted it.
+    ///
+    /// <c>Unlit/AdditiveTextShader</c> is the game's own HUD text shader, so it
+    /// is guaranteed to be in the build — the same reason
+    /// <see cref="MotionControllerVisual"/> tries it first. If it ever is not,
+    /// the fallback is the stock UI material: alpha-blended and ugly, but
+    /// visible, which beats a magenta panel or none at all.
+    ///
+    /// Brightness goes through the material's <c>_Color</c>, not through the
+    /// <see cref="RawImage"/>'s tint. The graphic's colour reaches a UI shader
+    /// as vertex colour and this one ignores it — measured, not assumed: harness
+    /// runs at 2.0 and 6.0 produced the same green-excess to three digits.
+    /// Asking the shader what it has (<c>_MainTex, _Color, _Stencil*,
+    /// _ColorMask, _UseUIAlphaClip</c>) was quicker than guessing.
+    /// </summary>
+    internal static Material? CreatePanelMaterial()
+    {
+        var shader = Shader.Find("Unlit/AdditiveTextShader");
+        if (shader != null) return new Material(shader);
+
+        Debug.LogWarning("[NOVR] Unlit/AdditiveTextShader not found; the captured HUD panel will " +
+                         "be alpha-blended, so the game's translucent HUD backings will show as " +
+                         "grey boxes.");
+        return null;
+    }
+
+    /// <summary>
+    /// Size and park the panel. Cockpit-fixed mode is a constant local transform
+    /// under the root — no anchoring, nothing to go stale. Conformal mode
+    /// re-derives the quad from the main camera's projection every frame, because
+    /// zoom changes the projection and the panel has to follow it.
+    /// </summary>
+    private void ApplyPlacement()
+    {
+        if (_panelRect == null || _panelCanvas == null) return;
+
+        var distance = CapturedFlightHud.DistanceMeters;
+
+        // Additive against a daylit sky needs help: the overlay pass writes the
+        // HUD pre-multiplied by its own alpha, so what lands in the texture is
+        // already dimmer than the flat game draws it, and adding that to bright
+        // cloud leaves it washed out. A tint multiplier on the panel is the one
+        // knob that fixes it, and it is the same knob a real HUD has.
+        var brightness = Mathf.Clamp(CapturedFlightHud.Brightness?.Value ?? 2f, 0.25f, 8f);
+        if (_panelImage != null && _panelImage.material != null)
+            _panelImage.material.SetColor("_Color", new Color(brightness, brightness, brightness, 1f));
+
+        // The one graphic on the HUD that is neither symbology nor a darkening
+        // mask, and so the one the brightness multiplier destroys. Held here
+        // rather than in HmdVisorBackend because it has to hold whether the
+        // weapon readout is on the visor, on the cockpit panel or - with the
+        // visor off - still on this one.
+        WeaponSafetyWash.Apply(brightness);
+
+        ApplyFixedPlacement(distance);
+        UpdateProjectionCamera();
+    }
+
+    /// <summary>
+    /// The panel's horizontal angle, with "match the eye" resolved.
+    ///
+    /// <para><b>Why this is the sampling knob.</b> The capture is the game
+    /// window and cannot be anything else (see <see cref="EnsureTarget"/>), so
+    /// the only way to change how many texels land on a degree of view is to
+    /// change how many degrees the panel covers. A fixed 2560 texels across 60
+    /// degrees is 43 per degree against an eye buffer that resolves about 27,
+    /// i.e. the panel is squeezed 1.6:1 on the way to the headset and the
+    /// surplus is spent rather than seen; the same texels across 95 degrees is
+    /// one texel per eye pixel. Nothing about the window, the headset or the
+    /// mission has to be known in advance for that to hold — it is arithmetic
+    /// on two numbers the process can read.</para>
+    ///
+    /// <para><b>What widening actually changes.</b> Not where the symbols are:
+    /// the design eye's field of view is this same angle, so a symbol at a
+    /// given angle off the nose lands at that angle on the panel whatever the
+    /// setting is — conformal by construction, at 60 degrees or at 100. What
+    /// grows is the drawn glyph: a symbol 50 texels wide subtends 1.2 degrees
+    /// at a 60 degree panel and 1.9 at a 95 degree one. So this trades a
+    /// bigger HUD for a sharper one, and past one-to-one it is only bigger —
+    /// the texture starts being magnified and there is nothing left to
+    /// recover.</para>
+    ///
+    /// <para>Auto (the setting at 0) picks the one-to-one angle from the
+    /// headset actually attached. It is resolved from the eye density measured
+    /// once at capture setup rather than every frame, because the zoom feature
+    /// rewrites the eye projection and a panel that resized with the zoom would
+    /// be a different bug entirely.</para>
+    /// </summary>
+    private float ResolvePanelFieldOfView()
+    {
+        var configured = CapturedFlightHud.FieldOfView?.Value ?? 60f;
+        if (configured > 0.01f) return Mathf.Clamp(configured, 20f, 120f);
+
+        if (_eyePixelsPerDegree > 0f && _targetWidth > 0)
+            return Mathf.Clamp(_targetWidth / _eyePixelsPerDegree, 20f, 120f);
+
+        // No headset to match (harness without XR, or a projection we could not
+        // read): the documented default, not a guess dressed up as a measurement.
+        return 60f;
+    }
+
+    /// <summary>
+    /// How many eye-buffer pixels the headset spends on a degree of view,
+    /// read from the thing itself rather than from a datasheet: the per-eye
+    /// texture width over the horizontal angle its projection covers.
+    ///
+    /// The angle comes out of the stereo projection matrix rather than
+    /// <c>fieldOfView</c>, which is inert under XR (measured — assigning 35.98
+    /// and reading it back in the same frame returned 60.00). The frustum is
+    /// asymmetric on every headset worth the name, so both half-angles are
+    /// taken separately: <c>m02</c> is the shear.
+    /// </summary>
+    private static float MeasureEyePixelsPerDegree()
+    {
+        if (!XRSettings.enabled || XRSettings.eyeTextureWidth <= 0) return 0f;
+
+        var camera = APIBus.MainCamera;
+        if (camera == null) return 0f;
+
+        var projection = camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left);
+        var m00 = projection.m00;
+        if (m00 <= 1e-4f) return 0f;
+
+        var right = Mathf.Atan((1f + projection.m02) / m00);
+        var left = Mathf.Atan((1f - projection.m02) / m00);
+        var horizontalDegrees = (right + left) * Mathf.Rad2Deg;
+        if (horizontalDegrees <= 1f) return 0f;
+
+        return XRSettings.eyeTextureWidth / horizontalDegrees;
+    }
+
+    /// <summary>
+    /// Say the sampling out loud, once per capture. Two numbers decide whether
+    /// any of the sharpness settings can do anything, they differ per machine,
+    /// and neither is visible from inside a headset — so the log carries them,
+    /// along with the angle that would put one texel on one eye pixel.
+    /// </summary>
+    private void LogSampling(float fovDegrees)
+    {
+        if (_loggedSampling) return;
+        _loggedSampling = true;
+
+        var texelsPerDegree = fovDegrees > 0f ? _targetWidth / fovDegrees : 0f;
+        if (_eyePixelsPerDegree <= 0f)
+        {
+            Debug.Log($"[NOVR] HUD panel sampling: {_targetWidth} texels across {fovDegrees:F1} deg " +
+                      $"= {texelsPerDegree:F1} texels/deg; no eye buffer to compare it with " +
+                      $"(xrEnabled={XRSettings.enabled}).");
+            return;
+        }
+
+        var ratio = texelsPerDegree / _eyePixelsPerDegree;
+        var oneToOne = Mathf.Clamp(_targetWidth / _eyePixelsPerDegree, 20f, 120f);
+        var verdict = ratio > 1.05f ? $"panel minified {ratio:F2}x — {oneToOne:F0} deg would be one texel per eye pixel"
+            : ratio < 0.95f ? $"panel magnified {1f / ratio:F2}x — the texture is coarser than the headset"
+            : "one texel per eye pixel";
+        Debug.Log($"[NOVR] HUD panel sampling: {_targetWidth} texels across {fovDegrees:F1} deg " +
+                  $"= {texelsPerDegree:F1} texels/deg; eye buffer {XRSettings.eyeTextureWidth} px " +
+                  $"= {_eyePixelsPerDegree:F1} px/deg. {verdict}.");
+    }
+
+    private void ApplyFixedPlacement(float distance)
+    {
+        var fovDegrees = ResolvePanelFieldOfView();
+        LogSampling(fovDegrees);
+
+        // Width from the angle it should subtend at that distance, so changing
+        // the distance alone does not change how big the HUD looks — it only
+        // changes how collimated it is.
+        var widthMeters = 2f * distance * Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad);
+
+        var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
+        _panelRect!.sizeDelta = new Vector2(PanelCanvasReferenceWidth, PanelCanvasReferenceWidth / aspect);
+
+        var scale = widthMeters / PanelCanvasReferenceWidth;
+        _panelRect.localScale = new Vector3(scale, scale, scale);
+
+        // Straight down the nose. The pilot's eye is not exactly at the root
+        // origin, but at 500 m the difference is under an arc-minute.
+        _panelRect.localPosition = new Vector3(0f, 0f, distance);
+        _panelRect.localRotation = Quaternion.identity;
+
+        if (_loggedPlacement) return;
+        _loggedPlacement = true;
+        Debug.Log($"[NOVR] Flight HUD panel: {widthMeters:F1} m wide at {distance:F1} m " +
+                  $"({fovDegrees:F0}deg horizontal), fixed in the cockpit frame.");
+    }
+
+    /// <summary>
+    /// The design eye: a disabled camera the HUD code is made to project
+    /// through while conformal mode is on (see
+    /// <see cref="HarmonyPatches.HudDesignEyePatches"/>). Null whenever the swap
+    /// must not happen — setting off, not capturing, or no mount to sit on.
+    /// </summary>
+    public static Camera? ConformalProjectionCamera =>
+        _instance != null &&
+        _instance._capturing &&
+        (CapturedFlightHud.Conformal?.Value ?? true) &&
+        _instance._projectionCamera != null &&
+        _instance._projectionCamera.gameObject.activeInHierarchy
+            ? _instance._projectionCamera
+            : null;
+
+    private Camera? _projectionCamera;
+    private Matrix4x4 _designEyeProjection = Matrix4x4.identity;
+
+    /// <summary>
+    /// The projection the HUD is currently being drawn with, while conformal
+    /// mode is live — what the gaze designator projects the look direction
+    /// through. Null whenever the design eye is not in use.
+    /// </summary>
+    public static Matrix4x4? ActiveDesignProjection =>
+        ConformalProjectionCamera != null && _instance != null
+            ? _instance._designEyeProjection
+            : (Matrix4x4?)null;
+
+    /// <summary>
+    /// What the Harmony swap hands to the game. Re-asserts the projection
+    /// matrix on every acquisition. The matrix, not <c>fieldOfView</c>: under
+    /// XR the property is inert — assigning 35.98 and reading it back in the
+    /// same frame returned 60.00 (measured) — while an explicitly assigned
+    /// <c>projectionMatrix</c> both sticks and is exactly what
+    /// <c>WorldToScreenPoint</c> projects through.
+    /// </summary>
+    public static Camera? AcquireDesignEyeForProjection()
+    {
+        var camera = ConformalProjectionCamera;
+        if (camera != null && _instance != null)
+        {
+            camera.projectionMatrix = _instance._designEyeProjection;
+        }
+
+        return camera;
+    }
+
+    /// <summary>
+    /// Keep the design eye on the game camera's mount with the panel's field of
+    /// view. The mount is <c>mainCamera.transform.parent</c>: the pose driver
+    /// overwrites the camera's local pose with the head pose, so the parent is
+    /// the fixed seat eye point the flat game placed the camera at. Disabled —
+    /// it never renders; it exists so <c>WorldToScreenPoint</c> has a fixed,
+    /// airframe-boresighted projection to answer with. Its pixel rect defaults
+    /// to Screen, which is exactly the space the HUD canvas is laid out in.
+    /// </summary>
+    private void UpdateProjectionCamera()
+    {
+        if (!(CapturedFlightHud.Conformal?.Value ?? true))
+        {
+            TeardownProjectionCamera();
+            return;
+        }
+
+        var mainCamera = APIBus.MainCamera;
+        var mount = mainCamera != null ? mainCamera.transform.parent : null;
+        if (mount == null)
+        {
+            // No mount to define the airframe eye (external view, scene churn):
+            // stop swapping rather than project from a stale pose.
+            TeardownProjectionCamera();
+            return;
+        }
+
+        if (_projectionCamera == null)
+        {
+            var go = new GameObject("NOVR HUD Design Eye");
+            var camera = go.AddComponent<Camera>();
+            camera.enabled = false;
+            camera.cullingMask = 0;
+            camera.targetTexture = null;
+            camera.stereoTargetEye = StereoTargetEyeMask.None;
+            camera.nearClipPlane = 0.1f;
+            camera.farClipPlane = 50000f;
+            VrCameraManager.IgnoredCameras.Add(camera);
+            _projectionCamera = camera;
+            Debug.Log("[NOVR] HUD design eye created: the HUD now projects from the cockpit " +
+                      "mount instead of the head.");
+        }
+
+        var t = _projectionCamera.transform;
+        if (t.parent != mount) t.SetParent(mount, false);
+        t.localPosition = Vector3.zero;
+        t.localRotation = Quaternion.identity;
+
+        // Same angular size as the panel, by construction — which is what keeps
+        // every symbol on its own ray whatever the panel is set to. The setting
+        // is the horizontal angle; Matrix4x4.Perspective takes the vertical one.
+        var fovDegrees = ResolvePanelFieldOfView();
+        var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
+        var verticalFov =
+            2f * Mathf.Atan(Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad) / aspect) * Mathf.Rad2Deg;
+        _designEyeProjection = Matrix4x4.Perspective(verticalFov, aspect, 0.1f, 50000f);
+        _projectionCamera.projectionMatrix = _designEyeProjection;
+    }
+
+    private void TeardownProjectionCamera()
+    {
+        if (_projectionCamera == null) return;
+        VrCameraManager.IgnoredCameras.Remove(_projectionCamera);
+        Destroy(_projectionCamera.gameObject);
+        _projectionCamera = null;
+    }
+
+    private void UpdatePanel()
+    {
+        // Idempotent: a scene load can take the rig with it while the capture is
+        // still inside its teardown grace.
+        EnsureTarget();
+        EnsureCaptureCamera();
+        EnsurePanel();
+
+        if (_panelImage != null && _panelImage.texture != _target) _panelImage.texture = _target;
+        ApplyPixelSnap();
+        ApplyPlacement();
+    }
+
+    /// <summary>
+    /// Put the game's HUD canvas on its own pixel grid while we are capturing
+    /// it, and take it off again when we stop.
+    ///
+    /// <c>Canvas.pixelPerfect</c> rounds UI vertices to whole pixels of the
+    /// canvas's screen space, which for a ScreenSpaceOverlay canvas is exactly
+    /// the capture texture — the one place in this chain where a stable pixel
+    /// grid exists at all. Past it there is none: the panel is a quad in the
+    /// world, sampled from a head pose that moves continuously and separately
+    /// for each eye, so nothing downstream can be snapped to anything. That is
+    /// the honest limit of this setting, and the reason the visor (drawn at
+    /// about one texel per eye pixel) gets more out of it than the HUD panel
+    /// (drawn at about 1.6).
+    ///
+    /// The canvas belongs to the game, so its own value is saved and restored:
+    /// the flat HUD must be exactly as it was if the capture stands down.
+    /// Re-asserted every frame because the setting is live and the canvas can
+    /// be replaced under us on an aircraft change.
+    /// </summary>
+    private void ApplyPixelSnap()
+    {
+        var want = CapturedFlightHud.PixelSnapEnabled;
+        var canvas = _hudCanvas;
+
+        if (_snappedCanvas != null && (!want || !ReferenceEquals(_snappedCanvas, canvas)))
+        {
+            RestorePixelSnap();
+        }
+
+        if (!want || canvas == null) return;
+
+        if (_snappedCanvas == null)
+        {
+            _snappedWasPixelPerfect = canvas.pixelPerfect;
+            _snappedCanvas = canvas;
+            Debug.Log($"[NOVR] Captured HUD pixel snap on: HUDCanvas.pixelPerfect " +
+                      $"{_snappedWasPixelPerfect} -> true, on a {_targetWidth}x{_targetHeight} capture.");
+        }
+
+        if (!canvas.pixelPerfect) canvas.pixelPerfect = true;
+    }
+
+    private void RestorePixelSnap()
+    {
+        if (_snappedCanvas != null) _snappedCanvas.pixelPerfect = _snappedWasPixelPerfect;
+        _snappedCanvas = null;
+    }
+}

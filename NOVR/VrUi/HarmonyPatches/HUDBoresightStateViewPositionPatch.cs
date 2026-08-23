@@ -20,6 +20,11 @@ internal static class HUDBoresightStateViewPositionPatch
     [HarmonyPatch(typeof(global::HUDBoresightState), nameof(global::HUDBoresightState.UpdateWeaponDisplay))]
     private static class UpdateWeaponDisplayPatch
     {
+        //: Gated so the game's own HUD code path is genuinely untouched when
+        //: the Vanilla Flight HUD diagnostic is on — see VanillaFlightHud.
+        [HarmonyPrepare]
+        private static bool Prepare() => VanillaFlightHud.ModdedHudActive;
+
         [HarmonyPostfix]
         private static void Postfix(global::HUDBoresightState __instance, Aircraft aircraft, List<Unit> targetList)
         {
