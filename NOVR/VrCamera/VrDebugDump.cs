@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -27,7 +28,13 @@ namespace NOVR.VrCamera;
 //     the pair brackets "is the HUD missing / misplaced".
 //   - every game RenderTexture (any camera with a targetTexture set, e.g. the
 //     in-cockpit TargetCam screens), grabbed right after that camera rendered
-//   - a SideBySide mirror screenshot of the frame (the desktop composite)
+//   - "eye_final.png": the final composited backbuffer, taken synchronously
+//     at the end of the dump frame via ScreenCapture.CaptureScreenshotIntoRenderTexture
+//     inside a WaitForEndOfFrame coroutine. This is the authoritative picture
+//     of what was on screen. With the mirror forced to SideBySide it carries
+//     both eyes.
+//   - a SideBySide mirror screenshot of the frame (mirror.png) — kept for
+//     continuity only; see the warning on it below
 //   - meta.txt + meta.json with the camera rig (per-eye stereo matrices),
 //     canvas inventory (which HUD canvases NOVR translated to world space),
 //     URP shared-texture globals, and the active mod config
@@ -58,7 +65,23 @@ namespace NOVR.VrCamera;
 //  - Single-pass instanced (OpenXR default): the XR target is a 2x-wide
 //    texture holding L|R side by side, so one blit yields both eyes (layout
 //    "side-by-side"). Multi-pass: the blit runs once per eye and we keep the
-//    last one; use the mirror.png for the definitive both-eyes view.
+//    last one.
+//  - The eye grabs above have never actually produced a file on this machine:
+//    every dump notes "eye grab '<label>' readback failed" for both cameras,
+//    in plain multi-pass (stereoRenderingMode=0, a 1512x1680 ARGB32 target with
+//    no array slices involved). The suspect is the blit source —
+//    BuiltinRenderTextureType.CameraTarget is a built-in-RP binding URP does
+//    not set up at endCameraRendering — but that is unproven: a bad source
+//    should yield a black frame, not AsyncGPUReadback.hasError. They are left
+//    in because when they do work they isolate one camera, which the composite
+//    cannot. Do not rely on them.
+//  - An earlier version of this comment said to "use the mirror.png for the
+//    definitive both-eyes view". That was wrong twice over and cost real time:
+//    ScreenCapture.CaptureScreenshot is asynchronous AND it is issued from
+//    Finalize(), which runs at least one frame after the dump frame and up to
+//    60 if the readbacks time out. Positions read off those mirrors disagreed
+//    with the same dump's transforms by 300-500 px. eye_final.png is the
+//    definitive view; mirror.png is kept only so older tooling keeps loading.
 public static class VrDebugDump
 {
     private const string TriggerFileName = "dump.trigger";
@@ -71,6 +94,7 @@ public static class VrDebugDump
 
     private static int _pendingReadbacks;
     private static int _pendingSinceFrame;
+    private static bool _finalViewPending;
     private static readonly List<EyeGrab> Grabs = new();
     private static readonly HashSet<int> GrabbedTextureIds = new();
 
@@ -132,6 +156,11 @@ public static class VrDebugDump
         ArmEyeGrabs();
         ForceSideBySideMirror();
 
+        // Started after ForceSideBySideMirror so the mirror blit this frame is
+        // already SideBySide by the time the coroutine reads the backbuffer.
+        _finalViewPending = true;
+        Runner.StartCoroutine(CaptureFinalView());
+
         Debug.Log($"[NOVR-DUMP] Dump armed for frame {_dumpFrame} -> {_dir}");
     }
 
@@ -143,12 +172,23 @@ public static class VrDebugDump
         if (!_armed) return;
         if (Time.frameCount <= _dumpFrame) return;
 
-        if (_pendingReadbacks > 0)
+        if (_pendingReadbacks > 0 || _finalViewPending)
         {
             if (_pendingSinceFrame == 0) _pendingSinceFrame = Time.frameCount;
             if (Time.frameCount - _pendingSinceFrame < 60) return;
-            Notes.Add($"timed out waiting for {_pendingReadbacks} async readback(s); eye images incomplete");
-            _pendingReadbacks = 0;
+            if (_pendingReadbacks > 0)
+            {
+                Notes.Add($"timed out waiting for {_pendingReadbacks} async readback(s); eye images incomplete");
+                _pendingReadbacks = 0;
+            }
+
+            if (_finalViewPending)
+            {
+                // WaitForEndOfFrame never resumes under -batchmode, which is
+                // the one way this can hang rather than fail.
+                Notes.Add("timed out waiting for the final view; eye_final.png missing");
+                _finalViewPending = false;
+            }
         }
 
         Finalize();
@@ -167,7 +207,7 @@ public static class VrDebugDump
             ImageEntries.Add(new ImageEntry
             {
                 File = "mirror.png",
-                Label = "mirror",
+                Label = "mirror (async, arbitrary frame - prefer eye_final.png)",
                 Kind = "mirror",
                 Width = Screen.width,
                 Height = Screen.height,
@@ -192,6 +232,140 @@ public static class VrDebugDump
     // ------------------------------------------------------------------ //
     //  Arming
     // ------------------------------------------------------------------ //
+
+    // ------------------------------------------------------------------ //
+    //  Final composited view
+    // ------------------------------------------------------------------ //
+
+    // A coroutine host. Request() is called both from DebugDumpController and
+    // directly from AutoStartMission, so the runner cannot be assumed to exist
+    // on either caller.
+    private sealed class DumpRunner : MonoBehaviour
+    {
+    }
+
+    private static DumpRunner? _runner;
+
+    private static DumpRunner Runner
+    {
+        get
+        {
+            if (_runner == null)
+            {
+                var host = new GameObject("NOVR Dump Runner") { hideFlags = HideFlags.HideAndDontSave };
+                UnityEngine.Object.DontDestroyOnLoad(host);
+                _runner = host.AddComponent<DumpRunner>();
+            }
+
+            return _runner;
+        }
+    }
+
+    // The one artifact that is genuinely the frame the pilot saw.
+    //
+    // WaitForEndOfFrame resumes after the dump frame has been presented, so the
+    // backbuffer is complete and still the dump frame's — Request() runs from
+    // Update() of that same frame. CaptureScreenshotIntoRenderTexture reads the
+    // final composite (post-processing, UI overlays, the XR mirror blit), and
+    // the ReadPixels that follows is synchronous, so unlike the eye grabs there
+    // is no readback to lose and unlike mirror.png no file written later by
+    // someone else.
+    private static IEnumerator CaptureFinalView()
+    {
+        // Nothing may yield inside the try below: a coroutine cannot yield a
+        // value from a try that has a catch clause, so the wait happens first
+        // and the capture is a plain call.
+        yield return new WaitForEndOfFrame();
+
+        try
+        {
+            CaptureFinalViewNow();
+        }
+        catch (Exception exception)
+        {
+            Notes.Add($"final view failed: {exception.Message}");
+        }
+        finally
+        {
+            _finalViewPending = false;
+        }
+    }
+
+    private static void CaptureFinalViewNow()
+    {
+        var dir = _dir;
+        if (dir == null)
+        {
+            Notes.Add("final view: dump directory already closed");
+            return;
+        }
+
+        var width = Screen.width;
+        var height = Screen.height;
+        if (width < 2 || height < 2)
+        {
+            Notes.Add($"final view: implausible screen size {width}x{height}");
+            return;
+        }
+
+        var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
+        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        var previous = RenderTexture.active;
+        try
+        {
+            ScreenCapture.CaptureScreenshotIntoRenderTexture(rt);
+            RenderTexture.active = rt;
+            texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+            texture.Apply();
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+            RenderTexture.ReleaseTemporary(rt);
+        }
+
+        // CaptureScreenshotIntoRenderTexture follows the graphics API's texture
+        // origin and ReadPixels does not, so on D3D11 the two disagree and the
+        // PNG lands upside down.
+        if (SystemInfo.graphicsUVStartsAtTop)
+        {
+            FlipVertically(texture);
+        }
+
+        File.WriteAllBytes(Path.Combine(dir, "eye_final.png"), texture.EncodeToPNG());
+        UnityEngine.Object.Destroy(texture);
+
+        ImageEntries.Add(new ImageEntry
+        {
+            File = "eye_final.png",
+            Label = "final composited view (authoritative)",
+            Kind = "final",
+            Eye = "LR",
+            Width = width,
+            Height = height,
+            Format = "backbuffer",
+            Layout = "side-by-side",
+        });
+    }
+
+    private static void FlipVertically(Texture2D texture)
+    {
+        var pixels = texture.GetPixels32();
+        var width = texture.width;
+        var height = texture.height;
+        var row = new Color32[width];
+        for (var y = 0; y < height / 2; y++)
+        {
+            var top = y * width;
+            var bottom = (height - 1 - y) * width;
+            Array.Copy(pixels, top, row, 0, width);
+            Array.Copy(pixels, bottom, pixels, top, width);
+            Array.Copy(row, 0, pixels, bottom, width);
+        }
+
+        texture.SetPixels32(pixels);
+        texture.Apply();
+    }
 
     private static void ArmEyeGrabs()
     {
