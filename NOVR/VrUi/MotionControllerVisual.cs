@@ -48,12 +48,14 @@ public class MotionControllerVisual : MonoBehaviour
         // cursor back by, so the model and the cursor change hands together.
         var showModels = ModConfiguration.Instance.ShowMotionControllers.Value;
         var showLaser = ModConfiguration.Instance.ShowControllerLaser.Value;
-        var cursorHand = ModConfiguration.Instance.CursorInputSource.Value switch
-        {
-            "Right Hand" => XRNode.RightHand,
-            "Left Hand" => XRNode.LeftHand,
-            _ => (XRNode?)null
-        };
+        // Asked of the cursor rather than of Cursor Input Source, because the
+        // setting is no longer the answer: in stick-cursor mode it is
+        // overridden and a controller picked up takes the cursor over whatever
+        // it says. Reading the setting here drew no laser at all on a default
+        // install — the hand was steering the cursor with nothing coming out
+        // of it. VrUiCursor.CursorHand falls back to the setting whenever
+        // nothing has taken over.
+        var cursorHand = VrUiCursor.CursorHand;
 
         // The laser follows only the hand that drives the cursor; the other
         // hand just shows the model.
