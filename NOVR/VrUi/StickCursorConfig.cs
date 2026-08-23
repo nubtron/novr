@@ -23,6 +23,14 @@ namespace NOVR.VrUi;
 /// gamepad map on the machine this was flown on binds the view axes and the
 /// map axes to the same stick.</para>
 ///
+/// <para>What the cursor takes, the aeroplane does not get: while the pair in
+/// use sits on the same physical stick as "Roll"/"Pitch", those two axes are
+/// withheld from the aircraft for as long as the cursor is being pointed with
+/// them. The game already does exactly this for its own pointer — the virtual
+/// joystick is taken off the aircraft while the map is maximized — and it is
+/// the same problem, one device asked to fly and point at once. See
+/// <c>StickCursorFlightAxesPatch</c>.</para>
+///
 /// <para>Why it exists: head-gaze moves the cursor with the neck and is
 /// measured from a head-relative reference, so it moves when the view is
 /// recentred and it asks the pilot to look where they want to click. The
@@ -110,8 +118,11 @@ public static class StickCursorConfig
             + "point.\n"
             + "Flight = 'Roll'/'Pitch'. The pair every setup has bound — a stick, a pad's left "
             + "thumbstick, the keyboard's own WASD — and free wherever there is no aircraft, "
-            + "which is every menu and the spawn map. The mirror image of Camera: the cost is "
-            + "the cockpit, where opening the map and moving the cursor flies the aeroplane.\n"
+            + "which is every menu and the spawn map. In the cockpit the aeroplane does not get "
+            + "these while the cursor is up: whichever pair you pick, the stick it is on is "
+            + "withheld from the aircraft for as long as it is pointing, so moving the cursor "
+            + "over the map no longer rolls you into the ground. It comes back the moment the "
+            + "map closes.\n"
             + "View = 'Pan View'/'Tilt View', the free-look axes, which the game ignores whenever "
             + "a cursor is up. Free in every screen — unless they share a stick with the map "
             + "scroll, which on a gamepad they usually do.\n"

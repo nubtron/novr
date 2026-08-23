@@ -45,6 +45,18 @@ public class VrUiCursor: NOVRBehaviour
     /// </summary>
     public static XRNode? CursorHand => _activeCursorHand ?? ConfiguredCursorHand;
 
+    /// <summary>
+    /// True while the stick cursor is moving the cursor with a stick the
+    /// aeroplane is also flown by — read by
+    /// <see cref="HarmonyPatches.StickCursorFlightAxesPatch"/>, which then
+    /// withholds those axes from the aircraft.
+    ///
+    /// <para>Static and latched rather than computed on demand: the aircraft
+    /// reads its axes in FixedUpdate, which runs a different number of times
+    /// than this component's Update does.</para>
+    /// </summary>
+    public static bool StickCursorHoldsFlightAxes => _stickHoldsFlightAxes;
+
     protected override void Awake()
     {
         base.Awake();
@@ -126,6 +138,7 @@ public class VrUiCursor: NOVRBehaviour
     /// </summary>
     private XRNode? _takeoverHand;
     private static XRNode? _activeCursorHand;
+    private static bool _stickHoldsFlightAxes;
     private bool _hmdGazeActive;
     private bool _stickModeActive;
     private bool _stickModeLogged;
@@ -747,14 +760,16 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Forget who was pointing. It outlives a frame on purpose — the laser is
-    /// drawn from elsewhere — so it has to be dropped explicitly whenever the
-    /// cursor stops running, or the last frame before it went away goes on
-    /// being the answer.
+    /// Forget who was pointing and whether the stick was ours. Both outlive a
+    /// frame on purpose — the laser and the aircraft's axes are read from
+    /// elsewhere — so both have to be dropped explicitly whenever the cursor
+    /// stops running, or the last frame before it went away goes on being the
+    /// answer.
     /// </summary>
     private static void ClearInputOwnership()
     {
         _activeCursorHand = null;
+        _stickHoldsFlightAxes = false;
     }
 
     /// <summary>
@@ -803,56 +818,67 @@ public class VrUiCursor: NOVRBehaviour
             _stickPositionValid = true;
         }
 
+        var player = GameManager.playerInput;
+        var pair = StickAxisPair.For(StickCursorConfig.Axes);
+        var stickIsOurs = false;
+
+        if (player != null)
+        {
+            UpdateAxisBindingState(player, pair);
+
+            var mapMaximized = global::DynamicMap.mapMaximized;
+            // Over the map, a held (real) mouse button is the game's own
+            // drag-pan, which reads the view axes. Moving the cursor as
+            // well would fight it, so the drag wins.
+            var dragPanning = mapMaximized && Input.GetMouseButton(0);
+            // And over the maximized map the stick belongs to the map —
+            // but only when it really is the same stick. See the "Who owns
+            // the stick over the map" paragraph above.
+            var mapOwnsStick = mapMaximized &&
+                               !StickCursorConfig.MoveOverMap &&
+                               _sharesStickWithMap;
+
+            stickIsOurs = !dragPanning && !mapOwnsStick;
+
+            // Decided here rather than beside the axis read below, because the
+            // mouse taking the cursor over for a frame does not put the stick
+            // back in the pilot's hand: they are still holding it to point
+            // with, and an aeroplane that banked every time the mouse twitched
+            // would be worse than one that never banks at all.
+            _stickHoldsFlightAxes = stickIsOurs && _sharesStickWithFlight;
+        }
+        else
+        {
+            _stickHoldsFlightAxes = false;
+        }
+
         var realMouse = _realMouse;
         if (realMouse != null && realMouse.delta.ReadValue() != Vector2.zero)
         {
             // The mouse still works, and wins the moment it actually moves.
             _stickScreenPosition = realMouse.position.ReadValue();
         }
-        else
+        else if (player != null && stickIsOurs)
         {
-            var player = GameManager.playerInput;
-            if (player != null)
+            var axis = new Vector2(
+                ApplyStickDeadzone(player.GetAxis(pair.XAction)),
+                pair.YSign * ApplyStickDeadzone(player.GetAxis(pair.YAction)));
+            if (StickCursorConfig.InvertVertical)
             {
-                var pair = StickAxisPair.For(StickCursorConfig.Axes);
-                UpdateAxisBindingState(player, pair);
-
-                var mapMaximized = global::DynamicMap.mapMaximized;
-                // Over the map, a held (real) mouse button is the game's own
-                // drag-pan, which reads the view axes. Moving the cursor as
-                // well would fight it, so the drag wins.
-                var dragPanning = mapMaximized && Input.GetMouseButton(0);
-                // And over the maximized map the stick belongs to the map —
-                // but only when it really is the same stick. See the "Who owns
-                // the stick over the map" paragraph above.
-                var mapOwnsStick = mapMaximized &&
-                                   !StickCursorConfig.MoveOverMap &&
-                                   _sharesStickWithMap;
-
-                var axis = Vector2.zero;
-                if (!dragPanning && !mapOwnsStick)
-                {
-                    axis.x += ApplyStickDeadzone(player.GetAxis(pair.XAction));
-                    axis.y += pair.YSign * ApplyStickDeadzone(player.GetAxis(pair.YAction));
-                }
-                if (StickCursorConfig.InvertVertical)
-                {
-                    axis.y = -axis.y;
-                }
-                // Two sources can push the same way; a diagonal must not be
-                // faster than a straight line either.
-                if (axis.sqrMagnitude > 1f)
-                {
-                    axis.Normalize();
-                }
-
-                // Unscaled, because every surface this cursor is for runs at
-                // timeScale 0, and capped, because a frame lost to a scene load
-                // must not fling the cursor across the panel.
-                var deltaTime = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
-                var speed = StickCursorConfig.Speed * deltaTime;
-                _stickScreenPosition += new Vector2(axis.x * Screen.width, axis.y * Screen.height) * speed;
+                axis.y = -axis.y;
             }
+            // A diagonal must not be faster than a straight line.
+            if (axis.sqrMagnitude > 1f)
+            {
+                axis.Normalize();
+            }
+
+            // Unscaled, because every surface this cursor is for runs at
+            // timeScale 0, and capped, because a frame lost to a scene load
+            // must not fling the cursor across the panel.
+            var deltaTime = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+            var speed = StickCursorConfig.Speed * deltaTime;
+            _stickScreenPosition += new Vector2(axis.x * Screen.width, axis.y * Screen.height) * speed;
         }
 
         _stickScreenPosition.x = Mathf.Clamp(_stickScreenPosition.x, 0f, Screen.width);
@@ -899,6 +925,7 @@ public class VrUiCursor: NOVRBehaviour
         };
 
         public static readonly StickAxisPair MapPair = For(StickCursorAxisSource.Map);
+        public static readonly StickAxisPair FlightPair = For(StickCursorAxisSource.Flight);
     }
 
     private StickCursorAxisSource _loggedAxisSource = (StickCursorAxisSource)(-1);
@@ -907,6 +934,12 @@ public class VrUiCursor: NOVRBehaviour
     /// gamepad case, which is the arrangement the rule exists for.
     /// </summary>
     private bool _sharesStickWithMap = true;
+    /// <summary>
+    /// Whether the pair in use is on the stick that flies the aeroplane.
+    /// Defaults to false, i.e. to leaving the aircraft alone: taking its
+    /// controls away on a guess is the worse mistake of the two.
+    /// </summary>
+    private bool _sharesStickWithFlight;
     private float _nextBindingScan;
 
     /// <summary>
@@ -941,40 +974,63 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// True when the chosen pair and the map's own scroll axes sit on the same
-    /// physical control, which is the case a gamepad falls into by default and
-    /// the only case the map has to be given its stick back for.
+    /// True when two pairs sit on the same physical control — the same stick
+    /// on a gamepad, the same axis on a HOTAS — so that deflecting it does
+    /// both things at once.
+    ///
+    /// <para>Asked of two pairs. Against the map's own scroll axes it is the
+    /// case a gamepad falls into by default, and the only one the map has to
+    /// be given its stick back for. Against the flight axes it is the case
+    /// where pointing the cursor also flies the aeroplane, which is what
+    /// <see cref="StickCursorHoldsFlightAxes"/> is for.</para>
+    ///
+    /// <para><paramref name="unknown"/> is the answer when Rewired cannot be
+    /// read, and it differs by question: the map's stick is given back on a
+    /// guess, the aircraft's is not taken away on one.</para>
     /// </summary>
-    private static bool SharesStickWithMap(Rewired.Player player, StickAxisPair pair)
+    private static bool SharesStick(Rewired.Player player, StickAxisPair pair, StickAxisPair other, bool unknown)
     {
-        if (pair.XAction == StickAxisPair.MapPair.XAction) return true;
+        if (pair.XAction == other.XAction && pair.YAction == other.YAction) return true;
 
         try
         {
-            var mapElements = new List<string>();
-            foreach (var action in new[] { StickAxisPair.MapPair.XAction, StickAxisPair.MapPair.YAction })
+            var otherElements = new List<string>();
+            foreach (var action in new[] { other.XAction, other.YAction })
             foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
             {
                 if (map == null) continue;
-                mapElements.Add(map.controllerMap.controllerId + ":" + map.elementIdentifierId);
+                otherElements.Add(map.controllerMap.controllerId + ":" + map.elementIdentifierId);
             }
 
             foreach (var action in new[] { pair.XAction, pair.YAction })
             foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
             {
                 if (map == null) continue;
-                if (mapElements.Contains(map.controllerMap.controllerId + ":" + map.elementIdentifierId)) return true;
+                if (otherElements.Contains(map.controllerMap.controllerId + ":" + map.elementIdentifierId)) return true;
             }
 
             return false;
         }
         catch (Exception)
         {
-            // Unknown means "behave as the gamepad default does", which is the
-            // arrangement that needed the rule in the first place.
-            return true;
+            return unknown;
         }
     }
+
+    /// <summary>
+    /// Whether the chosen pair shares a stick with the map's own scroll axes.
+    /// Unknown behaves as the gamepad default does, which is the arrangement
+    /// that needed the rule in the first place.
+    /// </summary>
+    private static bool SharesStickWithMap(Rewired.Player player, StickAxisPair pair) =>
+        SharesStick(player, pair, StickAxisPair.MapPair, unknown: true);
+
+    /// <summary>
+    /// Whether the chosen pair shares a stick with "Roll"/"Pitch", i.e.
+    /// whether moving the cursor also flies the aeroplane.
+    /// </summary>
+    private static bool SharesStickWithFlight(Rewired.Player player, StickAxisPair pair) =>
+        SharesStick(player, pair, StickAxisPair.FlightPair, unknown: false);
 
     /// <summary>
     /// Re-read the bindings occasionally rather than every frame — the
@@ -994,15 +1050,20 @@ public class VrUiCursor: NOVRBehaviour
         _nextBindingScan = Time.unscaledTime + 5f;
 
         var shares = SharesStickWithMap(player, pair);
-        var sharingChanged = shares != _sharesStickWithMap;
+        var flies = SharesStickWithFlight(player, pair);
+        var sharingChanged = shares != _sharesStickWithMap || flies != _sharesStickWithFlight;
         _sharesStickWithMap = shares;
+        _sharesStickWithFlight = flies;
         if (!sourceChanged && !sharingChanged) return;
 
         var lines = new List<string>();
         foreach (StickCursorAxisSource candidate in Enum.GetValues(typeof(StickCursorAxisSource)))
         {
             var candidatePair = StickAxisPair.For(candidate);
-            var note = SharesStickWithMap(player, candidatePair) ? "  <- same stick as the map scroll" : "";
+            var notes = new List<string>();
+            if (SharesStickWithMap(player, candidatePair)) notes.Add("same stick as the map scroll");
+            if (SharesStickWithFlight(player, candidatePair)) notes.Add("same stick as the aircraft — withheld from it while pointing");
+            var note = notes.Count > 0 ? "  <- " + string.Join("; ", notes.ToArray()) : "";
             var chosen = candidate == source ? " (in use)" : "";
             lines.Add($"  {candidate}{chosen}: {candidatePair.XAction} = {DescribeBinding(player, candidatePair.XAction)}; " +
                       $"{candidatePair.YAction} = {DescribeBinding(player, candidatePair.YAction)}{note}");
