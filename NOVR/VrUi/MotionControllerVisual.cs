@@ -38,20 +38,22 @@ public class MotionControllerVisual : MonoBehaviour
 
     private void Update()
     {
-        // In head-gaze mode no hand drives the cursor, so the controller
-        // models are hidden entirely (and neither hand gets a laser); the
-        // models follow the Show Motion Controllers setting otherwise.
-        var gazeActive = ModConfiguration.Instance.HeadGazeCursor.Value;
-        var showModels = ModConfiguration.Instance.ShowMotionControllers.Value && !gazeActive;
+        // The models follow Show Motion Controllers in every cursor mode. They
+        // used to be hidden while head-gaze was on, on the grounds that no
+        // hand drove the cursor then; that is no longer true — a controller
+        // picked up takes the cursor over from gaze for as long as it is
+        // held — and a controller that can take over has to be visible when
+        // it does. UpdateHand's idle timeout is what hides a controller that
+        // has been put down, and it is the same rule VrUiCursor gives the
+        // cursor back by, so the model and the cursor change hands together.
+        var showModels = ModConfiguration.Instance.ShowMotionControllers.Value;
         var showLaser = ModConfiguration.Instance.ShowControllerLaser.Value;
-        var cursorHand = gazeActive
-            ? (XRNode?)null
-            : ModConfiguration.Instance.CursorInputSource.Value switch
-            {
-                "Right Hand" => XRNode.RightHand,
-                "Left Hand" => XRNode.LeftHand,
-                _ => (XRNode?)null
-            };
+        var cursorHand = ModConfiguration.Instance.CursorInputSource.Value switch
+        {
+            "Right Hand" => XRNode.RightHand,
+            "Left Hand" => XRNode.LeftHand,
+            _ => (XRNode?)null
+        };
 
         // The laser follows only the hand that drives the cursor; the other
         // hand just shows the model.

@@ -374,16 +374,34 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Selects and updates the active cursor input mode: head-gaze (the
-    /// cursor follows the center of the HMD and the trigger clicks), an XR
-    /// motion controller ray, or the desktop mouse. Head-gaze is off by
-    /// default; while it is on, the mouse and motion controller cursor
-    /// modes are disabled.
+    /// Selects and updates the active cursor input mode: an XR motion
+    /// controller ray while a controller is actually in the hand, otherwise
+    /// head-gaze (the cursor follows the center of the HMD and the trigger
+    /// clicks) if it is on, otherwise the desktop mouse.
+    ///
+    /// <para>Head-gaze is off by default, and while it is on the mouse is
+    /// disabled — a cursor pinned to the center of the view cannot also be
+    /// somewhere the mouse put it. The controller is different in kind: it is
+    /// a temporary takeover rather than a mode, so it outranks head-gaze while
+    /// it is held and gives the cursor straight back when it is put down.</para>
     /// </summary>
     private void UpdateCursorInput()
     {
         _hmdGazeActive = false;
         _controllerModeActive = false;
+
+        // A controller in the hand outranks the configured mode, and only for
+        // as long as it is held: UpdateControllerInput hands the cursor back
+        // after Controller Idle Timeout of stillness. That is what lets a
+        // controller work alongside head-gaze rather than in place of it —
+        // pick it up to point at something, put it down and the gaze cursor
+        // is back — and it is why the models are no longer hidden in gaze
+        // mode, since a controller that can take over has to be visible.
+        UpdateControllerInput();
+        if (_controllerModeActive)
+        {
+            return;
+        }
 
         if (ModConfiguration.Instance.HeadGazeCursor.Value)
         {
@@ -397,7 +415,17 @@ public class VrUiCursor: NOVRBehaviour
             }
             return;
         }
+    }
 
+    /// <summary>
+    /// Drives the cursor from an XR motion controller ray when the configured
+    /// input source is a hand and that controller is being held. Leaves
+    /// <see cref="_controllerModeActive"/> false — i.e. hands the cursor to
+    /// whichever mode is configured — when the source is the mouse, the
+    /// controller is not tracked, or it has been put down.
+    /// </summary>
+    private void UpdateControllerInput()
+    {
         var source = ModConfiguration.Instance.CursorInputSource.Value;
 
         XRNode node;
