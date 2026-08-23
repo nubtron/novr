@@ -999,14 +999,14 @@ public class VrUiCursor: NOVRBehaviour
             foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
             {
                 if (map == null) continue;
-                otherElements.Add(map.controllerMap.controllerId + ":" + map.elementIdentifierId);
+                otherElements.Add(ElementKey(map));
             }
 
             foreach (var action in new[] { pair.XAction, pair.YAction })
             foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
             {
                 if (map == null) continue;
-                if (otherElements.Contains(map.controllerMap.controllerId + ":" + map.elementIdentifierId)) return true;
+                if (otherElements.Contains(ElementKey(map))) return true;
             }
 
             return false;
@@ -1016,6 +1016,21 @@ public class VrUiCursor: NOVRBehaviour
             return unknown;
         }
     }
+
+    /// <summary>
+    /// Identifies one physical control across every device the player has.
+    ///
+    /// <para>The controller <i>type</i> is part of it because Rewired numbers
+    /// controllers within a type: the mouse is controller 0 and the first
+    /// joystick is controller 0 as well, so "Mouse Horizontal" and the stick's
+    /// "Axis 0" both keyed as <c>0:0</c> and every pair bound to a mouse axis
+    /// counted as sharing a stick with every pair bound to the first joystick
+    /// axis. Measured on this machine's own bindings, where it made
+    /// "Pan View"/"Tilt View" — a right-stick pair — read as the aircraft's
+    /// stick.</para>
+    /// </summary>
+    private static string ElementKey(Rewired.ActionElementMap map) =>
+        map.controllerMap.controllerType + ":" + map.controllerMap.controllerId + ":" + map.elementIdentifierId;
 
     /// <summary>
     /// Whether the chosen pair shares a stick with the map's own scroll axes.
