@@ -463,7 +463,8 @@ public class VrUiCursor: NOVRBehaviour
             if (!_stickModeLogged)
             {
                 Debug.Log("[VrUiCursor] Stick cursor active: the cursor is driven by the game's own view axes " +
-                          "(and the map scroll axes outside the maximized map); clicks from trigger, Fire or Select.");
+                          $"(map axes as well: {StickCursorConfig.UseMapAxes}; moves over the maximized map: " +
+                          $"{StickCursorConfig.MoveOverMap}); clicks from trigger, Fire or Select.");
                 _stickModeLogged = true;
             }
             return;
@@ -630,6 +631,18 @@ public class VrUiCursor: NOVRBehaviour
     /// GetAxis("Pan View") * ...</c>). It also makes the same action work
     /// whether it is bound to a self-centring stick, a hat or a mouse axis —
     /// an absolute mapping would only be meaningful for the first.</para>
+    ///
+    /// <para><b>Who owns the stick over the map.</b> "Free everywhere else"
+    /// is true of the *actions* and says nothing about the hardware under
+    /// them. On the one pad this was measured on, a saved gamepad map bound
+    /// the view axes and the map axes to the same two stick elements — so
+    /// over the maximized map one stick would scroll the map and drag the
+    /// cursor off the icon in the same motion. There the map wins by default
+    /// (<c>Stick Cursor Over Map</c>), which is also what the flat game does
+    /// for a pad player: the map moves under a stationary cursor and "Select"
+    /// takes whatever is nearest it. The mouse and a motion controller still
+    /// move the cursor there — neither of them is the stick the map is
+    /// using.</para>
     /// </summary>
     private void UpdateStickCursorInput()
     {
@@ -659,9 +672,12 @@ public class VrUiCursor: NOVRBehaviour
                 // drag-pan, which reads these same two axes. Moving the cursor
                 // as well would fight it, so the drag wins.
                 var dragPanning = mapMaximized && Input.GetMouseButton(0);
+                // And over the maximized map the stick belongs to the map: see
+                // the "Who owns the stick over the map" paragraph above.
+                var mapOwnsStick = mapMaximized && !StickCursorConfig.MoveOverMap;
 
                 var axis = Vector2.zero;
-                if (!dragPanning)
+                if (!dragPanning && !mapOwnsStick)
                 {
                     // Screen-space signs, not view signs: the game's view axes
                     // mean "+Pan View = right, +Tilt View = down". Both are

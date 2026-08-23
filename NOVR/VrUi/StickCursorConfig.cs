@@ -7,11 +7,19 @@ namespace NOVR.VrUi;
 /// the desktop mouse and the head-gaze and motion-controller modes.
 ///
 /// <para>It is driven by the game's <i>own</i> Rewired actions rather than by
-/// anything the mod binds: "Pan View"/"Tilt View" (the view axes, normally a
-/// thumbstick or a hat) everywhere, plus "Move Map Horizontal"/"Move Map
-/// Vertical" (the map scroll axes) wherever the tactical map is not itself
-/// using them. Nothing new to bind: whatever the pilot already looks around
-/// and scrolls the map with drives the cursor.</para>
+/// anything the mod binds: "Pan View"/"Tilt View" — the view axes, normally a
+/// thumbstick or a hat, and dead in a VR cockpit because the head does the
+/// looking. Nothing new to bind. "Move Map Horizontal"/"Move Map Vertical"
+/// can drive it too ("Stick Cursor Map Axes"), but that is off by default:
+/// the two action pairs usually sit on the same physical stick, so taking
+/// both doubles one stick rather than adding a second.</para>
+///
+/// <para>Over the maximized tactical map the stick goes back to the map for
+/// the same reason ("Stick Cursor Over Map"), leaving the cursor where it
+/// was — which is how the flat game already works for a pad player. Both
+/// defaults come from one measurement rather than a survey: the saved
+/// gamepad map on the machine this was flown on binds the view axes and the
+/// map axes to the same stick.</para>
 ///
 /// <para>Why it exists: head-gaze moves the cursor with the neck and is
 /// measured from a head-relative reference, so it moves when the view is
@@ -40,6 +48,7 @@ public static class StickCursorConfig
     public static ConfigEntry<float> StickCursorSpeed;
     public static ConfigEntry<float> StickCursorDeadzone;
     public static ConfigEntry<bool> StickCursorMapAxes;
+    public static ConfigEntry<bool> StickCursorOverMap;
     public static ConfigEntry<bool> StickCursorInvertVertical;
     public static ConfigEntry<float> StickCursorScrollSpeed;
 
@@ -47,9 +56,10 @@ public static class StickCursorConfig
     // fails to bind and carries on, so an entry can legitimately be null and
     // the cursor must keep working when it is.
     public static bool Enabled => StickCursor != null && StickCursor.Value;
-    public static float Speed => StickCursorSpeed != null ? StickCursorSpeed.Value : 1.2f;
+    public static float Speed => StickCursorSpeed != null ? StickCursorSpeed.Value : 0.4f;
     public static float Deadzone => StickCursorDeadzone != null ? StickCursorDeadzone.Value : 0.15f;
-    public static bool UseMapAxes => StickCursorMapAxes == null || StickCursorMapAxes.Value;
+    public static bool UseMapAxes => StickCursorMapAxes != null && StickCursorMapAxes.Value;
+    public static bool MoveOverMap => StickCursorOverMap != null && StickCursorOverMap.Value;
     public static bool InvertVertical => StickCursorInvertVertical != null && StickCursorInvertVertical.Value;
     public static float ScrollSpeed => StickCursorScrollSpeed != null ? StickCursorScrollSpeed.Value : 6f;
 
@@ -64,9 +74,9 @@ public static class StickCursorConfig
         StickCursorSpeed = config.Bind(
             Section,
             "Stick Cursor Speed",
-            1.2f,
+            0.4f,
             new ConfigDescription(
-                "How fast the stick cursor travels, in screens per second at full stick deflection. 1.0 crosses the whole panel in one second.",
+                "How fast the stick cursor travels, in screens per second at full stick deflection. 1.0 crosses the whole panel in one second, which flying it showed to be about three times too fast to place the cursor on a menu entry: the default is a panel crossed in two and a half seconds.",
                 new AcceptableValueRange<float>(0.1f, 5f)));
 
         StickCursorDeadzone = config.Bind(
@@ -80,8 +90,14 @@ public static class StickCursorConfig
         StickCursorMapAxes = config.Bind(
             Section,
             "Stick Cursor Map Axes",
-            true,
-            "Also move the stick cursor with the map scroll axes ('Move Map Horizontal'/'Move Map Vertical'), everywhere except the maximized tactical map — there they still scroll the map, as they do in the flat game. Gives a second stick to the cursor in menus, which is what makes a gamepad with the view axes on one stick and map scroll on the other work as expected.");
+            false,
+            "Also move the stick cursor with the map scroll axes ('Move Map Horizontal'/'Move Map Vertical'), everywhere except the maximized tactical map — there they still scroll the map, as they do in the flat game. Off by default because the two action pairs can share one physical stick — on the gamepad this was measured on, the saved map bound both to the same stick — and then this doubles that one stick's contribution instead of giving the cursor a second one. Turn it on if your view axes and your map axes are on different sticks.");
+
+        StickCursorOverMap = config.Bind(
+            Section,
+            "Stick Cursor Over Map",
+            false,
+            "Keep moving the stick cursor while the tactical map is maximized. Off (the default) hands the stick to the map there: the map scrolls under a cursor that stays where it is and 'Select' takes whatever is nearest it, which is exactly what the flat game does for a pad player. That matters because the view axes and the map axes are often the same stick, so a cursor that also moves means every scroll drags the cursor off the icon you were aiming at. The mouse still moves the cursor over the map either way, and so does a motion controller.");
 
         StickCursorInvertVertical = config.Bind(
             Section,
