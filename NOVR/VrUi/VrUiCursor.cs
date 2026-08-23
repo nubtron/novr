@@ -497,6 +497,12 @@ public class VrUiCursor: NOVRBehaviour
         _controllerModeActive = false;
         _activeCursorHand = null;
         _stickModeActive = false;
+        // Cleared here rather than in UpdateStickCursorInput, which does not
+        // run on every path through this method: a controller taking the
+        // cursor over returns below without reaching it, and the aeroplane
+        // must have its stick back the moment the cursor stops being aimed
+        // with it.
+        _stickHoldsFlightAxes = false;
         _stickScrollDelta = Vector2.zero;
 
         // A controller in the hand outranks whichever mode is configured, and
@@ -846,10 +852,6 @@ public class VrUiCursor: NOVRBehaviour
             // with, and an aeroplane that banked every time the mouse twitched
             // would be worse than one that never banks at all.
             _stickHoldsFlightAxes = stickIsOurs && _sharesStickWithFlight;
-        }
-        else
-        {
-            _stickHoldsFlightAxes = false;
         }
 
         var realMouse = _realMouse;
