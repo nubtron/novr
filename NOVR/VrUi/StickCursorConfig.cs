@@ -93,7 +93,7 @@ public static class StickCursorConfig
         StickCursorAxes = config.Bind(
             Section,
             "Stick Cursor Axes",
-            StickCursorAxisSource.Flight,
+            StickCursorAxisSource.Camera,
             "Which of the game's own axis pairs moves the cursor. All four are actions you have "
             + "already bound, and the mod reads them rather than binding anything new — but a "
             + "gamepad usually puts *two* pairs on each stick, so the one to pick is whichever "
@@ -101,16 +101,20 @@ public static class StickCursorConfig
             + "which is which: every time the stick cursor starts it prints one line per pair "
             + "with the controller elements Rewired has it on ('Left Stick X', 'Right Stick Y'), "
             + "and marks the ones that share a stick with the map.\n"
-            + "Flight = 'Roll'/'Pitch', the default. It is the pair every setup has bound — a "
-            + "stick, a pad's left thumbstick, the keyboard's own WASD — and it is free wherever "
-            + "there is no aircraft to fly, which is every menu and the spawn map. The cost is "
-            + "the one place there is an aeroplane: open the tactical map in flight and moving "
-            + "the cursor flies it. Pick Camera or View if you use the map in the air.\n"
+            + "Camera = 'Move Lateral'/'Move Longitudinal', the free camera's, and the default. "
+            + "It is the one pair nothing reads in the cockpit — maximizing the map does not "
+            + "change camera state, and the cockpit camera reads only 'Move Vertical' of the "
+            + "three — so with the map open in flight the cursor is all this pair does, and the "
+            + "map keeps its own scroll axes. The cost is on the ground: on the spawn map and in "
+            + "the mission editor these fly the free camera, so the view drifts while you "
+            + "point.\n"
+            + "Flight = 'Roll'/'Pitch'. The pair every setup has bound — a stick, a pad's left "
+            + "thumbstick, the keyboard's own WASD — and free wherever there is no aircraft, "
+            + "which is every menu and the spawn map. The mirror image of Camera: the cost is "
+            + "the cockpit, where opening the map and moving the cursor flies the aeroplane.\n"
             + "View = 'Pan View'/'Tilt View', the free-look axes, which the game ignores whenever "
             + "a cursor is up. Free in every screen — unless they share a stick with the map "
             + "scroll, which on a gamepad they usually do.\n"
-            + "Camera = 'Move Lateral'/'Move Longitudinal', the free camera's. Free in the "
-            + "cockpit; they drive the camera on the spawn map and in the mission editor.\n"
             + "Map = 'Move Map Horizontal'/'Move Map Vertical'. Free everywhere except the "
             + "maximized map, which is the one place they scroll it.");
 
