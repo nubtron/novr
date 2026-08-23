@@ -134,7 +134,7 @@ public class VrUiCursor: NOVRBehaviour
     private HandIdleState _leftHandIdle;
     /// <summary>
     /// The hand that took the cursor over without one being configured, kept
-    /// so that waving the other hand does not move the pointer.
+    /// only so a change of hands can be logged.
     /// </summary>
     private XRNode? _takeoverHand;
     private static XRNode? _activeCursorHand;
@@ -683,10 +683,17 @@ public class VrUiCursor: NOVRBehaviour
     /// The hand a controller picked up should point with, when no hand is
     /// configured.
     ///
-    /// <para>Sticky: the hand that already has the cursor keeps it for as long
-    /// as it is held, so reaching for the throttle with the other hand does
-    /// not throw the pointer across the panel. Only once it is put down does
-    /// the other hand get a turn, right first.</para>
+    /// <para><b>The right hand whenever the right hand is held</b>, and the
+    /// left only when it is not. In a headset both controllers are usually up
+    /// and both are moving, so "whichever is being held" does not decide
+    /// anything on its own and something has to. The first attempt kept
+    /// whichever hand had taken the cursor first, which is stable and
+    /// unpredictable: it hands the laser to whichever controller happened to
+    /// twitch first after the cursor appeared, and the pilot who reported it
+    /// got the left. A fixed preference is the one rule that gives the same
+    /// answer every time, and it is undone by a setting rather than by
+    /// guessing — <c>Cursor Input Source</c> already names a hand, and naming
+    /// one here is what a left-handed pilot should do.</para>
     ///
     /// <para>Both hands are asked every frame whatever the answer, because the
     /// idle timer is what "held" means and a hand whose timer stopped being
@@ -697,11 +704,17 @@ public class VrUiCursor: NOVRBehaviour
         var rightHeld = IsHandHeld(XRNode.RightHand, ref _rightHandIdle);
         var leftHeld = IsHandHeld(XRNode.LeftHand, ref _leftHandIdle);
 
-        if (_takeoverHand == XRNode.RightHand && rightHeld) return XRNode.RightHand;
-        if (_takeoverHand == XRNode.LeftHand && leftHeld) return XRNode.LeftHand;
+        var picked = rightHeld ? XRNode.RightHand : leftHeld ? (XRNode?)XRNode.LeftHand : null;
+        if (picked != _takeoverHand)
+        {
+            // The log line below names the hand, and a hand-over mid-takeover
+            // (the right one put down while the left is still up) is exactly
+            // when someone wants to read it.
+            _takeoverHand = picked;
+            _controllerModeLogged = false;
+        }
 
-        _takeoverHand = rightHeld ? XRNode.RightHand : leftHeld ? (XRNode?)XRNode.LeftHand : null;
-        return _takeoverHand;
+        return picked;
     }
 
     /// <summary>
