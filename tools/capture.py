@@ -1,0 +1,409 @@
+#!/usr/bin/env -S uv run --quiet
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["vr-harness"]
+#
+# [tool.uv.sources]
+# vr-harness = { git = "https://github.com/nubtron/vr-harness" }
+# ///
+"""Unattended capture run: launch headless, fly a mission, dump, tear down.
+
+    tools/capture.py                     # full run, default settings
+    tools/capture.py --mission "Free"    # pick a mission by name
+    tools/capture.py --dumps 5
+    tools/capture.py --keep-running      # leave the game up for poking at
+    tools/capture.py --renderdoc         # also take a GPU capture
+
+What it does, and why each step exists, is documented in vr_harness/game.py and
+the shared vr-harness package's mockxr.py. The short version: the OpenXR mock runtime supplies stereo
+with no headset, the game is launched and BepInEx is *proved* to have loaded
+before anything is measured (retrying with the other launcher if it did not),
+and NOVR's AutoStartMission flies a mission and fires the dumps. Output lands in
+the mod's dumps/ folder and the harness work_dir. RenderDoc is opt-in, injected
+early, and needs an official build in tools.renderdoc.dir — see tools/README.md.
+
+Everything machine-specific comes from ~/.vr-harness.toml — see
+tools/vr-harness.example.toml.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from datetime import datetime
+from pathlib import Path, PureWindowsPath
+
+from vr_harness import HarnessError, load_project
+from vr_harness import captures as captures_mod
+from vr_harness import bepinex_cfg, game, mockxr
+
+PROJECT = "novr"
+DONE_MARKER = "harness.done"
+DUMPS_DIR = "dumps"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--mission", default="",
+                        help="mission name to match (default: a built-in mission — Free Flight has no airbase spawn)")
+    parser.add_argument("--dumps", type=int, default=3, help="how many dumps to fire (default 3)")
+    parser.add_argument("--delay", type=float, default=8.0, help="seconds before the first dump and between dumps")
+    parser.add_argument("--timeout", type=int, default=300, help="seconds to wait for the run to finish")
+    # Measured: a successful run is ~35s wall clock with one dump (launch ~1s,
+    # mission load and spawn ~20s, dump, capture settle), so roughly 50s with
+    # the default three. 300s is deliberate slack for a cold start after a game
+    # update rather than a tight bound — the point is that the script cannot sit
+    # there indefinitely with a game process running. Each wait below is
+    # individually capped too, but those caps stack; this one is absolute.
+    parser.add_argument("--max-runtime", type=int, default=300,
+                        help="hard ceiling in seconds for the whole run (default 300)")
+    # A/B-ing a config value is the whole point of an unattended harness: run
+    # once with the feature on, once off, diff the output. Restricting that to
+    # the [Debug] section would mean hand-editing the .cfg around every run,
+    # which is exactly the manual step this replaces. Values are restored
+    # afterwards like any other harness edit.
+    parser.add_argument("--set", action="append", default=[], metavar="SECTION:KEY=VALUE",
+                        help="override any config entry for this run, e.g. --set 'General:HUD Opacity=0'")
+    # Looking around is the difference between "the HUD is fine" and "the HUD is
+    # fine in the part of it the default pose happens to cover". The angles drive
+    # the OpenXR mock runtime's view pose, so the mod sees a head that turned
+    # rather than a camera someone nudged afterwards.
+    # Written --yaw=... in the help on purpose: a leading-minus value is parsed
+    # as an option unless it is attached with '=', so "--yaw -75,0,75" fails
+    # with an unhelpful "expected one argument".
+    parser.add_argument("--yaw", default="", metavar="DEG[,DEG,...]",
+                        help="dump at these head yaw angles instead of straight ahead, e.g. "
+                             "--yaw=-75,0,75 (negative looks left); one dump per angle, replacing --dumps")
+    # Opt-in. A GPU capture needs RenderDoc hooked before Unity
+    # creates the D3D device, i.e. injected into a process that is seconds from
+    # loading the mod, and a bad renderdoc.dll injected there stops Doorstop
+    # loading BepInEx at all. That is survivable now that the run proves the mod
+    # loaded, but it is not something to do on every routine dump run.
+    parser.add_argument("--renderdoc", action="store_true",
+                        help="also inject RenderDoc for a GPU capture")
+    parser.add_argument("--inject", choices=("early", "preloader"), default="early",
+                        help="when to inject RenderDoc: 'early' (default) beats the D3D "
+                             "device and is the only one that captures anything; "
+                             "'preloader' waits until Doorstop is done, which is safe for "
+                             "the mod but too late to hook the device")
+    parser.add_argument("--no-renderdoc", action="store_true",
+                        help=argparse.SUPPRESS)  # accepted and ignored; it is the default now
+    parser.add_argument("--keep-running", action="store_true", help="do not close the game at the end")
+    parser.add_argument("--config", default=None, help="override the harness config path")
+    return parser.parse_args()
+
+
+def wait_for_done(marker: Path, project, deadline: float, pid: int) -> bool:
+    """Wait for the mod's completion marker, up to an absolute deadline.
+
+    Polling for output files instead would mean a crashed or mod-less run always
+    costs the full timeout; the marker plus a liveness check turns most failures
+    into a fast, specific error.
+
+    The liveness check watches the pid we launched, not just the process name.
+    A run that says "the game exited" while a game is visibly on screen is
+    baffling, and it happens: the process we set up — mock runtime env, Doorstop,
+    RenderDoc injected — can die and be replaced by one we did not configure.
+    Whatever is on screen then is not the thing under test.
+    """
+    while time.monotonic() < deadline:
+        if marker.exists():
+            return True
+        if not game.is_running(project, pid):
+            others = [p for p in game.running_pids(project) if p != pid]
+            if others:
+                raise HarnessError(
+                    f"the game process we launched (pid {pid}) exited and a different "
+                    f"one took its place (pid {', '.join(map(str, others))}).\n"
+                    "That replacement has neither our mock-runtime environment nor "
+                    "RenderDoc injected, so the run is void. Close every game "
+                    "instance and retry."
+                )
+            raise HarnessError(
+                f"the game (pid {pid}) exited before the run completed — check Player.log"
+            )
+        time.sleep(2)
+    return False
+
+
+def harness_log(project, limit: int = 8) -> list[str]:
+    """The mod's own [NOVR-HARNESS] lines from Player.log, newest last.
+
+    Every failure in this harness announces itself in the game log and nowhere
+    else. Telling the user to "check Player.log" costs them a grep through
+    ~1500 lines of Unity noise to find the one line that names the problem, so
+    the driver reads it for them.
+    """
+    log = project.player_log_wsl if project.player_log else None
+    if not log or not log.is_file():
+        return []
+    try:
+        text = log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = [
+        l.strip()
+        for l in text.splitlines()
+        if "[NOVR-HARNESS]" in l
+        # The mission inventory is one enormous line; useful when choosing a
+        # mission, pure noise in a failure report.
+        and "Available single-player missions" not in l
+    ]
+    return lines[-limit:]
+
+
+def explain_failure(project) -> None:
+    """Print what the mod said, and what it usually means."""
+    lines = harness_log(project)
+    if not lines:
+        print(
+            "\nThe mod logged nothing. BepInEx did load (the run would have "
+            "stopped at the launch check otherwise), so the likely cause is "
+            "[Debug] Auto Start Mission never taking effect.",
+            file=sys.stderr,
+        )
+        return
+
+    print("\nWhat the mod reported:", file=sys.stderr)
+    for line in lines:
+        print(f"  {line}", file=sys.stderr)
+
+    # Map the *last* state the mod reached to a fix. Scanning the whole tail for
+    # any match reads stale lines from earlier in the same run — a completed run
+    # still contains "no local player yet" from before the mission loaded, and
+    # matching that would blame a timeout for a run that actually succeeded.
+    hints = [
+        ("Run complete", None),
+        ("Fired dump", None),
+        ("local aircraft acquired",
+         "the aircraft spawned but no output appeared — check the dump path and disk space"),
+        ("no spawnable aircraft",
+         "this mission has no airbase hangar spawn (Free Flight is like this) — "
+         "use --mission with a built-in mission such as '01. Convoy Attack'"),
+        ("no faction HQ",
+         "faction join failed; check the mission actually has a joinable faction"),
+        ("no local player yet",
+         "the mission never finished loading — try a longer --timeout"),
+        ("Started mission",
+         "mission started but never reached a cockpit — see the spawn lines above"),
+    ]
+    for line in reversed(lines):
+        for needle, hint in hints:
+            if needle in line:
+                if hint:
+                    print(f"\nLikely fix: {hint}.", file=sys.stderr)
+                return
+
+
+def launch_until_modded(project, env: dict[str, str], inject=None, inject_at: str = "early"):
+    """Launch, prove the mod loaded, and try the other launcher if it did not.
+
+    Which launcher loads BepInEx has changed under this harness twice without
+    anything on the machine visibly changing (see vr_harness/game.py), and a
+    mod-less run is not a slow failure — it is a run that produces plausible
+    output about an unmodded game. Rather than pick a winner, take the first
+    launcher that demonstrably worked. A failed attempt costs ~30s; a mod-less
+    run that gets believed costs an afternoon.
+
+    `inject` runs inside the retry loop, so a relaunch gets the same treatment as
+    the first attempt. `inject_at` picks the moment: 'early' (straight after the
+    process appears, the only point that beats the D3D device) or 'preloader'
+    (once Doorstop has handed over, which cannot disturb it).
+    """
+    last = None
+    for attempt, launcher in enumerate(game.LAUNCHERS, start=1):
+        launch = game.launch(project, env, launcher=launcher)
+        print(f"launched pid={launch.pid} via {launcher} "
+              f"(appeared t+{launch.appeared_after_s:.2f}s)")
+        if inject is not None and inject_at == "early":
+            inject(launch)
+        if game.wait_for_preloader(project, launch) and inject is not None and inject_at == "preloader":
+            inject(launch)
+        game.wait_for_bepinex(project, launch)
+        status = game.verify_hook(project, launch)
+        print(f"hooks: {status.describe(renderdoc=inject is not None)}")
+        if status.ok:
+            if attempt > 1:
+                print(f"  note: '{game.LAUNCHERS[0]}' produced a mod-less game; "
+                      f"'{launcher}' worked. Worth a journal line.")
+            return launch, status
+        last = status
+        print(f"  {launcher} gave a mod-less game; killing it and trying the next launcher")
+        game.kill(project)
+
+    # Two very different failures reach here, and the fix for one is no help
+    # against the other: a loader that never ran, and a loader that ran and did
+    # not load our plugin.
+    if last is not None and last.preloader:
+        hint = (
+            f"BepInEx ran but loaded no plugin. Check that NOVR.dll is in "
+            f"{project.plugin_dir} and read {project.bepinex_log} for the load error."
+        )
+    elif inject is not None and inject_at == "early":
+        # A locally built renderdoc.dll injected into a fresh process stops
+        # Doorstop loading BepInEx, while an official release build injected at
+        # the same instant does not. So the build in use is the first thing to
+        # suspect here, not the timing.
+        hint = (
+            "BepInEx never ran, and RenderDoc was injected before Doorstop had "
+            "finished — which is what stops it.\n"
+            f"RenderDoc in use: {project.renderdoccmd}\n"
+            "A locally built renderdoc.dll was measured doing this while the official "
+            "release was not; point tools.renderdoc.dir at an official install, or run "
+            "--inject preloader (mod-safe, captures nothing)."
+        )
+    else:
+        hint = (
+            f"BepInEx never ran: {project.bepinex_log} was untouched by these launches.\n"
+            "Check that [General] enabled = true in doorstop_config.ini and that "
+            "DOORSTOP_DISABLE is not set, then see tools/vr_harness/game.py."
+        )
+    raise HarnessError(
+        "the mod never loaded, with any launcher — every result from this game "
+        f"would be an unmodded one.\n"
+        f"Last check: {last.describe() if last else '(no status)'}\n{hint}"
+    )
+
+
+
+def newest_dump_dir(plugin_dir: Path) -> Path | None:
+    root = plugin_dir / DUMPS_DIR
+    if not root.is_dir():
+        return None
+    dirs = [d for d in root.iterdir() if d.is_dir()]
+    return max(dirs, key=lambda d: d.stat().st_mtime) if dirs else None
+
+
+
+def main() -> int:
+    args = parse_args()
+    project = load_project(PROJECT, args.config)
+    print(f"config: {project.source}")
+    print(f"game:   {project.game_dir}")
+
+    # One directory per run rather than a wiped shared one. Comparing a run
+    # against an earlier run is the main thing this harness is for, and a run
+    # that deletes its predecessor's evidence — including a buffer-dump-only run
+    # that produces none of its own — makes that impossible.
+    stamp = datetime.now().strftime("%H%M%S")
+    captures_dir = project.work_dir_wsl / "captures" / stamp
+    captures_dir.mkdir(parents=True, exist_ok=True)
+    capture_prefix = str(PureWindowsPath(project.work_dir) / "captures" / stamp / PROJECT)
+
+    marker = project.plugin_dir_wsl / DONE_MARKER
+    marker.unlink(missing_ok=True)
+
+    env = dict(mockxr.env(project))
+    print(f"mock XR: {env['XR_RUNTIME_JSON']}")
+
+    updates = {
+        ("Debug", "Auto Start Mission"): "true",
+        ("Debug", "Auto Start Mission Name"): args.mission,
+        ("Debug", "Auto Dump Count"): str(args.dumps),
+        ("Debug", "Auto Dump Delay"): str(args.delay),
+        ("Debug", "RenderDoc Capture On Dump"): "true" if args.renderdoc else "false",
+        # The auto-dump path does not go through the F1/trigger gate, but
+        # --keep-running exists so a human can poke at a live game, and the
+        # trigger file is how they ask for a dump. bepinex_cfg forces this back
+        # off afterwards however the run ends.
+        ("Debug", "Enable Frame Dumps"): "true",
+        # Always written, so a run without --yaw clears a sweep an earlier run
+        # left behind rather than inheriting it.
+        ("Debug", "Auto Dump Yaws"): args.yaw,
+        # An unattended run has no listener, and the machine it runs on does.
+        ("Debug", "Harness Mute"): "true",
+    }
+    if args.yaw:
+        print(f"yaw sweep: {args.yaw} ({len(args.yaw.split(','))} dumps, overriding --dumps)")
+    for override in args.set:
+        section, _, rest = override.partition(":")
+        key, sep, value = rest.partition("=")
+        if not section or not sep:
+            raise HarnessError(f"--set expects SECTION:KEY=VALUE, got {override!r}")
+        updates[(section.strip(), key.strip())] = value.strip()
+        print(f"config: [{section.strip()}] {key.strip()} = {value.strip()} (for this run)")
+
+    # One ceiling for the whole run. Each wait below is individually bounded,
+    # but those bounds stack; a single deadline is what actually guarantees the
+    # harness cannot sit there indefinitely with a game process running.
+    deadline = time.monotonic() + args.max_runtime
+
+    game.kill(project)
+
+    # The keys that must never survive a run are per-project now, in
+    # [projects.novr.unsafe_keys]. Passing them is not optional: without
+    # them a run that dies leaves auto-start and frame dumps armed, and the
+    # next launch is a headset session that starts a mission by itself.
+    with bepinex_cfg.temporarily(project.config_file_wsl, updates,
+                                 project.unsafe_config_keys):
+        # Injection timing is a real trade and the run says which side it took:
+        # 'early' is the only point that beats Unity's D3D device, and also the
+        # point where a bad renderdoc.dll can stop Doorstop loading the mod. The
+        # launch check catches that either way — see launch_until_modded.
+        inject = (
+            lambda launch: game.inject_renderdoc(project, launch, capture_prefix)
+        ) if args.renderdoc else None
+        launch, status = launch_until_modded(project, env, inject, args.inject)
+        if launch.injected_after_s is not None:
+            print(f"renderdoc injected {args.inject} "
+                  f"({'in the process' if status.renderdoc else 'NOT in the process'})")
+
+        try:
+            if args.renderdoc and not status.renderdoc:
+                print("  warning: renderdoc.dll not present; continuing with buffer dumps only")
+
+            wait_deadline = min(deadline, time.monotonic() + args.timeout)
+            print(f"waiting up to {int(wait_deadline - time.monotonic())}s for the run to finish...")
+            finished = wait_for_done(marker, project, wait_deadline, launch.pid)
+            if not finished:
+                print("  timed out waiting for harness.done", file=sys.stderr)
+        finally:
+            # Must happen before the kill: RenderDoc writes the capture from
+            # inside the game process.
+            if args.renderdoc:
+                # Allow a little past the ceiling: aborting mid-write is
+                # what produces a corrupt capture in the first place.
+                settled = captures_mod.wait_for_settle(
+                    captures_dir, min(deadline + 60, time.monotonic() + 90))
+                if not settled:
+                    print("  warning: capture files still changing at timeout; "
+                          "may be truncated")
+            if not args.keep_running:
+                game.kill(project)
+                print("game closed")
+
+    dump_dir = newest_dump_dir(project.plugin_dir_wsl)
+    captures = sorted(captures_dir.glob("*.rdc"))
+    thumbs = captures_mod.extract_thumbnails(project, captures) if captures else []
+
+    print("\n== results ==")
+    print(f"buffer dump:  {dump_dir if dump_dir else '(none)'}")
+    if args.renderdoc:
+        print(f"gpu captures: {len(captures)} in {captures_dir}")
+        if not captures:
+            print(
+                "  RenderDoc was in the process and the mod triggered a capture, but no\n"
+                "  frame was written."
+                + ("\n  --inject preloader is after Unity created the D3D device, so RenderDoc\n"
+                   "  has nothing hooked. Use the default (early) to capture anything."
+                   if args.inject == "preloader" else
+                   "\n  Check RenderDoc's own log in %TEMP%\\RenderDoc for what it hooked.")
+            )
+    for rdc in captures:
+        print(f"  {rdc.name}")
+    print(f"thumbnails:   {len(thumbs)}")
+
+    if dump_dir is None and not captures:
+        print("\nnothing was produced.", file=sys.stderr)
+        explain_failure(project)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except HarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1)

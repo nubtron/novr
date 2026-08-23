@@ -30,6 +30,18 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
+    public readonly ConfigEntry<bool> EnableFrameDumps;
+    public readonly ConfigEntry<bool> RenderDocCaptureOnDump;
+    public readonly ConfigEntry<bool> AutoStartMission;
+    public readonly ConfigEntry<string> AutoStartMissionName;
+    public readonly ConfigEntry<int> AutoDumpCount;
+    public readonly ConfigEntry<float> AutoDumpDelay;
+    public readonly ConfigEntry<string> AutoDumpYaws;
+    public readonly ConfigEntry<bool> AutoApproach;
+    public readonly ConfigEntry<float> AutoApproachDistance;
+    public readonly ConfigEntry<string> AutoSpawnAircraft;
+    public readonly ConfigEntry<bool> AutoApproachKinematic;
+    public readonly ConfigEntry<bool> HarnessMute;
 
     public ModConfiguration(ConfigFile config)
     {
@@ -176,5 +188,85 @@ public class ModConfiguration
             "Native Menu Height Offset",
             0.0f,
             "Vertical offset in meters applied when NOVR's native VR menu UI is opened or recentered. Values from -0.25 to 1.0 are supported.");
+
+        // [Debug] drives the offline verification harness (tools/). Every key
+        // here is off by default, and a normal play session has to behave as if
+        // the section did not exist: no hotkey doing anything surprising, no
+        // capture firing, no mission starting by itself. The harness turns on
+        // what it needs for the duration of a run and puts it back.
+        EnableFrameDumps = config.Bind(
+            "Debug",
+            "Enable Frame Dumps",
+            false,
+            "Let F1 (or a 'dump.trigger' file next to NOVR.dll) write a buffer dump of the current frame. Off for normal play: a dump stalls the frame and writes several MB of PNGs, which is not what F1 should do to someone who only wanted to fly.");
+
+        RenderDocCaptureOnDump = config.Bind(
+            "Debug",
+            "RenderDoc Capture On Dump",
+            false,
+            "When RenderDoc is injected into the game, also trigger a GPU frame capture whenever a buffer dump fires. Has no effect without RenderDoc — see tools/README.md.");
+
+        AutoStartMission = config.Bind(
+            "Debug",
+            "Auto Start Mission",
+            false,
+            "Test harness: automatically start a mission from the main menu and fire buffer dumps, so an unattended run produces per-eye dumps and GPU captures with nobody at the keyboard. Leave off for normal play.");
+
+        AutoStartMissionName = config.Bind(
+            "Debug",
+            "Auto Start Mission Name",
+            "",
+            "Which mission Auto Start Mission loads, matched case-insensitively against the mission name. Empty picks a Free Flight mission (fastest to load, aircraft already airborne with the HUD up), falling back to the first single-player mission.");
+
+        AutoDumpCount = config.Bind(
+            "Debug",
+            "Auto Dump Count",
+            3,
+            new ConfigDescription(
+                "How many dumps Auto Start Mission fires once the mission is running. More than one catches frames where the HUD has finished initialising.",
+                new AcceptableValueRange<int>(1, 10)));
+
+        AutoDumpDelay = config.Bind(
+            "Debug",
+            "Auto Dump Delay",
+            8f,
+            new ConfigDescription(
+                "Seconds to wait after the mission starts before the first automatic dump, and between dumps.",
+                new AcceptableValueRange<float>(1f, 60f)));
+        AutoDumpYaws = config.Bind(
+            "Debug",
+            "Auto Dump Yaws",
+            "",
+            "Comma-separated head yaw angles in degrees to dump at, e.g. '-75,0,75' (negative looks left). One dump per angle, and the count replaces Auto Dump Count. Empty dumps straight ahead. Only works under the harness's OpenXR mock runtime, which is the only runtime whose head pose we are allowed to move; with a real headset the angles are ignored and the run dumps wherever the pilot is looking.");
+
+        AutoApproach = config.Bind(
+            "Debug",
+            "Auto Approach",
+            false,
+            "Test harness: once the aircraft has spawned, put it on final approach to the nearest friendly airbase — on the extended centreline, on the glideslope, gear down, marked as having taken off — and hold it there for the rest of the run. The landing symbology (runway outline, glideslope line, airbase marker) only draws while the game believes you are landing, and a harness that spawns parked in a hangar can never see any of it. Ignored unless Auto Start Mission is on.");
+
+        AutoApproachDistance = config.Bind(
+            "Debug",
+            "Auto Approach Distance",
+            1200f,
+            "Test harness: how far out on the extended centreline Auto Approach holds the aircraft, in metres. The hold point is raised if the glideslope would put it inside terrain, so a short final at an airbase in a valley stays in the air. Worth varying: the glideslope symbology's length is drawn from the on-screen separation between the touchdown point and the aim point, and at 1200 m those are only a few pixels apart. Beyond about 2 km some missions treat the placement as leaving the mission area and fail the mission.");
+
+        AutoSpawnAircraft = config.Bind(
+            "Debug",
+            "Auto Spawn Aircraft",
+            "",
+            "Test harness: spawn an aircraft whose name contains this, instead of the first one any airbase offers. Empty takes the first. Worth setting for anything that tests the flight HUD: Free Flight's first offer is a CI-22 Cricket, a light aircraft with no HUD, and a run in one produces a frame with HUDCanvas inactive that reads exactly like a broken HUD. The log lists every aircraft on offer when nothing matches.");
+
+        AutoApproachKinematic = config.Bind(
+            "Debug",
+            "Auto Approach Kinematic",
+            false,
+            "Test harness: hold the Auto Approach aircraft as a kinematic body, so the flight model cannot fight the hold. This was once necessary and no longer is. The airframe destruction it worked around came from the hold moving Unit.rb and nothing else, leaving every other UnitPart's rigidbody to be dragged along by its joints; the hold now carries them all, and dynamic runs hold a steady 98 m/s with the pilot unhurt and no damage over twenty-odd seconds. Off is the default because it is the truer scenario: a kinematic body reports zero velocity whatever is assigned to it, and the glideslope symbology's drawn length comes from the dot product of that velocity with the direction to the touchdown point, so the glideslope cannot be evaluated with this on. Turn it on only to take the flight model out of the picture entirely.");
+
+        HarnessMute = config.Bind(
+            "Debug",
+            "Harness Mute",
+            false,
+            "Silence the game for the duration of a harness run (AudioListener.volume forced to 0 every frame, so nothing the game does can unmute it). The harness turns this on for its own launches and the config guard forces it back off afterwards; a normal play session never hears the difference.");
     }
 }

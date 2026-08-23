@@ -32,6 +32,8 @@ public class Core : MonoBehaviour
     {
         DontDestroyOnLoad(gameObject);
         gameObject.AddComponent<VrCameraManager>();
+        gameObject.AddComponent<DebugDumpController>();
+        gameObject.AddComponent<AutoStartMission>();
         gameObject.AddComponent<APIBus>();
         gameObject.AddComponent<ColorGradeController>();
         gameObject.AddComponent<MotionControllerVisual>();
