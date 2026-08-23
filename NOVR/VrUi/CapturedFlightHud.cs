@@ -37,6 +37,8 @@ public static class CapturedFlightHud
     public static ConfigEntry<float> Distance;
     public static ConfigEntry<float> FieldOfView;
     public static ConfigEntry<float> Brightness;
+    public static ConfigEntry<bool> PixelSnap;
+    public static ConfigEntry<bool> SmoothDownscale;
 
     /// <summary>
     /// The panel distance the backends place at, clamped and defaulted in one
@@ -45,6 +47,16 @@ public static class CapturedFlightHud
     /// </summary>
     public static float DistanceMeters =>
         Mathf.Clamp(Distance?.Value ?? DefaultDistanceMeters, MinDistanceMeters, MaxDistanceMeters);
+
+    /// <summary>
+    /// Snap the captured UI to the capture texture's pixel grid. Null-safe like
+    /// the rest: an unbound section must not silently change how the HUD draws.
+    /// </summary>
+    public static bool PixelSnapEnabled => PixelSnap != null && PixelSnap.Value;
+
+    /// <summary>Filter the capture down with mipmaps instead of two taps.</summary>
+    public static bool SmoothDownscaleEnabled => SmoothDownscale != null && SmoothDownscale.Value;
+
 
     public static void Bind(ConfigFile config)
     {
@@ -119,5 +131,36 @@ public static class CapturedFlightHud
                 + "until the symbology reads against the brightest sky you fly in; lower it if it "
                 + "glares at night. Takes effect immediately.",
                 new AcceptableValueRange<float>(0.25f, 8f)));
+
+        PixelSnap = config.Bind(
+            "Experimental",
+            "Captured HUD Pixel Snap",
+            false,
+            "Round the captured HUD and helmet-visor geometry to whole pixels of the texture it "
+            + "is drawn into, the way a flat game keeps its UI on the pixel grid so a thin stroke "
+            + "does not straddle two pixels. Off by default because it was measured to change "
+            + "the captured image by nothing worth seeing: the share of stroke pixels reaching "
+            + "full brightness moved from 14.2 to 14.7 per cent at a 2560x1440 window and from "
+            + "8.8 to 8.6 at 1920x1080, which is run-to-run noise. The game's HUD is laid out in "
+            + "a 1920x1080 reference space and scaled to the window, and much of it is rotated "
+            + "or sized in fractions of a pixel, so there is little for a grid to catch. It is "
+            + "here to be tried in a headset, which is the only place the difference could show. "
+            + "Takes effect immediately.");
+
+        SmoothDownscale = config.Bind(
+            "Experimental",
+            "Captured HUD Smooth Downscale",
+            false,
+            "Give the HUD panel's capture mipmaps, trilinear filtering and 8x anisotropy, so the "
+            + "GPU averages the texels it skips instead of taking two samples and hoping. The "
+            + "panel is shown smaller than it is captured — a 2560-wide window across a 60 "
+            + "degree panel is 43 texels per degree, against roughly 27 eye pixels per degree on "
+            + "a Quest 3 — and two samples cannot carry that, so thin strokes flicker and drop "
+            + "out as the aircraft moves. This is the fix for that, and it costs a little "
+            + "softness in a still frame, which is why it is off by default: if the HUD looks "
+            + "unsettled in motion, turn it on; if it looks soft standing still, leave it off. "
+            + "The helmet visor is left alone either way — 1920 pixels across 70 degrees is "
+            + "about one texel per eye pixel already, where a mipmap would only blur it. Takes "
+            + "effect immediately.");
     }
 }

@@ -321,6 +321,15 @@ public class HmdVisorBackend : NOVRBehaviour
         canvas.renderMode = RenderMode.ScreenSpaceCamera;
         canvas.worldCamera = camera;
         canvas.planeDistance = 1f;
+        // This is the one panel in the mod where snapping to whole pixels is
+        // worth the name: the island camera is orthographic at half the
+        // texture's height, so a canvas unit is a texel, and the visor spreads
+        // 1920 of them across 70 degrees — 27 per degree, which is about what
+        // a Quest 3 eye buffer resolves. One texel is therefore about one eye
+        // pixel, and a stroke that sits on the grid here arrives on the grid
+        // there. The HUD panel's capture is 1.6x denser than that and loses
+        // most of the benefit in the squeeze (see FlightHudCaptureBackend).
+        canvas.pixelPerfect = CapturedFlightHud.PixelSnapEnabled;
         return canvas;
     }
 
@@ -439,6 +448,11 @@ public class HmdVisorBackend : NOVRBehaviour
 
         EnsurePanel();
         if (_panel == null) return;
+
+        // Live, like every other setting on these panels.
+        var snap = CapturedFlightHud.PixelSnapEnabled;
+        if (_visorCanvas.pixelPerfect != snap) _visorCanvas.pixelPerfect = snap;
+        if (_lockedCanvas != null && _lockedCanvas.pixelPerfect != snap) _lockedCanvas.pixelPerfect = snap;
 
         var distance = CapturedFlightHud.DistanceMeters;
         var fovDegrees = Mathf.Clamp(CapturedHmd.VisorFieldOfView?.Value ?? 70f, 30f, 110f);

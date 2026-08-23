@@ -122,6 +122,9 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private bool _loggedPlacement;
     private int _targetWidth;
     private int _targetHeight;
+    private bool _targetMipped;
+    private Canvas? _snappedCanvas;
+    private bool _snappedWasPixelPerfect;
 
     /// <summary>True while this backend owns the overlay UI.</summary>
     public static bool IsActive => _instance != null && _instance._capturing;
@@ -200,6 +203,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         EnsureTarget();
         EnsureCaptureCamera();
         EnsurePanel();
+        ApplyPixelSnap();
 
         _capturing = true;
         Debug.Log($"[NOVR] Captured flight HUD active: rendering the overlay pass into a " +
@@ -210,6 +214,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     {
         _capturing = false;
         WeaponSafetyWash.Restore();
+        RestorePixelSnap();
 
         if (_panelCanvas != null)
         {
@@ -241,10 +246,24 @@ public class FlightHudCaptureBackend : NOVRBehaviour
 
     private void EnsureTarget()
     {
+        // The game's own resolution, and it cannot be anything else: the
+        // overlay pass draws the canvas in *screen* pixel coordinates into
+        // whatever target is bound, so a smaller target crops the HUD instead
+        // of scaling it (measured — at 0.6 the content kept its absolute pixel
+        // bounds and lost everything past 1536x864). The window resolution is
+        // therefore the only handle on how dense this texture is.
         var width = Mathf.Max(640, Screen.width);
         var height = Mathf.Max(480, Screen.height);
 
-        if (_target != null && _targetWidth == width && _targetHeight == height) return;
+        // More texels than the headset can show is not free detail: the panel
+        // is minified on the way to the eye (roughly 43 texels per degree
+        // against 27 eye pixels per degree at the defaults), and two samples
+        // cannot carry that, so strokes flicker. Mipmaps and anisotropy are
+        // what make a minified sample an average instead of a lottery.
+        var mipped = CapturedFlightHud.SmoothDownscaleEnabled;
+
+        if (_target != null && _targetWidth == width && _targetHeight == height &&
+            _targetMipped == mipped) return;
 
         if (_target != null)
         {
@@ -252,18 +271,18 @@ public class FlightHudCaptureBackend : NOVRBehaviour
             Destroy(_target);
         }
 
-        // The game's own resolution, so the canvas lays out exactly as it does
-        // flat and the thin HUD strokes stay one pixel wide.
         _target = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32)
         {
             name = "NOVR Flight HUD Capture",
-            filterMode = FilterMode.Bilinear,
-            useMipMap = false,
-            autoGenerateMips = false,
+            filterMode = mipped ? FilterMode.Trilinear : FilterMode.Bilinear,
+            useMipMap = mipped,
+            autoGenerateMips = mipped,
+            anisoLevel = mipped ? 8 : 0,
         };
         _target.Create();
         _targetWidth = width;
         _targetHeight = height;
+        _targetMipped = mipped;
 
         if (_captureCamera != null) _captureCamera.targetTexture = _target;
         if (_panelImage != null) _panelImage.texture = _target;
@@ -552,6 +571,55 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         EnsurePanel();
 
         if (_panelImage != null && _panelImage.texture != _target) _panelImage.texture = _target;
+        ApplyPixelSnap();
         ApplyPlacement();
+    }
+
+    /// <summary>
+    /// Put the game's HUD canvas on its own pixel grid while we are capturing
+    /// it, and take it off again when we stop.
+    ///
+    /// <c>Canvas.pixelPerfect</c> rounds UI vertices to whole pixels of the
+    /// canvas's screen space, which for a ScreenSpaceOverlay canvas is exactly
+    /// the capture texture — the one place in this chain where a stable pixel
+    /// grid exists at all. Past it there is none: the panel is a quad in the
+    /// world, sampled from a head pose that moves continuously and separately
+    /// for each eye, so nothing downstream can be snapped to anything. That is
+    /// the honest limit of this setting, and the reason the visor (drawn at
+    /// about one texel per eye pixel) gets more out of it than the HUD panel
+    /// (drawn at about 1.6).
+    ///
+    /// The canvas belongs to the game, so its own value is saved and restored:
+    /// the flat HUD must be exactly as it was if the capture stands down.
+    /// Re-asserted every frame because the setting is live and the canvas can
+    /// be replaced under us on an aircraft change.
+    /// </summary>
+    private void ApplyPixelSnap()
+    {
+        var want = CapturedFlightHud.PixelSnapEnabled;
+        var canvas = _hudCanvas;
+
+        if (_snappedCanvas != null && (!want || !ReferenceEquals(_snappedCanvas, canvas)))
+        {
+            RestorePixelSnap();
+        }
+
+        if (!want || canvas == null) return;
+
+        if (_snappedCanvas == null)
+        {
+            _snappedWasPixelPerfect = canvas.pixelPerfect;
+            _snappedCanvas = canvas;
+            Debug.Log($"[NOVR] Captured HUD pixel snap on: HUDCanvas.pixelPerfect " +
+                      $"{_snappedWasPixelPerfect} -> true, on a {_targetWidth}x{_targetHeight} capture.");
+        }
+
+        if (!canvas.pixelPerfect) canvas.pixelPerfect = true;
+    }
+
+    private void RestorePixelSnap()
+    {
+        if (_snappedCanvas != null) _snappedCanvas.pixelPerfect = _snappedWasPixelPerfect;
+        _snappedCanvas = null;
     }
 }
