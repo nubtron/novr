@@ -21,6 +21,11 @@ namespace NOVR.VrUi;
 /// being aimed. It also needs no tracked controller, which is what makes a
 /// HOTAS-only cockpit usable without reaching for the mouse.</para>
 ///
+/// <para>It is the default mode. The head-gaze cursor it displaces asks the
+/// pilot to aim with their neck and puts the cursor wherever they happen to
+/// be looking, which is exactly what a pointer already under the thumb
+/// avoids; the mouse is still one movement away in either mode.</para>
+///
 /// <para>The settings live here rather than in ModConfiguration because this
 /// mod is developed as a stack of independent branches, and a setting declared
 /// in the shared file puts every layer that adds one in conflict with every
@@ -53,8 +58,8 @@ public static class StickCursorConfig
         StickCursor = config.Bind(
             Section,
             "Stick Cursor",
-            false,
-            "Move the VR cursor with the game's own view axes ('Pan View'/'Tilt View' — normally a thumbstick or hat), so menus and the map can be used without a mouse or a tracked controller. Unlike the head-gaze cursor it does not follow your head: it stays where you left it, it is unaffected by recentering, and you can look somewhere else while aiming it. The mouse still works — moving it takes the cursor back at once. While this is on it overrides both 'Head Gaze Cursor' and 'Cursor Input Source'.");
+            true,
+            "Move the VR cursor with the game's own view axes ('Pan View'/'Tilt View' — normally a thumbstick or hat), so menus and the map can be used without a mouse or a tracked controller. Unlike the head-gaze cursor it does not follow your head: it stays where you left it, it is unaffected by recentering, and you can look somewhere else while aiming it. The mouse still works — moving it takes the cursor back at once. On by default; while it is on it overrides both 'Head Gaze Cursor' and 'Cursor Input Source', so turn it off to fall back to whichever of those two is selected.");
 
         StickCursorSpeed = config.Bind(
             Section,

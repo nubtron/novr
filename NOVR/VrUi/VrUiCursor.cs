@@ -405,16 +405,26 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Selects and updates the active cursor input mode: an XR motion
-    /// controller ray while a controller is actually in the hand, otherwise
-    /// head-gaze (the cursor follows the center of the HMD and the trigger
-    /// clicks) if it is on, otherwise the desktop mouse.
+    /// Selects and updates the active cursor input mode.
     ///
-    /// <para>Head-gaze is off by default, and while it is on the mouse is
-    /// disabled — a cursor pinned to the center of the view cannot also be
-    /// somewhere the mouse put it. The controller is different in kind: it is
-    /// a temporary takeover rather than a mode, so it outranks head-gaze while
-    /// it is held and gives the cursor straight back when it is put down.</para>
+    /// <para>Two of them are modes: chosen in the config, mutually exclusive,
+    /// and one of them is always the one underneath. The stick cursor moves a
+    /// position on the panel from the game's own view axes (on by default),
+    /// and it takes precedence over head-gaze when both are on. Head-gaze
+    /// (off by default) sits the cursor at the center of the view. With both
+    /// off it is the mouse, which is why the mouse has no setting of its own:
+    /// it is what is left.</para>
+    ///
+    /// <para>The mouse is not exclusive with the stick cursor — moving it
+    /// takes the cursor at once and the stick carries on from where the mouse
+    /// left it, so a pilot with both never has to choose. It <i>is</i>
+    /// exclusive with head-gaze: a cursor pinned to the center of the view
+    /// cannot also be where the mouse put it.</para>
+    ///
+    /// <para>The motion controller is not a mode at all but a temporary
+    /// takeover. While the configured hand is actually being held it outranks
+    /// whichever mode is underneath, and Controller Idle Timeout of stillness
+    /// hands the cursor straight back to it.</para>
     /// </summary>
     private void UpdateCursorInput()
     {
@@ -422,6 +432,29 @@ public class VrUiCursor: NOVRBehaviour
         _controllerModeActive = false;
         _stickModeActive = false;
         _stickScrollDelta = Vector2.zero;
+
+        // A controller in the hand outranks whichever mode is configured, and
+        // only for as long as it is held: UpdateControllerInput hands the
+        // cursor back after Controller Idle Timeout of stillness. That is what
+        // lets a controller work alongside the stick cursor and head-gaze
+        // rather than in place of them — pick it up to point at something, put
+        // it down and the mode underneath has the cursor again.
+        UpdateControllerInput();
+        if (_controllerModeActive)
+        {
+            // Give the stick cursor the position the controller is pointing
+            // at, so putting the controller down carries on from there instead
+            // of snapping back to wherever the stick left the cursor before it
+            // was picked up. GetScreenPoint reads the cursor as it was placed
+            // last frame — one frame behind, which at this scale is invisible.
+            if (StickCursorConfig.Enabled)
+            {
+                _stickScreenPosition = GetScreenPoint();
+                _stickPositionValid = true;
+            }
+            _stickModeLogged = false;
+            return;
+        }
 
         if (StickCursorConfig.Enabled)
         {
@@ -436,19 +469,6 @@ public class VrUiCursor: NOVRBehaviour
             return;
         }
         _stickModeLogged = false;
-
-        // A controller in the hand outranks the configured mode, and only for
-        // as long as it is held: UpdateControllerInput hands the cursor back
-        // after Controller Idle Timeout of stillness. That is what lets a
-        // controller work alongside head-gaze rather than in place of it —
-        // pick it up to point at something, put it down and the gaze cursor
-        // is back — and it is why the models are no longer hidden in gaze
-        // mode, since a controller that can take over has to be visible.
-        UpdateControllerInput();
-        if (_controllerModeActive)
-        {
-            return;
-        }
 
         if (ModConfiguration.Instance.HeadGazeCursor.Value)
         {
