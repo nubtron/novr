@@ -210,8 +210,8 @@ public class ModConfiguration
         ShowNativeUiButton = config.Bind(
             "Experimental",
             "Show Native UI Button",
-            true,
-            "Show the 'VR UI ON' button in the headset while the game's own menus are in use. It switches back to NOVR's native VR menu UI. Turn it off to keep it out of the view; the native UI can still be re-enabled with Enable Native Menu UI in this file.");
+            false,
+            "Show the 'VR UI ON' button in the headset while the game's own menus are on screen. It switches the menus over to NOVR's native VR panels, i.e. it turns Enable Native Menu UI on from inside the headset. Off by default: the captured menu panel is the default menu path, so the game's menus are already on a VR panel and the button ended up floating in front of every one of them offering to fix something that is not broken. Turn it on if you want that switch in reach; Enable Native Menu UI in this file does the same thing without a button in the view.");
 
         CapturedMenuDistance = config.Bind(
             "Experimental",

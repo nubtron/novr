@@ -557,10 +557,12 @@ public class NativeVrUiRoot : NOVRBehaviour
 
     private bool ShouldShowStockNativeUiToggle()
     {
-        // The button is the only in-headset way back to the native VR UI, so it
-        // is shown by default — but it sits over the game's menus, and someone
-        // who has deliberately chosen those does not need it offered every
-        // time they open one.
+        // The button is the only in-headset way back to the native VR UI, and
+        // it was shown by default while the alternative to the native UI was
+        // the game's own flat menus. It no longer is: MenuCaptureBackend is
+        // simply !EnableNativeMenuUi, so with the native UI off the menus are
+        // on a VR panel already and this gate — MainCanvas active, which the
+        // capture *requires* — fires over every captured menu. Default off.
         if (!ModConfiguration.Instance.ShowNativeUiButton.Value)
         {
             return false;
