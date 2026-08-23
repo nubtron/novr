@@ -47,6 +47,9 @@ public class VrUiCursor: NOVRBehaviour
     private const float MaxYawDegrees = 65f;
     private const float MaxPitchDegrees = 45f;
     private const float DefaultProjectionDistance = 5;
+    // Shared with MotionControllerVisual on purpose: see IsControllerIdle.
+    private const float ControllerIdleMoveMeters = 0.02f;
+    private const float ControllerIdleMoveDegrees = 3f;
     private const float CursorMinDistanceMeters = 1.0f;
     private const float CursorCanvasScale = 0.001f;
     private const int CursorTextureSize = 64;
@@ -72,6 +75,10 @@ public class VrUiCursor: NOVRBehaviour
     private bool _loggedMissingRealMouse;
 
     private bool _controllerModeActive;
+    private Vector3 _controllerIdleLastPosition;
+    private Quaternion _controllerIdleLastRotation = Quaternion.identity;
+    private float _controllerIdleTime;
+    private bool _controllerIdleTracked;
     private Vector3 _controllerAimDirection = Vector3.forward;
     private bool _controllerTriggerPressed;
     private bool _controllerTriggerClicked;
@@ -319,6 +326,28 @@ public class VrUiCursor: NOVRBehaviour
                 Debug.Log("[VrUiCursor] Controller not tracked this frame; falling back to mouse.");
                 _controllerModeLogged = false;
             }
+            _controllerIdleTracked = false;
+            return;
+        }
+
+        // A controller drives the cursor while it is being held, and hands it
+        // back when it is put down. Without this, choosing a hand as the
+        // Cursor Input Source kills the mouse for the rest of the session the
+        // moment a tracked controller is switched on, even while it lies on
+        // the desk — and the controller is the one input the pilot cannot
+        // reach without letting go of something else.
+        if (IsControllerIdle(controllerPosition, controllerRotation))
+        {
+            if (_controllerModeLogged)
+            {
+                Debug.Log("[VrUiCursor] Controller idle; the cursor goes back to the other input.");
+                _controllerModeLogged = false;
+            }
+
+            // Do not leave a held trigger behind: the next thing to read these
+            // is whatever mode takes over.
+            _controllerTriggerPressed = false;
+            _controllerTriggerClicked = false;
             return;
         }
 
@@ -347,6 +376,49 @@ public class VrUiCursor: NOVRBehaviour
         var triggerPressed = triggerValue > 0.5f;
         _controllerTriggerClicked = triggerPressed && !_controllerTriggerPressed;
         _controllerTriggerPressed = triggerPressed;
+    }
+
+    /// <summary>
+    /// Whether the configured controller has been still long enough to count
+    /// as put down.
+    ///
+    /// <para>Deliberately the same rule <see cref="MotionControllerVisual"/>
+    /// hides the model by — the same 2 cm / 3° thresholds and the same
+    /// <c>Controller Idle Timeout</c> — so the controller the pilot can see
+    /// and the controller that owns the cursor appear and disappear together.
+    /// Two different idle rules would give a visible controller that does not
+    /// point at anything, or an invisible one that still holds the cursor.</para>
+    ///
+    /// <para>A timeout of 0 disables it, which is the old behaviour: the
+    /// controller keeps the cursor for as long as it is tracked.</para>
+    /// </summary>
+    private bool IsControllerIdle(Vector3 position, Quaternion rotation)
+    {
+        var timeout = ModConfiguration.Instance.ControllerIdleTimeout.Value;
+        if (timeout <= 0f)
+        {
+            _controllerIdleTime = 0f;
+            _controllerIdleTracked = false;
+            return false;
+        }
+
+        if (!_controllerIdleTracked)
+        {
+            // The first tracked frame counts as movement: picking a controller
+            // up is precisely the case this must not sit out.
+            _controllerIdleTracked = true;
+            _controllerIdleTime = 0f;
+        }
+        else
+        {
+            var moved = Vector3.Distance(position, _controllerIdleLastPosition) > ControllerIdleMoveMeters ||
+                        Quaternion.Angle(_controllerIdleLastRotation, rotation) > ControllerIdleMoveDegrees;
+            _controllerIdleTime = moved ? 0f : _controllerIdleTime + Time.unscaledDeltaTime;
+        }
+
+        _controllerIdleLastPosition = position;
+        _controllerIdleLastRotation = rotation;
+        return _controllerIdleTime > timeout;
     }
 
     private Quaternion GetProjectionReferenceRotation()
