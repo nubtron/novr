@@ -118,25 +118,35 @@ public class VrUiCursor: NOVRBehaviour
     private bool _controllerModeActive;
 
     /// <summary>
-    /// How long one hand has been still, kept per hand because either of them
-    /// may be the one that takes the cursor over — see
-    /// <see cref="PickHeldHand"/>.
+    /// What one hand has been doing, kept per hand because either of them may
+    /// be the one that takes the cursor over — see <see cref="PickHeldHand"/>.
     /// </summary>
-    private struct HandIdleState
+    private struct HandState
     {
         public Vector3 LastPosition;
         public Quaternion LastRotation;
         public float IdleTime;
         public bool Tracked;
+        public bool TriggerPressed;
     }
 
-    private HandIdleState _rightHandIdle;
-    private HandIdleState _leftHandIdle;
+    private HandState _rightHand;
+    private HandState _leftHand;
     /// <summary>
     /// The hand that took the cursor over without one being configured, kept
-    /// only so a change of hands can be logged.
+    /// so a change of hands can be logged and the aim snapped to it.
     /// </summary>
     private XRNode? _takeoverHand;
+    /// <summary>
+    /// The hand whose trigger was pulled most recently, which is what claims
+    /// the cursor. Null until one of them is pulled at all.
+    /// </summary>
+    private XRNode? _lastTriggerHand;
+    /// <summary>
+    /// Set for one frame when the pointing hand changes, so the aim is taken
+    /// from the new hand rather than smoothed towards it.
+    /// </summary>
+    private bool _snapControllerAim;
     private static XRNode? _activeCursorHand;
     private static bool _stickHoldsFlightAxes;
     private bool _hmdGazeActive;
@@ -488,8 +498,8 @@ public class VrUiCursor: NOVRBehaviour
     /// mode is underneath, and Controller Idle Timeout of stillness hands the
     /// cursor straight back to it. <i>Which</i> hand is the one
     /// <c>Cursor Input Source</c> names, or — since the stick cursor overrides
-    /// that setting, leaving it at its default of Mouse — whichever hand is
-    /// being held. See <see cref="PickHeldHand"/>.</para>
+    /// that setting, leaving it at its default of Mouse — whichever hand
+    /// pulled its trigger last. See <see cref="PickHeldHand"/>.</para>
     /// </summary>
     private void UpdateCursorInput()
     {
@@ -565,8 +575,9 @@ public class VrUiCursor: NOVRBehaviour
     /// tracked, or the one that is has been put down.
     ///
     /// <para><b>Which hand.</b> <c>Cursor Input Source</c> when it names one.
-    /// Otherwise, and only while the stick cursor is on, whichever hand is
-    /// actually being held: that setting defaults to Mouse and the stick
+    /// Otherwise, and only while the stick cursor is on, whichever hand pulled
+    /// its trigger last and is still up: that setting defaults to Mouse and
+    /// the stick
     /// cursor <i>overrides</i> it, so requiring it to name a hand meant the
     /// default install answered "no hand" for ever. Controllers picked up
     /// appeared, tracked, and pointed at nothing, with no laser and no
@@ -620,7 +631,7 @@ public class VrUiCursor: NOVRBehaviour
                 Debug.Log("[VrUiCursor] Controller not tracked this frame; falling back to mouse.");
                 _controllerModeLogged = false;
             }
-            IdleStateFor(node).Tracked = false;
+            StateFor(node).Tracked = false;
             return;
         }
 
@@ -633,7 +644,7 @@ public class VrUiCursor: NOVRBehaviour
         //
         // PickHeldHand has already asked this of the hand it chose; the
         // question is still live for a hand named by the setting.
-        if (!idleAlreadyTested && IsHandIdle(controllerPosition, controllerRotation, ref IdleStateFor(node)))
+        if (!idleAlreadyTested && IsHandIdle(controllerPosition, controllerRotation, ref StateFor(node)))
         {
             if (_controllerModeLogged)
             {
@@ -661,7 +672,10 @@ public class VrUiCursor: NOVRBehaviour
         var localDirection = Quaternion.Euler(-pitch, yaw, 0f) * Vector3.forward;
         var aimDirection = referenceRotation * localDirection;
 
-        _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
+        _controllerAimDirection = _snapControllerAim
+            ? aimDirection
+            : Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
+        _snapControllerAim = false;
         _controllerModeActive = true;
         // What MotionControllerVisual draws the laser from, so the beam is on
         // the hand that really has the cursor rather than on the one the
@@ -683,35 +697,53 @@ public class VrUiCursor: NOVRBehaviour
     /// The hand a controller picked up should point with, when no hand is
     /// configured.
     ///
-    /// <para><b>The right hand whenever the right hand is held</b>, and the
-    /// left only when it is not. In a headset both controllers are usually up
-    /// and both are moving, so "whichever is being held" does not decide
-    /// anything on its own and something has to. The first attempt kept
-    /// whichever hand had taken the cursor first, which is stable and
-    /// unpredictable: it hands the laser to whichever controller happened to
-    /// twitch first after the cursor appeared, and the pilot who reported it
-    /// got the left. A fixed preference is the one rule that gives the same
-    /// answer every time, and it is undone by a setting rather than by
-    /// guessing — <c>Cursor Input Source</c> already names a hand, and naming
-    /// one here is what a left-handed pilot should do.</para>
+    /// <para><b>Whichever controller pulled its trigger last owns the
+    /// cursor</b>, for as long as it is held. In a headset both controllers
+    /// are usually up and both are moving, so "whichever is being held" does
+    /// not decide anything on its own and something has to. Two earlier rules
+    /// decided it badly: keeping whichever hand took the cursor first handed
+    /// the laser to whichever controller happened to twitch first after the
+    /// cursor appeared, and a fixed right-hand preference is predictable but
+    /// wrong for anyone pointing with the left. The trigger is the pilot
+    /// saying which hand they mean, with the hand they are saying it
+    /// with.</para>
+    ///
+    /// <para>Until either trigger has been pulled there is nothing to go on,
+    /// and the fallback is the first controller picked up — kept while it
+    /// stays held, so the pointer does not jump to the other hand reaching for
+    /// the throttle.</para>
     ///
     /// <para>Both hands are asked every frame whatever the answer, because the
     /// idle timer is what "held" means and a hand whose timer stopped being
-    /// updated would count as held for ever.</para>
+    /// updated would count as held for ever — and because the trigger edge on
+    /// the hand that does <i>not</i> have the cursor is the whole mechanism
+    /// for taking it.</para>
     /// </summary>
     private XRNode? PickHeldHand()
     {
-        var rightHeld = IsHandHeld(XRNode.RightHand, ref _rightHandIdle);
-        var leftHeld = IsHandHeld(XRNode.LeftHand, ref _leftHandIdle);
+        var rightHeld = IsHandHeld(XRNode.RightHand, ref _rightHand);
+        var leftHeld = IsHandHeld(XRNode.LeftHand, ref _leftHand);
 
-        var picked = rightHeld ? XRNode.RightHand : leftHeld ? (XRNode?)XRNode.LeftHand : null;
+        XRNode? picked;
+        if (_lastTriggerHand == XRNode.RightHand && rightHeld) picked = XRNode.RightHand;
+        else if (_lastTriggerHand == XRNode.LeftHand && leftHeld) picked = XRNode.LeftHand;
+        // Nothing has claimed it, or the hand that did is down: stay with the
+        // one already pointing, else take the first one that is up.
+        else if (_takeoverHand == XRNode.RightHand && rightHeld) picked = XRNode.RightHand;
+        else if (_takeoverHand == XRNode.LeftHand && leftHeld) picked = XRNode.LeftHand;
+        else picked = rightHeld ? XRNode.RightHand : leftHeld ? (XRNode?)XRNode.LeftHand : null;
+
         if (picked != _takeoverHand)
         {
-            // The log line below names the hand, and a hand-over mid-takeover
-            // (the right one put down while the left is still up) is exactly
-            // when someone wants to read it.
             _takeoverHand = picked;
+            // The log line below names the hand, and a hand-over mid-takeover
+            // is exactly when someone wants to read it.
             _controllerModeLogged = false;
+            // And the cursor goes to where the new hand points at once rather
+            // than sweeping across the panel: the trigger pull that claimed
+            // the cursor is also a click, and a smoothed hand-over would land
+            // it somewhere between the two hands.
+            _snapControllerAim = true;
         }
 
         return picked;
@@ -719,22 +751,31 @@ public class VrUiCursor: NOVRBehaviour
 
     /// <summary>
     /// Whether one hand is tracked and has moved recently enough to count as
-    /// being held.
+    /// being held — and, on the way past, whether its trigger has just been
+    /// pulled.
     /// </summary>
-    private bool IsHandHeld(XRNode node, ref HandIdleState state)
+    private bool IsHandHeld(XRNode node, ref HandState state)
     {
-        if (!MotionControllerPose.TryRead(node, out var position, out var rotation, out _, out _, out _))
+        if (!MotionControllerPose.TryRead(node, out var position, out var rotation, out _, out _, out var trigger))
         {
             state.Tracked = false;
             state.IdleTime = 0f;
+            state.TriggerPressed = false;
             return false;
         }
+
+        // The press edge, not the held state: holding the trigger down must
+        // not keep re-claiming the cursor, or the other hand could never take
+        // it while this one is squeezed.
+        var pressed = trigger > 0.5f;
+        if (pressed && !state.TriggerPressed) _lastTriggerHand = node;
+        state.TriggerPressed = pressed;
 
         return !IsHandIdle(position, rotation, ref state);
     }
 
-    private ref HandIdleState IdleStateFor(XRNode node) =>
-        ref (node == XRNode.RightHand ? ref _rightHandIdle : ref _leftHandIdle);
+    private ref HandState StateFor(XRNode node) =>
+        ref (node == XRNode.RightHand ? ref _rightHand : ref _leftHand);
 
     /// <summary>
     /// Whether a controller has been still long enough to count as put down.
@@ -749,7 +790,7 @@ public class VrUiCursor: NOVRBehaviour
     /// <para>A timeout of 0 disables it, which is the old behaviour: the
     /// controller keeps the cursor for as long as it is tracked.</para>
     /// </summary>
-    private bool IsHandIdle(Vector3 position, Quaternion rotation, ref HandIdleState state)
+    private bool IsHandIdle(Vector3 position, Quaternion rotation, ref HandState state)
     {
         var timeout = ModConfiguration.Instance.ControllerIdleTimeout.Value;
         if (timeout <= 0f)
