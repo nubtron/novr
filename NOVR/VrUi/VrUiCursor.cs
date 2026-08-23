@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -17,6 +18,45 @@ public class VrUiCursor: NOVRBehaviour
     public bool IsActive => _cursor != null && _cursor.activeSelf;
     public Vector3 CursorPosition => _cursor != null ? _cursor.transform.position : Vector3.zero;
 
+    /// <summary>
+    /// Whichever hand <c>Cursor Input Source</c> names, or null for the mouse.
+    /// </summary>
+    private static XRNode? ConfiguredCursorHand => ModConfiguration.Instance.CursorInputSource.Value switch
+    {
+        "Right Hand" => (XRNode?)XRNode.RightHand,
+        "Left Hand" => (XRNode?)XRNode.LeftHand,
+        _ => null,
+    };
+
+    /// <summary>
+    /// The hand that is actually pointing the cursor right now, or null when
+    /// no hand is.
+    ///
+    /// <para>This is what <see cref="MotionControllerVisual"/> draws the laser
+    /// from, and it exists because the answer is no longer the setting: in
+    /// stick-cursor mode <c>Cursor Input Source</c> is overridden, so a
+    /// controller picked up takes the cursor over whatever it says, and asking
+    /// the setting gave a controller that was steering the cursor with no beam
+    /// coming out of it.</para>
+    ///
+    /// <para>Falls back to the configured hand while nothing has taken over,
+    /// which is the whole answer whenever the stick cursor is off — and keeps
+    /// the laser up in hand mode while the cursor is hidden, as before.</para>
+    /// </summary>
+    public static XRNode? CursorHand => _activeCursorHand ?? ConfiguredCursorHand;
+
+    /// <summary>
+    /// True while the stick cursor is moving the cursor with a stick the
+    /// aeroplane is also flown by — read by
+    /// <see cref="HarmonyPatches.StickCursorFlightAxesPatch"/>, which then
+    /// withholds those axes from the aircraft.
+    ///
+    /// <para>Static and latched rather than computed on demand: the aircraft
+    /// reads its axes in FixedUpdate, which runs a different number of times
+    /// than this component's Update does.</para>
+    /// </summary>
+    public static bool StickCursorHoldsFlightAxes => _stickHoldsFlightAxes;
+
     protected override void Awake()
     {
         base.Awake();
@@ -28,6 +68,7 @@ public class VrUiCursor: NOVRBehaviour
         if (Instance == this)
         {
             Instance = null;
+            ClearInputOwnership();
         }
         if (_virtualMouse != null)
         {
@@ -75,11 +116,45 @@ public class VrUiCursor: NOVRBehaviour
     private bool _loggedMissingRealMouse;
 
     private bool _controllerModeActive;
-    private Vector3 _controllerIdleLastPosition;
-    private Quaternion _controllerIdleLastRotation = Quaternion.identity;
-    private float _controllerIdleTime;
-    private bool _controllerIdleTracked;
+
+    /// <summary>
+    /// What one hand has been doing, kept per hand because either of them may
+    /// be the one that takes the cursor over — see <see cref="PickHeldHand"/>.
+    /// </summary>
+    private struct HandState
+    {
+        public Vector3 LastPosition;
+        public Quaternion LastRotation;
+        public float IdleTime;
+        public bool Tracked;
+        public bool TriggerPressed;
+    }
+
+    private HandState _rightHand;
+    private HandState _leftHand;
+    /// <summary>
+    /// The hand that took the cursor over without one being configured, kept
+    /// so a change of hands can be logged and the aim snapped to it.
+    /// </summary>
+    private XRNode? _takeoverHand;
+    /// <summary>
+    /// The hand whose trigger was pulled most recently, which is what claims
+    /// the cursor. Null until one of them is pulled at all.
+    /// </summary>
+    private XRNode? _lastTriggerHand;
+    /// <summary>
+    /// Set for one frame when the pointing hand changes, so the aim is taken
+    /// from the new hand rather than smoothed towards it.
+    /// </summary>
+    private bool _snapControllerAim;
+    private static XRNode? _activeCursorHand;
+    private static bool _stickHoldsFlightAxes;
     private bool _hmdGazeActive;
+    private bool _stickModeActive;
+    private bool _stickModeLogged;
+    private Vector2 _stickScreenPosition;
+    private bool _stickPositionValid;
+    private Vector2 _stickScrollDelta;
     private Vector3 _controllerAimDirection = Vector3.forward;
     private bool _controllerTriggerPressed;
     private bool _controllerTriggerClicked;
@@ -192,6 +267,8 @@ public class VrUiCursor: NOVRBehaviour
                 _cursor.SetActive(false);
             }
             _gazeAnchorCaptured = false;
+            _stickPositionValid = false;
+            ClearInputOwnership();
             return;
         }
 
@@ -202,6 +279,8 @@ public class VrUiCursor: NOVRBehaviour
                 _cursor.SetActive(false);
             }
             _gazeAnchorCaptured = false;
+            _stickPositionValid = false;
+            ClearInputOwnership();
             return;
         }
         
@@ -242,7 +321,7 @@ public class VrUiCursor: NOVRBehaviour
         {
             position = screenPoint,
             delta = realMouse.delta.ReadValue(),
-            scroll = realMouse.scroll.ReadValue(),
+            scroll = realMouse.scroll.ReadValue() + _stickScrollDelta,
             buttons = buttons
         });
 
@@ -361,12 +440,24 @@ public class VrUiCursor: NOVRBehaviour
         }
         else
         {
-            var mouse = _realMouse;
-            if (mouse == null) return;
+            // The stick cursor is the mouse cursor with a different source of
+            // screen position: same projection, same bounds, same reference
+            // rotation — which is what makes it stay put on the panel through
+            // a recentre, and what lets the mouse take over mid-menu.
+            Vector2 pointerPosition;
+            if (_stickModeActive)
+            {
+                pointerPosition = _stickScreenPosition;
+            }
+            else
+            {
+                var mouse = _realMouse;
+                if (mouse == null) return;
+                pointerPosition = mouse.position.ReadValue();
+            }
 
-            var mousePos = mouse.position.ReadValue();
-            float cursorPitch = ProjectPitchAngle(mousePos.y);
-            float cursorYaw = ProjectYawAngle(mousePos.x);
+            float cursorPitch = ProjectPitchAngle(pointerPosition.y);
+            float cursorYaw = ProjectYawAngle(pointerPosition.x);
 
             Vector3 localDirection = Quaternion.Euler(-cursorPitch, cursorYaw, 0f) * Vector3.forward;
             Quaternion referenceRotation = GetProjectionReferenceRotation();
@@ -386,34 +477,82 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Selects and updates the active cursor input mode: an XR motion
-    /// controller ray while a controller is actually in the hand, otherwise
-    /// head-gaze (the cursor follows the center of the HMD and the trigger
-    /// clicks) if it is on, otherwise the desktop mouse.
+    /// Selects and updates the active cursor input mode.
     ///
-    /// <para>Head-gaze is off by default, and while it is on the mouse is
-    /// disabled — a cursor pinned to the center of the view cannot also be
-    /// somewhere the mouse put it. The controller is different in kind: it is
-    /// a temporary takeover rather than a mode, so it outranks head-gaze while
-    /// it is held and gives the cursor straight back when it is put down.</para>
+    /// <para>Two of them are modes: chosen in the config, mutually exclusive,
+    /// and one of them is always the one underneath. The stick cursor moves a
+    /// position on the panel from the game's own view axes (on by default),
+    /// and it takes precedence over head-gaze when both are on. Head-gaze
+    /// (off by default) sits the cursor at the center of the view. With both
+    /// off it is the mouse, which is why the mouse has no setting of its own:
+    /// it is what is left.</para>
+    ///
+    /// <para>The mouse is not exclusive with the stick cursor — moving it
+    /// takes the cursor at once and the stick carries on from where the mouse
+    /// left it, so a pilot with both never has to choose. It <i>is</i>
+    /// exclusive with head-gaze: a cursor pinned to the center of the view
+    /// cannot also be where the mouse put it.</para>
+    ///
+    /// <para>The motion controller is not a mode at all but a temporary
+    /// takeover. While a hand is actually being held it outranks whichever
+    /// mode is underneath, and Controller Idle Timeout of stillness hands the
+    /// cursor straight back to it. <i>Which</i> hand is the one
+    /// <c>Cursor Input Source</c> names, or — since the stick cursor overrides
+    /// that setting, leaving it at its default of Mouse — whichever hand
+    /// pulled its trigger last. See <see cref="PickHeldHand"/>.</para>
     /// </summary>
     private void UpdateCursorInput()
     {
         _hmdGazeActive = false;
         _controllerModeActive = false;
+        _activeCursorHand = null;
+        _stickModeActive = false;
+        // Cleared here rather than in UpdateStickCursorInput, which does not
+        // run on every path through this method: a controller taking the
+        // cursor over returns below without reaching it, and the aeroplane
+        // must have its stick back the moment the cursor stops being aimed
+        // with it.
+        _stickHoldsFlightAxes = false;
+        _stickScrollDelta = Vector2.zero;
 
-        // A controller in the hand outranks the configured mode, and only for
-        // as long as it is held: UpdateControllerInput hands the cursor back
-        // after Controller Idle Timeout of stillness. That is what lets a
-        // controller work alongside head-gaze rather than in place of it —
-        // pick it up to point at something, put it down and the gaze cursor
-        // is back — and it is why the models are no longer hidden in gaze
-        // mode, since a controller that can take over has to be visible.
+        // A controller in the hand outranks whichever mode is configured, and
+        // only for as long as it is held: UpdateControllerInput hands the
+        // cursor back after Controller Idle Timeout of stillness. That is what
+        // lets a controller work alongside the stick cursor and head-gaze
+        // rather than in place of them — pick it up to point at something, put
+        // it down and the mode underneath has the cursor again.
         UpdateControllerInput();
         if (_controllerModeActive)
         {
+            // Give the stick cursor the position the controller is pointing
+            // at, so putting the controller down carries on from there instead
+            // of snapping back to wherever the stick left the cursor before it
+            // was picked up. GetScreenPoint reads the cursor as it was placed
+            // last frame — one frame behind, which at this scale is invisible.
+            if (StickCursorConfig.Enabled)
+            {
+                _stickScreenPosition = GetScreenPoint();
+                _stickPositionValid = true;
+            }
+            _stickModeLogged = false;
             return;
         }
+
+        if (StickCursorConfig.Enabled)
+        {
+            _stickModeActive = true;
+            UpdateStickCursorInput();
+            if (!_stickModeLogged)
+            {
+                var activePair = StickAxisPair.For(StickCursorConfig.Axes);
+                Debug.Log($"[VrUiCursor] Stick cursor active on the {StickCursorConfig.Axes} axes " +
+                          $"({activePair.XAction}/{activePair.YAction}; moves over the maximized map: " +
+                          $"{StickCursorConfig.MoveOverMap}); clicks from trigger, Fire or Select.");
+                _stickModeLogged = true;
+            }
+            return;
+        }
+        _stickModeLogged = false;
 
         if (ModConfiguration.Instance.HeadGazeCursor.Value)
         {
@@ -430,27 +569,57 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Drives the cursor from an XR motion controller ray when the configured
-    /// input source is a hand and that controller is being held. Leaves
-    /// <see cref="_controllerModeActive"/> false — i.e. hands the cursor to
-    /// whichever mode is configured — when the source is the mouse, the
-    /// controller is not tracked, or it has been put down.
+    /// Drives the cursor from an XR motion controller ray while a controller
+    /// is being held. Leaves <see cref="_controllerModeActive"/> false — i.e.
+    /// hands the cursor to whichever mode is configured — when no hand is
+    /// tracked, or the one that is has been put down.
+    ///
+    /// <para><b>Which hand.</b> <c>Cursor Input Source</c> when it names one.
+    /// Otherwise, and only while the stick cursor is on, whichever hand pulled
+    /// its trigger last and is still up: that setting defaults to Mouse and
+    /// the stick
+    /// cursor <i>overrides</i> it, so requiring it to name a hand meant the
+    /// default install answered "no hand" for ever. Controllers picked up
+    /// appeared, tracked, and pointed at nothing, with no laser and no
+    /// takeover, which is exactly the case this whole path exists for.</para>
     /// </summary>
     private void UpdateControllerInput()
     {
-        var source = ModConfiguration.Instance.CursorInputSource.Value;
-
+        var configured = ConfiguredCursorHand;
         XRNode node;
-        switch (source)
+        // PickHeldHand runs the idle test itself, on both hands. Asking again
+        // below would advance the chosen hand's timer twice a frame and put a
+        // controller down in half its Controller Idle Timeout.
+        bool idleAlreadyTested;
+
+        if (configured.HasValue)
         {
-            case "Right Hand":
-                node = XRNode.RightHand;
-                break;
-            case "Left Hand":
-                node = XRNode.LeftHand;
-                break;
-            default:
+            node = configured.Value;
+            _takeoverHand = null;
+            idleAlreadyTested = false;
+        }
+        else if (StickCursorConfig.Enabled)
+        {
+            var held = PickHeldHand();
+            if (!held.HasValue)
+            {
+                if (_controllerModeLogged)
+                {
+                    Debug.Log("[VrUiCursor] Controller put down; the stick cursor has the cursor again.");
+                    _controllerModeLogged = false;
+                }
+                // The trigger is deliberately left alone: in stick-cursor mode
+                // UpdateStickClickInput reads both triggers itself, and
+                // clearing a trigger that is still held would read as a fresh
+                // press the moment it does.
                 return;
+            }
+            node = held.Value;
+            idleAlreadyTested = true;
+        }
+        else
+        {
+            return;
         }
 
         _controllerSmoothing = Mathf.Clamp(ModConfiguration.Instance.CursorControllerSmoothing.Value, 0.05f, 0.95f);
@@ -462,7 +631,7 @@ public class VrUiCursor: NOVRBehaviour
                 Debug.Log("[VrUiCursor] Controller not tracked this frame; falling back to mouse.");
                 _controllerModeLogged = false;
             }
-            _controllerIdleTracked = false;
+            StateFor(node).Tracked = false;
             return;
         }
 
@@ -472,7 +641,10 @@ public class VrUiCursor: NOVRBehaviour
         // moment a tracked controller is switched on, even while it lies on
         // the desk — and the controller is the one input the pilot cannot
         // reach without letting go of something else.
-        if (IsControllerIdle(controllerPosition, controllerRotation))
+        //
+        // PickHeldHand has already asked this of the hand it chose; the
+        // question is still live for a hand named by the setting.
+        if (!idleAlreadyTested && IsHandIdle(controllerPosition, controllerRotation, ref StateFor(node)))
         {
             if (_controllerModeLogged)
             {
@@ -500,12 +672,19 @@ public class VrUiCursor: NOVRBehaviour
         var localDirection = Quaternion.Euler(-pitch, yaw, 0f) * Vector3.forward;
         var aimDirection = referenceRotation * localDirection;
 
-        _controllerAimDirection = Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
+        _controllerAimDirection = _snapControllerAim
+            ? aimDirection
+            : Vector3.Slerp(_controllerAimDirection, aimDirection, _controllerSmoothing);
+        _snapControllerAim = false;
         _controllerModeActive = true;
+        // What MotionControllerVisual draws the laser from, so the beam is on
+        // the hand that really has the cursor rather than on the one the
+        // setting names.
+        _activeCursorHand = node;
 
         if (!_controllerModeLogged)
         {
-            Debug.Log($"[VrUiCursor] Controller cursor active: controller={controllerRotation.eulerAngles} relPitch={pitch:F1} relYaw={yaw:F1} trigger={triggerValue:F2}");
+            Debug.Log($"[VrUiCursor] Controller cursor active on {node}: controller={controllerRotation.eulerAngles} relPitch={pitch:F1} relYaw={yaw:F1} trigger={triggerValue:F2}");
             _controllerModeLogged = true;
         }
 
@@ -515,8 +694,91 @@ public class VrUiCursor: NOVRBehaviour
     }
 
     /// <summary>
-    /// Whether the configured controller has been still long enough to count
-    /// as put down.
+    /// The hand a controller picked up should point with, when no hand is
+    /// configured.
+    ///
+    /// <para><b>Whichever controller pulled its trigger last owns the
+    /// cursor</b>, for as long as it is held. In a headset both controllers
+    /// are usually up and both are moving, so "whichever is being held" does
+    /// not decide anything on its own and something has to. Two earlier rules
+    /// decided it badly: keeping whichever hand took the cursor first handed
+    /// the laser to whichever controller happened to twitch first after the
+    /// cursor appeared, and a fixed right-hand preference is predictable but
+    /// wrong for anyone pointing with the left. The trigger is the pilot
+    /// saying which hand they mean, with the hand they are saying it
+    /// with.</para>
+    ///
+    /// <para>Until either trigger has been pulled there is nothing to go on,
+    /// and the fallback is the first controller picked up — kept while it
+    /// stays held, so the pointer does not jump to the other hand reaching for
+    /// the throttle.</para>
+    ///
+    /// <para>Both hands are asked every frame whatever the answer, because the
+    /// idle timer is what "held" means and a hand whose timer stopped being
+    /// updated would count as held for ever — and because the trigger edge on
+    /// the hand that does <i>not</i> have the cursor is the whole mechanism
+    /// for taking it.</para>
+    /// </summary>
+    private XRNode? PickHeldHand()
+    {
+        var rightHeld = IsHandHeld(XRNode.RightHand, ref _rightHand);
+        var leftHeld = IsHandHeld(XRNode.LeftHand, ref _leftHand);
+
+        XRNode? picked;
+        if (_lastTriggerHand == XRNode.RightHand && rightHeld) picked = XRNode.RightHand;
+        else if (_lastTriggerHand == XRNode.LeftHand && leftHeld) picked = XRNode.LeftHand;
+        // Nothing has claimed it, or the hand that did is down: stay with the
+        // one already pointing, else take the first one that is up.
+        else if (_takeoverHand == XRNode.RightHand && rightHeld) picked = XRNode.RightHand;
+        else if (_takeoverHand == XRNode.LeftHand && leftHeld) picked = XRNode.LeftHand;
+        else picked = rightHeld ? XRNode.RightHand : leftHeld ? (XRNode?)XRNode.LeftHand : null;
+
+        if (picked != _takeoverHand)
+        {
+            _takeoverHand = picked;
+            // The log line below names the hand, and a hand-over mid-takeover
+            // is exactly when someone wants to read it.
+            _controllerModeLogged = false;
+            // And the cursor goes to where the new hand points at once rather
+            // than sweeping across the panel: the trigger pull that claimed
+            // the cursor is also a click, and a smoothed hand-over would land
+            // it somewhere between the two hands.
+            _snapControllerAim = true;
+        }
+
+        return picked;
+    }
+
+    /// <summary>
+    /// Whether one hand is tracked and has moved recently enough to count as
+    /// being held — and, on the way past, whether its trigger has just been
+    /// pulled.
+    /// </summary>
+    private bool IsHandHeld(XRNode node, ref HandState state)
+    {
+        if (!MotionControllerPose.TryRead(node, out var position, out var rotation, out _, out _, out var trigger))
+        {
+            state.Tracked = false;
+            state.IdleTime = 0f;
+            state.TriggerPressed = false;
+            return false;
+        }
+
+        // The press edge, not the held state: holding the trigger down must
+        // not keep re-claiming the cursor, or the other hand could never take
+        // it while this one is squeezed.
+        var pressed = trigger > 0.5f;
+        if (pressed && !state.TriggerPressed) _lastTriggerHand = node;
+        state.TriggerPressed = pressed;
+
+        return !IsHandIdle(position, rotation, ref state);
+    }
+
+    private ref HandState StateFor(XRNode node) =>
+        ref (node == XRNode.RightHand ? ref _rightHand : ref _leftHand);
+
+    /// <summary>
+    /// Whether a controller has been still long enough to count as put down.
     ///
     /// <para>Deliberately the same rule <see cref="MotionControllerVisual"/>
     /// hides the model by — the same 2 cm / 3° thresholds and the same
@@ -528,33 +790,420 @@ public class VrUiCursor: NOVRBehaviour
     /// <para>A timeout of 0 disables it, which is the old behaviour: the
     /// controller keeps the cursor for as long as it is tracked.</para>
     /// </summary>
-    private bool IsControllerIdle(Vector3 position, Quaternion rotation)
+    private bool IsHandIdle(Vector3 position, Quaternion rotation, ref HandState state)
     {
         var timeout = ModConfiguration.Instance.ControllerIdleTimeout.Value;
         if (timeout <= 0f)
         {
-            _controllerIdleTime = 0f;
-            _controllerIdleTracked = false;
+            state.IdleTime = 0f;
+            state.Tracked = false;
             return false;
         }
 
-        if (!_controllerIdleTracked)
+        if (!state.Tracked)
         {
             // The first tracked frame counts as movement: picking a controller
             // up is precisely the case this must not sit out.
-            _controllerIdleTracked = true;
-            _controllerIdleTime = 0f;
+            state.Tracked = true;
+            state.IdleTime = 0f;
         }
         else
         {
-            var moved = Vector3.Distance(position, _controllerIdleLastPosition) > ControllerIdleMoveMeters ||
-                        Quaternion.Angle(_controllerIdleLastRotation, rotation) > ControllerIdleMoveDegrees;
-            _controllerIdleTime = moved ? 0f : _controllerIdleTime + Time.unscaledDeltaTime;
+            var moved = Vector3.Distance(position, state.LastPosition) > ControllerIdleMoveMeters ||
+                        Quaternion.Angle(state.LastRotation, rotation) > ControllerIdleMoveDegrees;
+            state.IdleTime = moved ? 0f : state.IdleTime + Time.unscaledDeltaTime;
         }
 
-        _controllerIdleLastPosition = position;
-        _controllerIdleLastRotation = rotation;
-        return _controllerIdleTime > timeout;
+        state.LastPosition = position;
+        state.LastRotation = rotation;
+        return state.IdleTime > timeout;
+    }
+
+    /// <summary>
+    /// Forget who was pointing and whether the stick was ours. Both outlive a
+    /// frame on purpose — the laser and the aircraft's axes are read from
+    /// elsewhere — so both have to be dropped explicitly whenever the cursor
+    /// stops running, or the last frame before it went away goes on being the
+    /// answer.
+    /// </summary>
+    private static void ClearInputOwnership()
+    {
+        _activeCursorHand = null;
+        _stickHoldsFlightAxes = false;
+    }
+
+    /// <summary>
+    /// Move the cursor from the game's own axes, in screen space, and clamp it
+    /// to the screen rect the projection maps from.
+    ///
+    /// <para><b>Which axes, and why the game's own.</b> The default is
+    /// "Pan View"/"Tilt View": dead sticks in a VR cockpit — the head does the
+    /// looking, and <c>CameraCockpitStatePatch</c> already zeroes the state's
+    /// panView and tiltView every frame — so taking them costs nothing and
+    /// needs no new binding from the pilot. Three other pairs are offered
+    /// (<see cref="StickCursorAxisSource"/>) because <i>which</i> pair is free
+    /// depends on the pilot's own bindings and on the screen: a gamepad
+    /// commonly carries two pairs per stick, and then the view axes are on the
+    /// same stick as the map scroll. The mod binds nothing and sees no sticks;
+    /// it reads the pairs back out of Rewired and says which stick each landed
+    /// on, so the choice can be made from evidence.</para>
+    ///
+    /// <para><b>Velocity, not position.</b> The axis is integrated as a rate,
+    /// which is how the flat game treats it too (<c>panView +=
+    /// GetAxis("Pan View") * ...</c>). It also makes the same action work
+    /// whether it is bound to a self-centring stick, a hat or a mouse axis —
+    /// an absolute mapping would only be meaningful for the first.</para>
+    ///
+    /// <para><b>Who owns the stick over the map.</b> "Free everywhere else"
+    /// is true of the *actions* and says nothing about the hardware under
+    /// them. On the one pad this was measured on, a saved gamepad map bound
+    /// the view axes and the map axes to the same two stick elements — so
+    /// over the maximized map one stick would scroll the map and drag the
+    /// cursor off the icon in the same motion. There the map wins by default
+    /// (<c>Stick Cursor Over Map</c>), which is also what the flat game does
+    /// for a pad player: the map moves under a stationary cursor and "Select"
+    /// takes whatever is nearest it. The mouse and a motion controller still
+    /// move the cursor there — neither of them is the stick the map is
+    /// using.</para>
+    /// </summary>
+    private void UpdateStickCursorInput()
+    {
+        if (!_stickPositionValid)
+        {
+            // Centre, rather than wherever the desktop pointer was parked: in
+            // a headset the mouse is somewhere you cannot see, and a menu that
+            // opens with the cursor already off in a corner reads as a cursor
+            // that failed to appear.
+            _stickScreenPosition = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+            _stickPositionValid = true;
+        }
+
+        var player = GameManager.playerInput;
+        var pair = StickAxisPair.For(StickCursorConfig.Axes);
+        var stickIsOurs = false;
+
+        if (player != null)
+        {
+            UpdateAxisBindingState(player, pair);
+
+            var mapMaximized = global::DynamicMap.mapMaximized;
+            // Over the map, a held (real) mouse button is the game's own
+            // drag-pan, which reads the view axes. Moving the cursor as
+            // well would fight it, so the drag wins.
+            var dragPanning = mapMaximized && Input.GetMouseButton(0);
+            // And over the maximized map the stick belongs to the map —
+            // but only when it really is the same stick. See the "Who owns
+            // the stick over the map" paragraph above.
+            var mapOwnsStick = mapMaximized &&
+                               !StickCursorConfig.MoveOverMap &&
+                               _sharesStickWithMap;
+
+            stickIsOurs = !dragPanning && !mapOwnsStick;
+
+            // Decided here rather than beside the axis read below, because the
+            // mouse taking the cursor over for a frame does not put the stick
+            // back in the pilot's hand: they are still holding it to point
+            // with, and an aeroplane that banked every time the mouse twitched
+            // would be worse than one that never banks at all.
+            _stickHoldsFlightAxes = stickIsOurs && _sharesStickWithFlight;
+        }
+
+        var realMouse = _realMouse;
+        if (realMouse != null && realMouse.delta.ReadValue() != Vector2.zero)
+        {
+            // The mouse still works, and wins the moment it actually moves.
+            _stickScreenPosition = realMouse.position.ReadValue();
+        }
+        else if (player != null && stickIsOurs)
+        {
+            var axis = new Vector2(
+                ApplyStickDeadzone(player.GetAxis(pair.XAction)),
+                pair.YSign * ApplyStickDeadzone(player.GetAxis(pair.YAction)));
+            if (StickCursorConfig.InvertVertical)
+            {
+                axis.y = -axis.y;
+            }
+            // A diagonal must not be faster than a straight line.
+            if (axis.sqrMagnitude > 1f)
+            {
+                axis.Normalize();
+            }
+
+            // Unscaled, because every surface this cursor is for runs at
+            // timeScale 0, and capped, because a frame lost to a scene load
+            // must not fling the cursor across the panel.
+            var deltaTime = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+            var speed = StickCursorConfig.Speed * deltaTime;
+            _stickScreenPosition += new Vector2(axis.x * Screen.width, axis.y * Screen.height) * speed;
+        }
+
+        _stickScreenPosition.x = Mathf.Clamp(_stickScreenPosition.x, 0f, Screen.width);
+        _stickScreenPosition.y = Mathf.Clamp(_stickScreenPosition.y, 0f, Screen.height);
+
+        UpdateStickScrollInput();
+        UpdateStickClickInput();
+    }
+
+    /// <summary>
+    /// One of the game's axis pairs, with the sign that turns it into screen
+    /// movement.
+    ///
+    /// <para>The vertical signs are read off the flat game rather than guessed:
+    /// <c>CameraCockpitState</c> feeds "Tilt View" straight into Euler X, so
+    /// positive is looking <i>down</i>, and the radial menu — the one
+    /// screen-space pointer the flat game builds out of these axes — takes
+    /// <c>GetAxis("Pan View") * right - GetAxis("Tilt View") * up</c>. "Pitch"
+    /// is positive nose-up, which is a stick pulled back, so it carries the
+    /// same inversion. The two movement pairs are already screen-space:
+    /// <c>DynamicMap</c> adds the map axes to <c>positionOffset</c> and applies
+    /// the negative to the image, and "Move Longitudinal" is positive
+    /// forwards.</para>
+    /// </summary>
+    private readonly struct StickAxisPair
+    {
+        public readonly string XAction;
+        public readonly string YAction;
+        public readonly float YSign;
+
+        private StickAxisPair(string xAction, string yAction, float ySign)
+        {
+            XAction = xAction;
+            YAction = yAction;
+            YSign = ySign;
+        }
+
+        public static StickAxisPair For(StickCursorAxisSource source) => source switch
+        {
+            StickCursorAxisSource.Flight => new StickAxisPair("Roll", "Pitch", -1f),
+            StickCursorAxisSource.Camera => new StickAxisPair("Move Lateral", "Move Longitudinal", 1f),
+            StickCursorAxisSource.Map => new StickAxisPair("Move Map Horizontal", "Move Map Vertical", 1f),
+            _ => new StickAxisPair("Pan View", "Tilt View", -1f),
+        };
+
+        public static readonly StickAxisPair MapPair = For(StickCursorAxisSource.Map);
+        public static readonly StickAxisPair FlightPair = For(StickCursorAxisSource.Flight);
+    }
+
+    private StickCursorAxisSource _loggedAxisSource = (StickCursorAxisSource)(-1);
+    /// <summary>
+    /// Whether the pair in use is on the map's own stick. Defaults to the
+    /// gamepad case, which is the arrangement the rule exists for.
+    /// </summary>
+    private bool _sharesStickWithMap = true;
+    /// <summary>
+    /// Whether the pair in use is on the stick that flies the aeroplane.
+    /// Defaults to false, i.e. to leaving the aircraft alone: taking its
+    /// controls away on a guess is the worse mistake of the two.
+    /// </summary>
+    private bool _sharesStickWithFlight;
+    private float _nextBindingScan;
+
+    /// <summary>
+    /// Which controller elements Rewired has an action on — "Left Stick X",
+    /// "Right Stick Y", an axis on a HOTAS — as the pilot's own binding screen
+    /// would name them.
+    ///
+    /// <para>This is the only way the mod can answer "which stick is that on".
+    /// It binds nothing itself and the actions are the game's, so the physical
+    /// arrangement lives entirely in the player's controller maps.</para>
+    /// </summary>
+    private static string DescribeBinding(Rewired.Player player, string action)
+    {
+        try
+        {
+            var names = new List<string>();
+            foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
+            {
+                if (map == null) continue;
+                var name = map.elementIdentifierName;
+                if (!string.IsNullOrEmpty(name) && !names.Contains(name)) names.Add(name);
+            }
+
+            return names.Count > 0 ? string.Join(", ", names.ToArray()) : "unbound";
+        }
+        catch (Exception e)
+        {
+            // Introspection is a diagnostic; it must never be the reason the
+            // cursor stops working.
+            return "unreadable (" + e.GetType().Name + ")";
+        }
+    }
+
+    /// <summary>
+    /// True when two pairs sit on the same physical control — the same stick
+    /// on a gamepad, the same axis on a HOTAS — so that deflecting it does
+    /// both things at once.
+    ///
+    /// <para>Asked of two pairs. Against the map's own scroll axes it is the
+    /// case a gamepad falls into by default, and the only one the map has to
+    /// be given its stick back for. Against the flight axes it is the case
+    /// where pointing the cursor also flies the aeroplane, which is what
+    /// <see cref="StickCursorHoldsFlightAxes"/> is for.</para>
+    ///
+    /// <para><paramref name="unknown"/> is the answer when Rewired cannot be
+    /// read, and it differs by question: the map's stick is given back on a
+    /// guess, the aircraft's is not taken away on one.</para>
+    /// </summary>
+    private static bool SharesStick(Rewired.Player player, StickAxisPair pair, StickAxisPair other, bool unknown)
+    {
+        if (pair.XAction == other.XAction && pair.YAction == other.YAction) return true;
+
+        try
+        {
+            var otherElements = new List<string>();
+            foreach (var action in new[] { other.XAction, other.YAction })
+            foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
+            {
+                if (map == null) continue;
+                otherElements.Add(ElementKey(map));
+            }
+
+            foreach (var action in new[] { pair.XAction, pair.YAction })
+            foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
+            {
+                if (map == null) continue;
+                if (otherElements.Contains(ElementKey(map))) return true;
+            }
+
+            return false;
+        }
+        catch (Exception)
+        {
+            return unknown;
+        }
+    }
+
+    /// <summary>
+    /// Identifies one physical control across every device the player has.
+    ///
+    /// <para>The controller <i>type</i> is part of it because Rewired numbers
+    /// controllers within a type: the mouse is controller 0 and the first
+    /// joystick is controller 0 as well, so "Mouse Horizontal" and the stick's
+    /// "Axis 0" both keyed as <c>0:0</c> and every pair bound to a mouse axis
+    /// counted as sharing a stick with every pair bound to the first joystick
+    /// axis. Measured on this machine's own bindings, where it made
+    /// "Pan View"/"Tilt View" — a right-stick pair — read as the aircraft's
+    /// stick.</para>
+    /// </summary>
+    private static string ElementKey(Rewired.ActionElementMap map) =>
+        map.controllerMap.controllerType + ":" + map.controllerMap.controllerId + ":" + map.elementIdentifierId;
+
+    /// <summary>
+    /// Whether the chosen pair shares a stick with the map's own scroll axes.
+    /// Unknown behaves as the gamepad default does, which is the arrangement
+    /// that needed the rule in the first place.
+    /// </summary>
+    private static bool SharesStickWithMap(Rewired.Player player, StickAxisPair pair) =>
+        SharesStick(player, pair, StickAxisPair.MapPair, unknown: true);
+
+    /// <summary>
+    /// Whether the chosen pair shares a stick with "Roll"/"Pitch", i.e.
+    /// whether moving the cursor also flies the aeroplane.
+    /// </summary>
+    private static bool SharesStickWithFlight(Rewired.Player player, StickAxisPair pair) =>
+        SharesStick(player, pair, StickAxisPair.FlightPair, unknown: false);
+
+    /// <summary>
+    /// Re-read the bindings occasionally rather than every frame — the
+    /// enumeration allocates, and this only changes when the pilot rebinds
+    /// something or plugs a controller in — and print where every pair sits
+    /// whenever the answer changes. The pilot picks the pair on the stick they
+    /// can spare, and nothing else in the game tells them which stick a pair
+    /// is on.
+    /// </summary>
+    private void UpdateAxisBindingState(Rewired.Player player, StickAxisPair pair)
+    {
+        var source = StickCursorConfig.Axes;
+        var sourceChanged = _loggedAxisSource != source;
+        if (!sourceChanged && Time.unscaledTime < _nextBindingScan) return;
+
+        _loggedAxisSource = source;
+        _nextBindingScan = Time.unscaledTime + 5f;
+
+        var shares = SharesStickWithMap(player, pair);
+        var flies = SharesStickWithFlight(player, pair);
+        var sharingChanged = shares != _sharesStickWithMap || flies != _sharesStickWithFlight;
+        _sharesStickWithMap = shares;
+        _sharesStickWithFlight = flies;
+        if (!sourceChanged && !sharingChanged) return;
+
+        var lines = new List<string>();
+        foreach (StickCursorAxisSource candidate in Enum.GetValues(typeof(StickCursorAxisSource)))
+        {
+            var candidatePair = StickAxisPair.For(candidate);
+            var notes = new List<string>();
+            if (SharesStickWithMap(player, candidatePair)) notes.Add("same stick as the map scroll");
+            if (SharesStickWithFlight(player, candidatePair)) notes.Add("same stick as the aircraft — withheld from it while pointing");
+            var note = notes.Count > 0 ? "  <- " + string.Join("; ", notes.ToArray()) : "";
+            var chosen = candidate == source ? " (in use)" : "";
+            lines.Add($"  {candidate}{chosen}: {candidatePair.XAction} = {DescribeBinding(player, candidatePair.XAction)}; " +
+                      $"{candidatePair.YAction} = {DescribeBinding(player, candidatePair.YAction)}{note}");
+        }
+
+        Debug.Log("[VrUiCursor] Stick cursor axes — 'Stick Cursor Axes' picks one of these pairs:\n" +
+                  string.Join("\n", lines.ToArray()));
+    }
+
+    private static float ApplyStickDeadzone(float value)
+    {
+        var deadzone = Mathf.Clamp(StickCursorConfig.Deadzone, 0f, 0.9f);
+        var magnitude = Mathf.Abs(value);
+        if (magnitude <= deadzone) return 0f;
+
+        // Rescaled rather than merely clipped, so the first millimetre past the
+        // deadzone is a crawl instead of a jump.
+        return Mathf.Sign(value) * Mathf.Clamp01((magnitude - deadzone) / (1f - deadzone));
+    }
+
+    /// <summary>
+    /// Scroll the list under the cursor with the "Zoom View" axis, so a long
+    /// settings page is reachable without a wheel.
+    ///
+    /// <para>Only while flight controls are off and the map is not maximized:
+    /// those are exactly the two states in which something else already owns
+    /// that axis — <c>VrZoomController</c> in the cockpit and the map's own
+    /// zoom over the map — and both of those are worth more than scrolling.</para>
+    /// </summary>
+    private void UpdateStickScrollInput()
+    {
+        _stickScrollDelta = Vector2.zero;
+
+        var speed = StickCursorConfig.ScrollSpeed;
+        if (speed <= 0f) return;
+        if (GameManager.flightControlsEnabled || global::DynamicMap.mapMaximized) return;
+
+        var player = GameManager.playerInput;
+        if (player == null) return;
+
+        var axis = ApplyStickDeadzone(player.GetAxis("Zoom View"));
+        if (axis == 0f) return;
+
+        // 120 units is one wheel notch, which is what InputSystemUIInputModule
+        // divides by; the rest is notches per second.
+        var deltaTime = Mathf.Min(Time.unscaledDeltaTime, 0.1f);
+        _stickScrollDelta = new Vector2(0f, axis * 120f * speed * deltaTime);
+    }
+
+    /// <summary>
+    /// Clicks for the stick cursor: either trigger, the game's "Fire", or the
+    /// game's "Select" — the action the flat game already uses to pick an icon
+    /// off the tactical map, so the button the pilot reaches for there also
+    /// works on every other panel.
+    /// </summary>
+    private void UpdateStickClickInput()
+    {
+        var pressed =
+            MotionControllerPose.TryRead(XRNode.RightHand, out _, out _, out _, out _, out var rightTrigger) && rightTrigger > 0.5f ||
+            MotionControllerPose.TryRead(XRNode.LeftHand, out _, out _, out _, out _, out var leftTrigger) && leftTrigger > 0.5f;
+
+        var player = GameManager.playerInput;
+        if (player != null && (player.GetButton("Fire") || player.GetButton("Select")))
+        {
+            pressed = true;
+        }
+
+        _controllerTriggerClicked = pressed && !_controllerTriggerPressed;
+        _controllerTriggerPressed = pressed;
     }
 
     /// <summary>
