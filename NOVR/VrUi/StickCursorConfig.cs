@@ -10,9 +10,11 @@ namespace NOVR.VrUi;
 /// anything the mod binds: "Pan View"/"Tilt View" — the view axes, normally a
 /// thumbstick or a hat, and dead in a VR cockpit because the head does the
 /// looking. Nothing new to bind. "Move Map Horizontal"/"Move Map Vertical"
-/// can drive it too ("Stick Cursor Map Axes"), but that is off by default:
-/// the two action pairs usually sit on the same physical stick, so taking
-/// both doubles one stick rather than adding a second.</para>
+/// can drive it instead ("Stick Cursor Axes"), as can the flight axes or the
+/// free camera's — because a gamepad usually puts two pairs on each stick,
+/// and which pair is free depends on which stick the pilot needs for the
+/// screen they are on. The mod cannot see sticks, only actions, so it reads
+/// the bindings back out of Rewired and prints which stick each pair is on.</para>
 ///
 /// <para>Over the maximized tactical map the stick goes back to the map for
 /// the same reason ("Stick Cursor Over Map"), leaving the cursor where it
@@ -47,7 +49,7 @@ public static class StickCursorConfig
     public static ConfigEntry<bool> StickCursor;
     public static ConfigEntry<float> StickCursorSpeed;
     public static ConfigEntry<float> StickCursorDeadzone;
-    public static ConfigEntry<bool> StickCursorMapAxes;
+    public static ConfigEntry<StickCursorAxisSource> StickCursorAxes;
     public static ConfigEntry<bool> StickCursorOverMap;
     public static ConfigEntry<bool> StickCursorInvertVertical;
     public static ConfigEntry<float> StickCursorScrollSpeed;
@@ -58,7 +60,8 @@ public static class StickCursorConfig
     public static bool Enabled => StickCursor != null && StickCursor.Value;
     public static float Speed => StickCursorSpeed != null ? StickCursorSpeed.Value : 0.4f;
     public static float Deadzone => StickCursorDeadzone != null ? StickCursorDeadzone.Value : 0.15f;
-    public static bool UseMapAxes => StickCursorMapAxes != null && StickCursorMapAxes.Value;
+    public static StickCursorAxisSource Axes =>
+        StickCursorAxes != null ? StickCursorAxes.Value : StickCursorAxisSource.View;
     public static bool MoveOverMap => StickCursorOverMap != null && StickCursorOverMap.Value;
     public static bool InvertVertical => StickCursorInvertVertical != null && StickCursorInvertVertical.Value;
     public static float ScrollSpeed => StickCursorScrollSpeed != null ? StickCursorScrollSpeed.Value : 6f;
@@ -87,17 +90,33 @@ public static class StickCursorConfig
                 "Stick deflection ignored before the cursor starts moving. The game applies its own deadzone first; this one exists because a cursor that creeps is far more annoying than a view that creeps, and because the same axis may be a well-centred stick on one machine and a worn one on another.",
                 new AcceptableValueRange<float>(0f, 0.5f)));
 
-        StickCursorMapAxes = config.Bind(
+        StickCursorAxes = config.Bind(
             Section,
-            "Stick Cursor Map Axes",
-            false,
-            "Also move the stick cursor with the map scroll axes ('Move Map Horizontal'/'Move Map Vertical'), everywhere except the maximized tactical map — there they still scroll the map, as they do in the flat game. Off by default because the two action pairs can share one physical stick — on the gamepad this was measured on, the saved map bound both to the same stick — and then this doubles that one stick's contribution instead of giving the cursor a second one. Turn it on if your view axes and your map axes are on different sticks.");
+            "Stick Cursor Axes",
+            StickCursorAxisSource.View,
+            "Which of the game's own axis pairs moves the cursor. All four are actions you have "
+            + "already bound, and the mod reads them rather than binding anything new — but a "
+            + "gamepad usually puts *two* pairs on each stick, so the one to pick is whichever "
+            + "pair sits on the stick you do not need for the screen you are on. Your log says "
+            + "which is which: every time the stick cursor starts it prints one line per pair "
+            + "with the controller elements Rewired has it on ('Left Stick X', 'Right Stick Y'), "
+            + "and marks the ones that share a stick with the map.\n"
+            + "View = 'Pan View'/'Tilt View', the free-look axes, which the game ignores whenever "
+            + "a cursor is up. The safest default, and wrong only if they share a stick with the "
+            + "map scroll.\n"
+            + "Flight = 'Roll'/'Pitch'. Free in menus and on the spawn map, since there is no "
+            + "aircraft to fly there — but if you open the map in flight, moving the cursor flies "
+            + "the aeroplane.\n"
+            + "Camera = 'Move Lateral'/'Move Longitudinal', the free camera's. Free in the "
+            + "cockpit; they drive the camera on the spawn map and in the mission editor.\n"
+            + "Map = 'Move Map Horizontal'/'Move Map Vertical'. Free everywhere except the "
+            + "maximized map, which is the one place they scroll it.");
 
         StickCursorOverMap = config.Bind(
             Section,
             "Stick Cursor Over Map",
             false,
-            "Keep moving the stick cursor while the tactical map is maximized. Off (the default) hands the stick to the map there: the map scrolls under a cursor that stays where it is and 'Select' takes whatever is nearest it, which is exactly what the flat game does for a pad player. That matters because the view axes and the map axes are often the same stick, so a cursor that also moves means every scroll drags the cursor off the icon you were aiming at. The mouse still moves the cursor over the map either way, and so does a motion controller.");
+            "Keep moving the stick cursor while the tactical map is maximized, even when it is the same stick that scrolls the map. Off (the default) hands that stick to the map: the map scrolls under a cursor that stays where it is and 'Select' takes whatever is nearest it, which is exactly what the flat game does for a pad player — otherwise one stick scrolls the map and drags the cursor off the icon in the same motion. This only ever applies when 'Stick Cursor Axes' really is on the map's stick; pick a pair on your other stick and the cursor keeps moving over the map with nothing to stand down from. The mouse and a motion controller move the cursor there in every case.");
 
         StickCursorInvertVertical = config.Bind(
             Section,
@@ -113,4 +132,21 @@ public static class StickCursorConfig
                 "How fast the 'Zoom View' axis scrolls the list under the stick cursor, in mouse-wheel notches per second at full deflection. Only while flight controls are off (i.e. a menu is up) and the tactical map is not maximized, so it never fights the VR zoom or the map's own zoom. 0 disables it.",
                 new AcceptableValueRange<float>(0f, 30f)));
     }
+}
+
+/// <summary>
+/// Which of the game's own axis pairs drives the stick cursor. Named after the
+/// actions rather than after a stick, because actions are all the mod can bind
+/// to — <see cref="StickCursorConfig"/> logs which stick each one landed on.
+/// </summary>
+public enum StickCursorAxisSource
+{
+    /// <summary>"Pan View"/"Tilt View" — free whenever a cursor is up.</summary>
+    View,
+    /// <summary>"Roll"/"Pitch" — free wherever there is no aircraft to fly.</summary>
+    Flight,
+    /// <summary>"Move Lateral"/"Move Longitudinal" — the free camera's.</summary>
+    Camera,
+    /// <summary>"Move Map Horizontal"/"Move Map Vertical" — the map's own.</summary>
+    Map,
 }

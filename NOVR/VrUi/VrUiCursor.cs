@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -462,8 +463,9 @@ public class VrUiCursor: NOVRBehaviour
             UpdateStickCursorInput();
             if (!_stickModeLogged)
             {
-                Debug.Log("[VrUiCursor] Stick cursor active: the cursor is driven by the game's own view axes " +
-                          $"(map axes as well: {StickCursorConfig.UseMapAxes}; moves over the maximized map: " +
+                var activePair = StickAxisPair.For(StickCursorConfig.Axes);
+                Debug.Log($"[VrUiCursor] Stick cursor active on the {StickCursorConfig.Axes} axes " +
+                          $"({activePair.XAction}/{activePair.YAction}; moves over the maximized map: " +
                           $"{StickCursorConfig.MoveOverMap}); clicks from trigger, Fire or Select.");
                 _stickModeLogged = true;
             }
@@ -617,14 +619,17 @@ public class VrUiCursor: NOVRBehaviour
     /// Move the cursor from the game's own axes, in screen space, and clamp it
     /// to the screen rect the projection maps from.
     ///
-    /// <para><b>Which axes, and why the game's own.</b> "Pan View"/"Tilt View"
-    /// are dead sticks in a VR cockpit — the head does the looking, and
-    /// <c>CameraCockpitStatePatch</c> already zeroes the state's panView and
-    /// tiltView every frame — so taking them costs nothing and needs no new
-    /// binding from the pilot. "Move Map Horizontal"/"Move Map Vertical" are
-    /// only read by <c>DynamicMap.MapControls</c>, which the game runs solely
-    /// while the map is maximized; everywhere else they are free, so the
-    /// cursor gets them there and gives them back over the map.</para>
+    /// <para><b>Which axes, and why the game's own.</b> The default is
+    /// "Pan View"/"Tilt View": dead sticks in a VR cockpit — the head does the
+    /// looking, and <c>CameraCockpitStatePatch</c> already zeroes the state's
+    /// panView and tiltView every frame — so taking them costs nothing and
+    /// needs no new binding from the pilot. Three other pairs are offered
+    /// (<see cref="StickCursorAxisSource"/>) because <i>which</i> pair is free
+    /// depends on the pilot's own bindings and on the screen: a gamepad
+    /// commonly carries two pairs per stick, and then the view axes are on the
+    /// same stick as the map scroll. The mod binds nothing and sees no sticks;
+    /// it reads the pairs back out of Rewired and says which stick each landed
+    /// on, so the choice can be made from evidence.</para>
     ///
     /// <para><b>Velocity, not position.</b> The axis is integrated as a rate,
     /// which is how the flat game treats it too (<c>panView +=
@@ -667,35 +672,26 @@ public class VrUiCursor: NOVRBehaviour
             var player = GameManager.playerInput;
             if (player != null)
             {
+                var pair = StickAxisPair.For(StickCursorConfig.Axes);
+                UpdateAxisBindingState(player, pair);
+
                 var mapMaximized = global::DynamicMap.mapMaximized;
                 // Over the map, a held (real) mouse button is the game's own
-                // drag-pan, which reads these same two axes. Moving the cursor
-                // as well would fight it, so the drag wins.
+                // drag-pan, which reads the view axes. Moving the cursor as
+                // well would fight it, so the drag wins.
                 var dragPanning = mapMaximized && Input.GetMouseButton(0);
-                // And over the maximized map the stick belongs to the map: see
-                // the "Who owns the stick over the map" paragraph above.
-                var mapOwnsStick = mapMaximized && !StickCursorConfig.MoveOverMap;
+                // And over the maximized map the stick belongs to the map —
+                // but only when it really is the same stick. See the "Who owns
+                // the stick over the map" paragraph above.
+                var mapOwnsStick = mapMaximized &&
+                                   !StickCursorConfig.MoveOverMap &&
+                                   _sharesStickWithMap;
 
                 var axis = Vector2.zero;
                 if (!dragPanning && !mapOwnsStick)
                 {
-                    // Screen-space signs, not view signs: the game's view axes
-                    // mean "+Pan View = right, +Tilt View = down". Both are
-                    // readable off the flat game twice over — CameraCockpitState
-                    // feeds tiltView straight into Euler X (positive = looking
-                    // down), and the radial menu, the one screen-space pointer
-                    // the flat game builds out of these same two axes, takes
-                    // "GetAxis("Pan View") * right - GetAxis("Tilt View") * up".
-                    axis.x += ApplyStickDeadzone(player.GetAxis("Pan View"));
-                    axis.y -= ApplyStickDeadzone(player.GetAxis("Tilt View"));
-                }
-                if (StickCursorConfig.UseMapAxes && !mapMaximized)
-                {
-                    // These two are already screen-space: DynamicMap adds them
-                    // to positionOffset and applies -offset to the map image,
-                    // so positive scrolls the view right and up.
-                    axis.x += ApplyStickDeadzone(player.GetAxis("Move Map Horizontal"));
-                    axis.y += ApplyStickDeadzone(player.GetAxis("Move Map Vertical"));
+                    axis.x += ApplyStickDeadzone(player.GetAxis(pair.XAction));
+                    axis.y += pair.YSign * ApplyStickDeadzone(player.GetAxis(pair.YAction));
                 }
                 if (StickCursorConfig.InvertVertical)
                 {
@@ -722,6 +718,156 @@ public class VrUiCursor: NOVRBehaviour
 
         UpdateStickScrollInput();
         UpdateStickClickInput();
+    }
+
+    /// <summary>
+    /// One of the game's axis pairs, with the sign that turns it into screen
+    /// movement.
+    ///
+    /// <para>The vertical signs are read off the flat game rather than guessed:
+    /// <c>CameraCockpitState</c> feeds "Tilt View" straight into Euler X, so
+    /// positive is looking <i>down</i>, and the radial menu — the one
+    /// screen-space pointer the flat game builds out of these axes — takes
+    /// <c>GetAxis("Pan View") * right - GetAxis("Tilt View") * up</c>. "Pitch"
+    /// is positive nose-up, which is a stick pulled back, so it carries the
+    /// same inversion. The two movement pairs are already screen-space:
+    /// <c>DynamicMap</c> adds the map axes to <c>positionOffset</c> and applies
+    /// the negative to the image, and "Move Longitudinal" is positive
+    /// forwards.</para>
+    /// </summary>
+    private readonly struct StickAxisPair
+    {
+        public readonly string XAction;
+        public readonly string YAction;
+        public readonly float YSign;
+
+        private StickAxisPair(string xAction, string yAction, float ySign)
+        {
+            XAction = xAction;
+            YAction = yAction;
+            YSign = ySign;
+        }
+
+        public static StickAxisPair For(StickCursorAxisSource source) => source switch
+        {
+            StickCursorAxisSource.Flight => new StickAxisPair("Roll", "Pitch", -1f),
+            StickCursorAxisSource.Camera => new StickAxisPair("Move Lateral", "Move Longitudinal", 1f),
+            StickCursorAxisSource.Map => new StickAxisPair("Move Map Horizontal", "Move Map Vertical", 1f),
+            _ => new StickAxisPair("Pan View", "Tilt View", -1f),
+        };
+
+        public static readonly StickAxisPair MapPair = For(StickCursorAxisSource.Map);
+    }
+
+    private StickCursorAxisSource _loggedAxisSource = (StickCursorAxisSource)(-1);
+    /// <summary>
+    /// Whether the pair in use is on the map's own stick. Defaults to the
+    /// gamepad case, which is the arrangement the rule exists for.
+    /// </summary>
+    private bool _sharesStickWithMap = true;
+    private float _nextBindingScan;
+
+    /// <summary>
+    /// Which controller elements Rewired has an action on — "Left Stick X",
+    /// "Right Stick Y", an axis on a HOTAS — as the pilot's own binding screen
+    /// would name them.
+    ///
+    /// <para>This is the only way the mod can answer "which stick is that on".
+    /// It binds nothing itself and the actions are the game's, so the physical
+    /// arrangement lives entirely in the player's controller maps.</para>
+    /// </summary>
+    private static string DescribeBinding(Rewired.Player player, string action)
+    {
+        try
+        {
+            var names = new List<string>();
+            foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
+            {
+                if (map == null) continue;
+                var name = map.elementIdentifierName;
+                if (!string.IsNullOrEmpty(name) && !names.Contains(name)) names.Add(name);
+            }
+
+            return names.Count > 0 ? string.Join(", ", names.ToArray()) : "unbound";
+        }
+        catch (Exception e)
+        {
+            // Introspection is a diagnostic; it must never be the reason the
+            // cursor stops working.
+            return "unreadable (" + e.GetType().Name + ")";
+        }
+    }
+
+    /// <summary>
+    /// True when the chosen pair and the map's own scroll axes sit on the same
+    /// physical control, which is the case a gamepad falls into by default and
+    /// the only case the map has to be given its stick back for.
+    /// </summary>
+    private static bool SharesStickWithMap(Rewired.Player player, StickAxisPair pair)
+    {
+        if (pair.XAction == StickAxisPair.MapPair.XAction) return true;
+
+        try
+        {
+            var mapElements = new List<string>();
+            foreach (var action in new[] { StickAxisPair.MapPair.XAction, StickAxisPair.MapPair.YAction })
+            foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
+            {
+                if (map == null) continue;
+                mapElements.Add(map.controllerMap.controllerId + ":" + map.elementIdentifierId);
+            }
+
+            foreach (var action in new[] { pair.XAction, pair.YAction })
+            foreach (var map in player.controllers.maps.ElementMapsWithAction(action, true))
+            {
+                if (map == null) continue;
+                if (mapElements.Contains(map.controllerMap.controllerId + ":" + map.elementIdentifierId)) return true;
+            }
+
+            return false;
+        }
+        catch (Exception)
+        {
+            // Unknown means "behave as the gamepad default does", which is the
+            // arrangement that needed the rule in the first place.
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Re-read the bindings occasionally rather than every frame — the
+    /// enumeration allocates, and this only changes when the pilot rebinds
+    /// something or plugs a controller in — and print where every pair sits
+    /// whenever the answer changes. The pilot picks the pair on the stick they
+    /// can spare, and nothing else in the game tells them which stick a pair
+    /// is on.
+    /// </summary>
+    private void UpdateAxisBindingState(Rewired.Player player, StickAxisPair pair)
+    {
+        var source = StickCursorConfig.Axes;
+        var sourceChanged = _loggedAxisSource != source;
+        if (!sourceChanged && Time.unscaledTime < _nextBindingScan) return;
+
+        _loggedAxisSource = source;
+        _nextBindingScan = Time.unscaledTime + 5f;
+
+        var shares = SharesStickWithMap(player, pair);
+        var sharingChanged = shares != _sharesStickWithMap;
+        _sharesStickWithMap = shares;
+        if (!sourceChanged && !sharingChanged) return;
+
+        var lines = new List<string>();
+        foreach (StickCursorAxisSource candidate in Enum.GetValues(typeof(StickCursorAxisSource)))
+        {
+            var candidatePair = StickAxisPair.For(candidate);
+            var note = SharesStickWithMap(player, candidatePair) ? "  <- same stick as the map scroll" : "";
+            var chosen = candidate == source ? " (in use)" : "";
+            lines.Add($"  {candidate}{chosen}: {candidatePair.XAction} = {DescribeBinding(player, candidatePair.XAction)}; " +
+                      $"{candidatePair.YAction} = {DescribeBinding(player, candidatePair.YAction)}{note}");
+        }
+
+        Debug.Log("[VrUiCursor] Stick cursor axes — 'Stick Cursor Axes' picks one of these pairs:\n" +
+                  string.Join("\n", lines.ToArray()));
     }
 
     private static float ApplyStickDeadzone(float value)
