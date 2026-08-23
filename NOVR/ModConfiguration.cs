@@ -108,8 +108,8 @@ public class ModConfiguration
         HeadGazeCursor = config.Bind(
             "General",
             "Head Gaze Cursor",
-            true,
-            "Keep the VR cursor centered in your view, following where your head looks; the controller trigger clicks. While enabled, the mouse and motion controller cursor modes are disabled.");
+            false,
+            "Keep the VR cursor centered in your view, following where your head looks; the controller trigger clicks. Off by default — it is aimed with the neck, and the cursor goes wherever you happen to look rather than staying where you left it. While enabled, the mouse and motion controller cursor modes are disabled.");
 
         HeadGazeMultiplier = config.Bind(
             "General",

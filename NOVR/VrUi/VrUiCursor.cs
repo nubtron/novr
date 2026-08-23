@@ -376,8 +376,8 @@ public class VrUiCursor: NOVRBehaviour
     /// <summary>
     /// Selects and updates the active cursor input mode: head-gaze (the
     /// cursor follows the center of the HMD and the trigger clicks), an XR
-    /// motion controller ray, or the desktop mouse. Head-gaze is enabled by
-    /// default and while it is on, the mouse and motion controller cursor
+    /// motion controller ray, or the desktop mouse. Head-gaze is off by
+    /// default; while it is on, the mouse and motion controller cursor
     /// modes are disabled.
     /// </summary>
     private void UpdateCursorInput()
