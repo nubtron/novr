@@ -30,6 +30,9 @@ public class ModConfiguration
     public readonly ConfigEntry<float> NativeMenuScale;
     public readonly ConfigEntry<float> NativeMenuDistance;
     public readonly ConfigEntry<float> NativeMenuHeightOffset;
+    public readonly ConfigEntry<bool> ShowNativeUiButton;
+    public readonly ConfigEntry<float> CapturedMenuDistance;
+    public readonly ConfigEntry<float> CapturedMenuWidth;
     public readonly ConfigEntry<bool> EnableFrameDumps;
     public readonly ConfigEntry<bool> DisableVrMod;
     public readonly ConfigEntry<bool> RenderDocCaptureOnDump;
@@ -176,8 +179,15 @@ public class ModConfiguration
         EnableNativeMenuUi = config.Bind(
             "Experimental",
             "Enable Native Menu UI",
-            true,
-            "Use NOVR's native VR menu UI for non-flight menus. Disable to fall back to the existing patched game UI.");
+            false,
+            "Which of the two VR menu implementations runs for non-flight menus. "
+            + "On uses the native VR menu UI: the menus rebuilt as VR panels, which is "
+            + "faithful to VR but only covers the screens that were rebuilt. Off — the "
+            + "default — captures the game's own menus through the engine's overlay path "
+            + "onto a VR panel, so every screen the game has is present, including ones "
+            + "no native panel exists for, at the cost of being a flat capture rather "
+            + "than a native one. Both are VR; neither is a fallback for the other, and "
+            + "the choice takes effect immediately.");
 
         NativeMenuScale = config.Bind(
             "Experimental",
@@ -196,6 +206,24 @@ public class ModConfiguration
             "Native Menu Height Offset",
             0.0f,
             "Vertical offset in meters applied when NOVR's native VR menu UI is opened or recentered. Values from -0.25 to 1.0 are supported.");
+
+        ShowNativeUiButton = config.Bind(
+            "Experimental",
+            "Show Native UI Button",
+            false,
+            "Show the 'VR UI ON' button in the headset while the game's own menus are on screen. It switches the menus over to NOVR's native VR panels, i.e. it turns Enable Native Menu UI on from inside the headset. Off by default: the captured menu panel is the default menu path, so the game's menus are already on a VR panel and the button ended up floating in front of every one of them offering to fix something that is not broken. Turn it on if you want that switch in reach; Enable Native Menu UI in this file does the same thing without a button in the view.");
+
+        CapturedMenuDistance = config.Bind(
+            "Experimental",
+            "Captured Menu Distance",
+            2.5f,
+            "Distance in meters from the headset at which the captured menu panel is placed. Values from 1.0 to 6.0 are supported.");
+
+        CapturedMenuWidth = config.Bind(
+            "Experimental",
+            "Captured Menu Width",
+            4.0f,
+            "Width in meters of the captured menu panel. Values from 0.5 to 8.0 are supported.");
 
         // [Debug] drives the offline verification harness (tools/). Every key
         // here is off by default, and a normal play session has to behave as if
