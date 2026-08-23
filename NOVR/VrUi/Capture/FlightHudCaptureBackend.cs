@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 using UnityEngine.UI;
+using UnityEngine.XR;
 using NOVR.VrCamera;
 
 namespace NOVR.VrUi.Capture;
@@ -125,6 +126,9 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private bool _targetMipped;
     private Canvas? _snappedCanvas;
     private bool _snappedWasPixelPerfect;
+    /// <summary>Eye-buffer pixels per degree, measured once per capture; 0 when unmeasurable.</summary>
+    private float _eyePixelsPerDegree;
+    private bool _loggedSampling;
 
     /// <summary>True while this backend owns the overlay UI.</summary>
     public static bool IsActive => _instance != null && _instance._capturing;
@@ -201,6 +205,8 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private void SetupCapture()
     {
         EnsureTarget();
+        // Before the panel: it is what "match the eye" sizes the panel from.
+        _eyePixelsPerDegree = MeasureEyePixelsPerDegree();
         EnsureCaptureCamera();
         EnsurePanel();
         ApplyPixelSnap();
@@ -213,6 +219,7 @@ public class FlightHudCaptureBackend : NOVRBehaviour
     private void TeardownCapture()
     {
         _capturing = false;
+        _loggedSampling = false;
         WeaponSafetyWash.Restore();
         RestorePixelSnap();
 
@@ -423,9 +430,113 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         UpdateProjectionCamera();
     }
 
+    /// <summary>
+    /// The panel's horizontal angle, with "match the eye" resolved.
+    ///
+    /// <para><b>Why this is the sampling knob.</b> The capture is the game
+    /// window and cannot be anything else (see <see cref="EnsureTarget"/>), so
+    /// the only way to change how many texels land on a degree of view is to
+    /// change how many degrees the panel covers. A fixed 2560 texels across 60
+    /// degrees is 43 per degree against an eye buffer that resolves about 27,
+    /// i.e. the panel is squeezed 1.6:1 on the way to the headset and the
+    /// surplus is spent rather than seen; the same texels across 95 degrees is
+    /// one texel per eye pixel. Nothing about the window, the headset or the
+    /// mission has to be known in advance for that to hold — it is arithmetic
+    /// on two numbers the process can read.</para>
+    ///
+    /// <para><b>What widening actually changes.</b> Not where the symbols are:
+    /// the design eye's field of view is this same angle, so a symbol at a
+    /// given angle off the nose lands at that angle on the panel whatever the
+    /// setting is — conformal by construction, at 60 degrees or at 100. What
+    /// grows is the drawn glyph: a symbol 50 texels wide subtends 1.2 degrees
+    /// at a 60 degree panel and 1.9 at a 95 degree one. So this trades a
+    /// bigger HUD for a sharper one, and past one-to-one it is only bigger —
+    /// the texture starts being magnified and there is nothing left to
+    /// recover.</para>
+    ///
+    /// <para>Auto (the setting at 0) picks the one-to-one angle from the
+    /// headset actually attached. It is resolved from the eye density measured
+    /// once at capture setup rather than every frame, because the zoom feature
+    /// rewrites the eye projection and a panel that resized with the zoom would
+    /// be a different bug entirely.</para>
+    /// </summary>
+    private float ResolvePanelFieldOfView()
+    {
+        var configured = CapturedFlightHud.FieldOfView?.Value ?? 60f;
+        if (configured > 0.01f) return Mathf.Clamp(configured, 20f, 120f);
+
+        if (_eyePixelsPerDegree > 0f && _targetWidth > 0)
+            return Mathf.Clamp(_targetWidth / _eyePixelsPerDegree, 20f, 120f);
+
+        // No headset to match (harness without XR, or a projection we could not
+        // read): the documented default, not a guess dressed up as a measurement.
+        return 60f;
+    }
+
+    /// <summary>
+    /// How many eye-buffer pixels the headset spends on a degree of view,
+    /// read from the thing itself rather than from a datasheet: the per-eye
+    /// texture width over the horizontal angle its projection covers.
+    ///
+    /// The angle comes out of the stereo projection matrix rather than
+    /// <c>fieldOfView</c>, which is inert under XR (measured — assigning 35.98
+    /// and reading it back in the same frame returned 60.00). The frustum is
+    /// asymmetric on every headset worth the name, so both half-angles are
+    /// taken separately: <c>m02</c> is the shear.
+    /// </summary>
+    private static float MeasureEyePixelsPerDegree()
+    {
+        if (!XRSettings.enabled || XRSettings.eyeTextureWidth <= 0) return 0f;
+
+        var camera = APIBus.MainCamera;
+        if (camera == null) return 0f;
+
+        var projection = camera.GetStereoProjectionMatrix(Camera.StereoscopicEye.Left);
+        var m00 = projection.m00;
+        if (m00 <= 1e-4f) return 0f;
+
+        var right = Mathf.Atan((1f + projection.m02) / m00);
+        var left = Mathf.Atan((1f - projection.m02) / m00);
+        var horizontalDegrees = (right + left) * Mathf.Rad2Deg;
+        if (horizontalDegrees <= 1f) return 0f;
+
+        return XRSettings.eyeTextureWidth / horizontalDegrees;
+    }
+
+    /// <summary>
+    /// Say the sampling out loud, once per capture. Two numbers decide whether
+    /// any of the sharpness settings can do anything, they differ per machine,
+    /// and neither is visible from inside a headset — so the log carries them,
+    /// along with the angle that would put one texel on one eye pixel.
+    /// </summary>
+    private void LogSampling(float fovDegrees)
+    {
+        if (_loggedSampling) return;
+        _loggedSampling = true;
+
+        var texelsPerDegree = fovDegrees > 0f ? _targetWidth / fovDegrees : 0f;
+        if (_eyePixelsPerDegree <= 0f)
+        {
+            Debug.Log($"[NOVR] HUD panel sampling: {_targetWidth} texels across {fovDegrees:F1} deg " +
+                      $"= {texelsPerDegree:F1} texels/deg; no eye buffer to compare it with " +
+                      $"(xrEnabled={XRSettings.enabled}).");
+            return;
+        }
+
+        var ratio = texelsPerDegree / _eyePixelsPerDegree;
+        var oneToOne = Mathf.Clamp(_targetWidth / _eyePixelsPerDegree, 20f, 120f);
+        var verdict = ratio > 1.05f ? $"panel minified {ratio:F2}x — {oneToOne:F0} deg would be one texel per eye pixel"
+            : ratio < 0.95f ? $"panel magnified {1f / ratio:F2}x — the texture is coarser than the headset"
+            : "one texel per eye pixel";
+        Debug.Log($"[NOVR] HUD panel sampling: {_targetWidth} texels across {fovDegrees:F1} deg " +
+                  $"= {texelsPerDegree:F1} texels/deg; eye buffer {XRSettings.eyeTextureWidth} px " +
+                  $"= {_eyePixelsPerDegree:F1} px/deg. {verdict}.");
+    }
+
     private void ApplyFixedPlacement(float distance)
     {
-        var fovDegrees = Mathf.Clamp(CapturedFlightHud.FieldOfView?.Value ?? 60f, 20f, 120f);
+        var fovDegrees = ResolvePanelFieldOfView();
+        LogSampling(fovDegrees);
 
         // Width from the angle it should subtend at that distance, so changing
         // the distance alone does not change how big the HUD looks — it only
@@ -544,9 +655,10 @@ public class FlightHudCaptureBackend : NOVRBehaviour
         t.localPosition = Vector3.zero;
         t.localRotation = Quaternion.identity;
 
-        // Same angular size as the panel, by construction. The setting is the
-        // horizontal angle; Matrix4x4.Perspective takes the vertical one.
-        var fovDegrees = Mathf.Clamp(CapturedFlightHud.FieldOfView?.Value ?? 60f, 20f, 120f);
+        // Same angular size as the panel, by construction — which is what keeps
+        // every symbol on its own ray whatever the panel is set to. The setting
+        // is the horizontal angle; Matrix4x4.Perspective takes the vertical one.
+        var fovDegrees = ResolvePanelFieldOfView();
         var aspect = _targetHeight > 0 ? (float)_targetWidth / _targetHeight : 16f / 9f;
         var verticalFov =
             2f * Mathf.Atan(Mathf.Tan(fovDegrees * 0.5f * Mathf.Deg2Rad) / aspect) * Mathf.Rad2Deg;

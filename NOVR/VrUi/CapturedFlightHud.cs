@@ -113,12 +113,28 @@ public static class CapturedFlightHud
             "Captured HUD Field Of View",
             60f,
             new ConfigDescription(
-                "Horizontal angle the HUD panel covers, in degrees. In conformal mode this is "
-                + "also the design eye's field of view, so it stays the angle the symbols are "
-                + "true at: 60 puts the screen edges about 30 degrees off the nose. Larger "
-                + "spreads the frame wider (and targets stay on-panel further off boresight) but "
-                + "draws everything coarser.",
-                new AcceptableValueRange<float>(20f, 120f)));
+                "Horizontal angle the HUD panel covers, in degrees, or 0 to match your headset "
+                + "(see below). 60 puts the panel edges about 30 degrees off the nose. In "
+                + "conformal mode this is also the design eye's field of view, which is what "
+                + "keeps every symbol on its own ray whatever you set here: widening the panel "
+                + "does not move the velocity vector or a target marker, it makes the drawn "
+                + "symbols bigger — a glyph 50 texels wide covers 1.2 degrees at 60 and 1.9 at "
+                + "95 — and brings targets further off boresight onto the panel.\n"
+                + "It is also the only handle on how sharp the HUD can be. The capture is the "
+                + "game window's own resolution and cannot be anything else, so the texels are "
+                + "fixed and this decides how many degrees they are spread over. At a 2560-wide "
+                + "window, 60 degrees is 43 texels per degree against a headset that resolves "
+                + "about 27, so the panel is squeezed 1.6:1 on the way to your eye and the "
+                + "surplus is spent rather than seen; the same texels across 95 degrees is one "
+                + "texel per eye pixel. Past that it is only bigger — the texture starts being "
+                + "magnified and there is nothing left to recover.\n"
+                + "0 measures your headset at startup — per-eye buffer width over the angle its "
+                + "projection covers — and picks that one-to-one angle, so it follows a "
+                + "different headset or a different window without arithmetic. Every launch "
+                + "logs the numbers either way: look for 'HUD panel sampling' in the BepInEx "
+                + "log, which names the angle that would be one-to-one on your machine. Takes "
+                + "effect immediately; the headset measurement is taken once per capture.",
+                new AcceptableValueRange<float>(0f, 120f)));
 
         Brightness = config.Bind(
             "Experimental",
