@@ -37,6 +37,7 @@ public class Core : MonoBehaviour
         gameObject.AddComponent<APIBus>();
         gameObject.AddComponent<ColorGradeController>();
         gameObject.AddComponent<MotionControllerVisual>();
+        gameObject.AddComponent<FocusWarning>();
     }
 
     /// <summary>
